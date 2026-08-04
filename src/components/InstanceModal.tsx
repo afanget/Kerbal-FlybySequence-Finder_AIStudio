@@ -1,0 +1,292 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from 'react';
+import { InstanceNode, CelestialBody } from '../types';
+import { formatUT, parseKSPTimeToUT } from '../utils/timeFormat';
+import { X, Calendar, Compass, ShieldAlert, Check } from 'lucide-react';
+
+interface InstanceModalProps {
+  instance: InstanceNode;
+  body: CelestialBody | undefined;
+  timeFormatMode: 'ksp' | 'earth';
+  onSave: (updated: InstanceNode) => void;
+  onClose: () => void;
+}
+
+export const InstanceModal: React.FC<InstanceModalProps> = ({
+  instance,
+  body,
+  timeFormatMode,
+  onSave,
+  onClose,
+}) => {
+  const [minDateSec, setMinDateSec] = useState<string>(instance.minDate !== undefined ? String(instance.minDate) : '');
+  const [maxDateSec, setMaxDateSec] = useState<string>(instance.maxDate !== undefined ? String(instance.maxDate) : '');
+
+  // Helper inputs for KSP calendar date entry
+  const [minYear, setMinYear] = useState<number>(1);
+  const [minDay, setMinDay] = useState<number>(1);
+  const [maxYear, setMaxYear] = useState<number>(5);
+  const [maxDay, setMaxDay] = useState<number>(1);
+
+  const defaultMinFlybyAlt = body
+    ? body.atmosphereHeight && body.atmosphereHeight > 0
+      ? body.atmosphereHeight + 10000
+      : 10000
+    : 10000;
+
+  const [minFlybyRadius, setMinFlybyRadius] = useState<string>(
+    instance.minFlybyRadius !== undefined ? String(instance.minFlybyRadius) : String(defaultMinFlybyAlt)
+  );
+
+  const [maxC3, setMaxC3] = useState<string>(instance.maxC3 !== undefined ? String(instance.maxC3) : '');
+
+  const handleApplyCalendarMin = () => {
+    const ut = parseKSPTimeToUT(minYear, minDay, 0, 0, 0, timeFormatMode);
+    setMinDateSec(String(ut));
+  };
+
+  const handleApplyCalendarMax = () => {
+    const ut = parseKSPTimeToUT(maxYear, maxDay, 0, 0, 0, timeFormatMode);
+    setMaxDateSec(String(ut));
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSave({
+      ...instance,
+      minDate: minDateSec !== '' ? parseFloat(minDateSec) : undefined,
+      maxDate: maxDateSec !== '' ? parseFloat(maxDateSec) : undefined,
+      minFlybyRadius: minFlybyRadius !== '' ? parseFloat(minFlybyRadius) : undefined,
+      maxC3: maxC3 !== '' ? parseFloat(maxC3) : undefined,
+    });
+    onClose();
+  };
+
+  return (
+    <div id="instance-modal-backdrop" className="fixed inset-0 z-50 bg-[#0D0D0E]/85 backdrop-blur-sm flex items-center justify-center p-4">
+      <div id="instance-modal-dialog" className="bg-[#1A1B1E] border border-[#2D2E33] rounded-lg w-full max-w-lg shadow-2xl overflow-hidden text-[#E2E8F0]">
+        <div className="flex items-center justify-between px-5 py-3.5 bg-[#1A1B1E] border-b border-[#2D2E33]">
+          <div className="flex items-center gap-2.5">
+            <div
+              className="w-3.5 h-3.5 rounded-full border border-white/20"
+              style={{ backgroundColor: body?.color || '#60A5FA' }}
+            />
+            <h2 className="font-serif text-sm uppercase tracking-wider text-[#E2E8F0]">
+              Instance Constraints: <span className="text-[#60A5FA] font-mono">{instance.bodyName}</span>
+            </h2>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-[#25262B] rounded text-[#94A3B8] hover:text-white transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-5 flex flex-col gap-4 text-xs">
+          {/* Min & Max Date Constraints */}
+          <div className="space-y-3 bg-[#25262B] p-3.5 rounded border border-[#2D2E33]">
+            <div className="flex items-center gap-2 text-[#E2E8F0] font-semibold text-xs border-b border-[#2D2E33] pb-2">
+              <Calendar className="w-4 h-4 text-[#60A5FA]" />
+              <span className="uppercase text-[11px] tracking-wider font-serif">Flyby Date Window (UT Seconds / Calendar)</span>
+            </div>
+
+            {/* Min Date Row */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 items-center">
+              <div>
+                <div className="flex justify-between items-center">
+                  <label className="text-[11px] text-[#94A3B8]">Minimum Date (UT seconds):</label>
+                  {minDateSec !== '' && (
+                    <button
+                      type="button"
+                      onClick={() => setMinDateSec('')}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
+                    >
+                      Unset
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  value={minDateSec}
+                  onChange={(e) => setMinDateSec(e.target.value)}
+                  placeholder="Unconstrained (UT 0)"
+                  className="w-full mt-1 bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
+                />
+                <span className="text-[10px] text-[#64748B] mt-0.5 block font-mono">
+                  {formatUT(minDateSec ? parseFloat(minDateSec) : null, timeFormatMode)}
+                </span>
+              </div>
+
+              <div className="bg-[#1A1B1E] p-2 rounded border border-[#2D2E33] flex items-center gap-1">
+                <div className="flex-1">
+                  <span className="text-[10px] text-[#94A3B8] block">KSP Calendar:</span>
+                  <div className="flex gap-1 mt-1 font-mono">
+                    <input
+                      type="number"
+                      min="1"
+                      value={minYear}
+                      onChange={(e) => setMinYear(parseInt(e.target.value) || 1)}
+                      className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
+                    />
+                    <span className="text-[#64748B]">Y</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={minDay}
+                      onChange={(e) => setMinDay(parseInt(e.target.value) || 1)}
+                      className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
+                    />
+                    <span className="text-[#64748B]">D</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleApplyCalendarMin}
+                  className="px-2.5 py-1 bg-[#334155] hover:bg-[#475569] text-white text-[10px] font-mono uppercase tracking-wider rounded border border-[#475569]"
+                >
+                  Set
+                </button>
+              </div>
+            </div>
+
+            {/* Max Date Row */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 items-center pt-2 border-t border-[#2D2E33]">
+              <div>
+                <div className="flex justify-between items-center">
+                  <label className="text-[11px] text-[#94A3B8]">Maximum Date (UT seconds):</label>
+                  {maxDateSec !== '' && (
+                    <button
+                      type="button"
+                      onClick={() => setMaxDateSec('')}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
+                    >
+                      Unset
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  value={maxDateSec}
+                  onChange={(e) => setMaxDateSec(e.target.value)}
+                  placeholder="Unconstrained"
+                  className="w-full mt-1 bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
+                />
+                <span className="text-[10px] text-[#64748B] mt-0.5 block font-mono">
+                  {formatUT(maxDateSec ? parseFloat(maxDateSec) : null, timeFormatMode)}
+                </span>
+              </div>
+
+              <div className="bg-[#1A1B1E] p-2 rounded border border-[#2D2E33] flex items-center gap-1">
+                <div className="flex-1">
+                  <span className="text-[10px] text-[#94A3B8] block">KSP Calendar:</span>
+                  <div className="flex gap-1 mt-1 font-mono">
+                    <input
+                      type="number"
+                      min="1"
+                      value={maxYear}
+                      onChange={(e) => setMaxYear(parseInt(e.target.value) || 1)}
+                      className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
+                    />
+                    <span className="text-[#64748B]">Y</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={maxDay}
+                      onChange={(e) => setMaxDay(parseInt(e.target.value) || 1)}
+                      className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
+                    />
+                    <span className="text-[#64748B]">D</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleApplyCalendarMax}
+                  className="px-2.5 py-1 bg-[#334155] hover:bg-[#475569] text-white text-[10px] font-mono uppercase tracking-wider rounded border border-[#475569]"
+                >
+                  Set
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Flyby Radius & C3 Constraints */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-1">
+              <div className="flex justify-between items-center">
+                <label className="text-[11px] font-serif uppercase tracking-wider text-[#E2E8F0] flex items-center gap-1">
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                  Min Flyby Altitude (m)
+                </label>
+                {minFlybyRadius !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setMinFlybyRadius('')}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
+                  >
+                    Unset
+                  </button>
+                )}
+              </div>
+              <input
+                type="number"
+                value={minFlybyRadius}
+                onChange={(e) => setMinFlybyRadius(e.target.value)}
+                placeholder="Default atmosphere + 10km"
+                className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
+              />
+              <span className="text-[10px] text-[#64748B]">
+                Above surface (Atmosphere = {body?.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'})
+              </span>
+            </div>
+
+            <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-1">
+              <div className="flex justify-between items-center">
+                <label className="text-[11px] font-serif uppercase tracking-wider text-[#E2E8F0] flex items-center gap-1">
+                  <Compass className="w-3.5 h-3.5 text-[#60A5FA]" />
+                  Max C3 Limit (km²/s²)
+                </label>
+                {maxC3 !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setMaxC3('')}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
+                  >
+                    Unset
+                  </button>
+                )}
+              </div>
+              <input
+                type="number"
+                step="0.1"
+                value={maxC3}
+                onChange={(e) => setMaxC3(e.target.value)}
+                placeholder="No limit"
+                className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
+              />
+              <span className="text-[10px] text-[#64748B]">Hyperbolic excess energy max</span>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#2D2E33]">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 bg-[#25262B] hover:bg-[#2D2E33] text-[#94A3B8] hover:text-[#E2E8F0] border border-[#2D2E33] rounded text-xs font-mono uppercase tracking-wider transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#334155] hover:bg-[#475569] text-white border border-[#475569] rounded font-serif text-xs uppercase tracking-wider shadow-lg transition"
+            >
+              <Check className="w-4 h-4" /> Save Constraints
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};

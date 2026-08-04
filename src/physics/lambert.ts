@@ -1,0 +1,216 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { Vector3D, vecMag, vecDot, vecCross, vecScale, vecSub, vecAdd } from './kepler';
+
+export interface LambertSolution {
+  v1: Vector3D; // Departure velocity vector in m/s
+  v2: Vector3D; // Arrival velocity vector in m/s
+  semiMajorAxis: number;
+  isValid: boolean;
+}
+
+/**
+ * Universal Variable / Izzo Lambert Solver
+ * Solves Lambert's Problem for boundary positions r1, r2 and transfer duration dt in field mu.
+ * @param r1 Position vector at departure (meters)
+ * @param r2 Position vector at arrival (meters)
+ * @param dt Flight time (seconds)
+ * @param mu Standard gravitational parameter of central body (m^3 / s^2)
+ * @param prograde True for prograde (< 180 deg) transfer, false for retrograde
+ */
+export function solveLambert(
+  r1: Vector3D,
+  r2: Vector3D,
+  dt: number,
+  mu: number,
+  prograde: boolean,
+  minRadius?: number
+): LambertSolution {
+  const r1Mag = vecMag(r1);
+  const r2Mag = vecMag(r2);
+
+  if (r1Mag === 0 || r2Mag === 0 || dt <= 0 || mu <= 0) {
+    return { v1: { x: 0, y: 0, z: 0 }, v2: { x: 0, y: 0, z: 0 }, semiMajorAxis: 0, isValid: false };
+  }
+
+  // Cross product to find orbital plane normal
+  const cross12 = vecCross(r1, r2);
+  const cosTrueAnomaly = vecDot(r1, r2) / (r1Mag * r2Mag);
+  const clampedCos = Math.max(-1, Math.min(1, cosTrueAnomaly));
+
+  let dTheta = Math.acos(clampedCos);
+
+  // Determine direction
+  if (prograde) {
+    if (cross12.z < 0) {
+      dTheta = 2 * Math.PI - dTheta;
+    }
+  } else {
+    if (cross12.z >= 0) {
+      dTheta = 2 * Math.PI - dTheta;
+    }
+  }
+
+  // Chord length c
+  const c = Math.sqrt(r1Mag * r1Mag + r2Mag * r2Mag - 2 * r1Mag * r2Mag * Math.cos(dTheta));
+  const s = (r1Mag + r2Mag + c) / 2; // Semi-perimeter
+
+  const lambdaSq = 1 - c / s;
+  const lambda = Math.sqrt(Math.max(0, lambdaSq)) * (dTheta > Math.PI ? -1 : 1);
+
+  // Solves for x = sqrt(1 - s/a) using bisection / secant method
+  // Normalized time parameter T
+  const T = Math.sqrt((2 * mu) / (s * s * s)) * dt;
+
+  const x = solveLambertX(lambda, T);
+  if (isNaN(x)) {
+    return { v1: { x: 0, y: 0, z: 0 }, v2: { x: 0, y: 0, z: 0 }, semiMajorAxis: 0, isValid: false };
+  }
+
+  const a = s / (2 * (1 - x * x));
+
+  // Compute f, g Lagrange coefficients
+  const y = Math.sqrt(1 - lambda * lambda * (1 - x * x));
+  const gamma = Math.sqrt((mu * s) / 2);
+  const rho = (r1Mag - r2Mag) / c;
+  const sigma = Math.sqrt(1 - rho * rho);
+
+  const vr1 = (gamma * (lambda * y - x) - gamma * rho * (lambda * y + x)) / r1Mag;
+  const vr2 = -(gamma * (lambda * y - x) + gamma * rho * (lambda * y + x)) / r2Mag;
+  const vt1 = (gamma * sigma * (y + lambda * x)) / r1Mag;
+  const vt2 = (gamma * sigma * (y + lambda * x)) / r2Mag;
+
+  // Unit vectors
+  const iR1 = vecScale(r1, 1 / r1Mag);
+  const iR2 = vecScale(r2, 1 / r2Mag);
+
+  let iN = vecCross(iR1, iR2);
+  const iNMag = vecMag(iN);
+  if (iNMag === 0) {
+    iN = { x: 0, y: 0, z: 1 };
+  } else {
+    iN = vecScale(iN, 1 / iNMag);
+  }
+
+  if (dTheta > Math.PI) {
+    iN = vecScale(iN, -1);
+  }
+
+  const iT1 = vecCross(iN, iR1);
+  const iT2 = vecCross(iN, iR2);
+
+  const v1 = vecAdd(vecScale(iR1, vr1), vecScale(iT1, vt1));
+  const v2 = vecAdd(vecScale(iR2, vr2), vecScale(iT2, vt2));
+
+  let isValid = !isNaN(v1.x) && !isNaN(v2.x) && vecMag(v1) > 0;
+
+  if (isValid && minRadius !== undefined && minRadius > 0) {
+    if (r1Mag < minRadius || r2Mag < minRadius) {
+      isValid = false;
+    } else {
+      const v1Mag = vecMag(v1);
+      const hVec = vecCross(r1, v1);
+      const h = vecMag(hVec);
+      if (h === 0) {
+        isValid = false;
+      } else {
+        const energy = (v1Mag * v1Mag) / 2 - mu / r1Mag;
+        const eSq = Math.max(0, 1 + (2 * energy * h * h) / (mu * mu));
+        const e = Math.sqrt(eSq);
+        const p = (h * h) / mu;
+        const rp = p / (1 + e);
+
+        if (rp < minRadius) {
+          const radialV1 = vecDot(r1, v1) / r1Mag;
+          const radialV2 = vecDot(r2, v2) / r2Mag;
+          if (radialV1 < 0 || radialV2 > 0 || dTheta > Math.PI - 1e-4) {
+            isValid = false;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    v1,
+    v2,
+    semiMajorAxis: a,
+    isValid
+  };
+}
+
+/**
+ * Solves normalized Lambert x parameter equation T(x) = T_target
+ */
+function solveLambertX(lambda: number, T: number): number {
+  if (T <= 0 || isNaN(T)) return 0;
+
+  let xMin = -0.999999;
+  let xMax = 10;
+  let bracketCount = 0;
+
+  // Ensure xMax bracket has T(xMax) <= T
+  while (computeLambertTime(xMax, lambda) > T && xMax < 1e6 && bracketCount < 25) {
+    xMax *= 2;
+    bracketCount++;
+  }
+
+  const T_parabolic = (1 - Math.pow(lambda, 3)) / 3;
+  let x = T < T_parabolic ? 1.5 : 0.0;
+
+  for (let iter = 0; iter < 30; iter++) {
+    const tVal = computeLambertTime(x, lambda);
+    const err = tVal - T;
+
+    if (Math.abs(err) < 1e-7) {
+      return x;
+    }
+
+    if (tVal > T) {
+      xMin = Math.max(xMin, x);
+    } else {
+      xMax = Math.min(xMax, x);
+    }
+
+    const dx = Math.max(1e-5, Math.abs(x) * 1e-5);
+    const tValPlus = computeLambertTime(x + dx, lambda);
+    const dt_dx = (tValPlus - tVal) / dx;
+
+    let nextX = x;
+    if (Math.abs(dt_dx) > 1e-12) {
+      nextX = x - err / dt_dx;
+    }
+
+    if (nextX <= xMin || nextX >= xMax || isNaN(nextX)) {
+      nextX = 0.5 * (xMin + xMax);
+    }
+
+    if (Math.abs(nextX - x) < 1e-9) {
+      return nextX;
+    }
+
+    x = nextX;
+  }
+  return x;
+}
+
+function computeLambertTime(x: number, lambda: number): number {
+  if (Math.abs(x - 1) < 1e-6) {
+    return (1 - Math.pow(lambda, 3)) / 3;
+  }
+  const a = 1 / (1 - x * x);
+  if (x < 1) {
+    // Elliptic
+    const alpha = 2 * Math.acos(Math.max(-1, Math.min(1, x)));
+    const beta = 2 * Math.asin(Math.max(-1, Math.min(1, lambda * Math.sqrt(1 / a))));
+    return (a * Math.sqrt(a) * (alpha - Math.sin(alpha) - (beta - Math.sin(beta)))) / 2;
+  } else {
+    // Hyperbolic
+    const alpha = 2 * Math.acosh(x);
+    const beta = 2 * Math.asinh(lambda * Math.sqrt(x * x - 1));
+    return (-a * Math.sqrt(-a) * (Math.sinh(alpha) - alpha - (Math.sinh(beta) - beta))) / 2;
+  }
+}

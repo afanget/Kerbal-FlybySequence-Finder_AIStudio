@@ -1,0 +1,6 @@
+{
+  "name": "KSP Flyby Sequence Planner",
+  "description": "Trajectory optimization tool for Kerbal Space Program to plan gravitational flyby sequences, Lambert transfers, porkchop plots, and multi-body flyby missions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
