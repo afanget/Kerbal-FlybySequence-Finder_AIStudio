@@ -32,6 +32,10 @@ export interface FlybyEvaluationResult {
   stochasticDv: number; // m/s
 }
 
+const maxdC3inUnpoweredFlyby = 100*100; // if C3 are less than 20m/s different, the flyby is considered unpowered as this manouver
+// can be considered as a correction during prior or after the flyby
+const factorRpForNoDeflexion = 100; // TODO should put SOIradius instead of rpmin*100
+
 /**
  * Unified evaluation for both unpowered and powered flybys at a specific body and date.
  */
@@ -84,7 +88,7 @@ export function evaluateFlybyAtDate(
   // Determine periapsis radius rp
   let rp = rpMin;
   const deltaC3 = Math.abs(vInMag * vInMag - vOutMag * vOutMag); // m²/s²
-  const isVInfMatched = deltaC3 < 100.0 || Math.abs(vInMag - vOutMag) < 1.0;
+  const isVInfMatched = deltaC3 < maxdC3inUnpoweredFlyby || Math.abs(vInMag - vOutMag) < 1.0;
 
   if (isVInfMatched && deflectionRad <= maxDeflectionTotalRad + 1e-4) {
     const sinHalf = Math.sin(deflectionRad / 2);
@@ -92,7 +96,7 @@ export function evaluateFlybyAtDate(
     if (sinHalf > 1e-6) {
       rp = (mu / avgVInfSq) * (1 / sinHalf - 1);
     } else {
-      rp = rpMin * 100;
+      rp = rpMin * factorRpForNoDeflexion;
     }
   }
 
@@ -119,7 +123,7 @@ export function evaluateFlybyAtDate(
     poweredDv = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
   }
 
-  // If vInf is matched within 100 m²/s² and body can deflect enough, no powered maneuver is required
+  // If vInf is matched within maxdC3inUnpoweredFlyby m²/s² and body can deflect enough, no powered maneuver is required
   if (isVInfMatched && deflectionRad <= maxDeflectionTotalRad + 1e-4) {
     poweredDv = 0;
   }
@@ -358,15 +362,15 @@ export function matchUnpoweredFlyby(
   
   const deltaC3_1 = Math.abs(vIn1 * vIn1 - vOut1 * vOut1);
 
-  // If abs(C3arr - C3dep) < 100 m²/s², vinf are considered matching directly at t1
+  // If abs(C3arr - C3dep) < maxdC3inUnpoweredFlyby m²/s², vinf are considered matching directly at t1
   // without needing to solve linear regression across [t1, t2]
   let tMatch = t1;
   let vMatch = (vIn1 + vOut1) / 2;
   let vecVInfInMatch = vecVInfIn1;
   let vecVInfOutMatch = vecVInfOut1;
-  let deltaC3ForStochastic = deltaC3_1;
+  let deltaC3ForStochastic = 0;
 
-  if (deltaC3_1 >= 100.0) {
+  if (deltaC3_1 >= maxdC3inUnpoweredFlyby) {
     // Perform linear regression on v_infinity magnitudes to find crossing date (tMatch)
     const dt = t2 - t1;
     if (dt > 0) {
@@ -477,7 +481,7 @@ export function matchUnpoweredFlyby(
   if (sinHalfDelta > 1e-6) {
     rpRequired = (mu / (vMatch * vMatch)) * (1 / sinHalfDelta - 1);
   } else {
-    rpRequired = rpMin * 100;
+    rpRequired = rpMin * factorRpForNoDeflexion;
   }
 
   const periapsisAlt = rpRequired - R;

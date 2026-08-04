@@ -154,7 +154,7 @@ export default function App() {
           y: 320,
           minDate: (41-1) * kspYearSec,
           maxDate: (42-1) * kspYearSec,
-          maxC3: 100
+          maxC3: 25
         },
       ];
 
