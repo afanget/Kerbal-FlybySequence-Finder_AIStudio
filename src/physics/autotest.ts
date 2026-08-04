@@ -266,6 +266,7 @@ export interface KEJGStep1Result {
 export interface KEJGSampledFlybyDebug {
   instanceId: string;
   bodyName: string;
+  flybyTitle?: string;
   step1FlybyDateUt: number;
   step1FlybyDateFormatted: string;
   sampledDates: { ut: number; formatted: string; label?: string }[];
@@ -415,7 +416,7 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
     flightTimeDays: dt1 / 21600,
     vInfDepMag: vInfDep1Mag,
     vInfArrMag: vInfArr1Mag,
-    c3Dep: c3Dep1,
+    c3Dep: c3Dep1 / 1e6,
     ejectionDvMs: ejDv1,
   };
 
@@ -438,7 +439,7 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
     flightTimeDays: dt2 / 21600,
     vInfDepMag: vInfDep2Mag,
     vInfArrMag: vInfArr2Mag,
-    c3Dep: vInfDep2Mag * vInfDep2Mag,
+    c3Dep: (vInfDep2Mag * vInfDep2Mag) / 1e6,
     ejectionDvMs: 0,
   };
 
@@ -477,7 +478,7 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
     flightTimeDays: dt3 / 21600,
     vInfDepMag: vInfDep3Mag,
     vInfArrMag: vInfArr3Mag,
-    c3Dep: vInfDep3Mag * vInfDep3Mag,
+    c3Dep: (vInfDep3Mag * vInfDep3Mag) / 1e6,
     ejectionDvMs: 0,
   };
 
@@ -594,63 +595,125 @@ export async function runKEJGStep2(customUTs?: { t1?: number; t2?: number; t3?: 
 
   const matchJool = (matchJoolE1.isValid || !matchJoolE2.isValid) ? matchJoolE1 : matchJoolE2;
 
-  // Debug flyby list
+  // Debug flyby list with all 4 flyby verifications evaluated in Step 2:
+  // 1 & 2: Eve flybys (with outbound to Jool tJ1 vs tJ2)
+  // 3 & 4: Jool flybys (with inbound from Eve tE1 vs tE2)
   const flybyDebugList: KEJGSampledFlybyDebug[] = [
     {
-      instanceId: 'inst-1',
+      instanceId: 'inst-1-j1',
       bodyName: 'Eve',
+      flybyTitle: `Eve Flyby #1 (Arrival Jool tJ1: ${formatShortUT(tJool1, 'ksp')})`,
       step1FlybyDateUt: tEveStep1,
       step1FlybyDateFormatted: formatShortUT(tEveStep1, 'ksp'),
       sampledDates: [
         { ut: tEve1, formatted: formatShortUT(tEve1, 'ksp'), label: 'Just Before Step 1' },
         { ut: tEve2, formatted: formatShortUT(tEve2, 'ksp'), label: 'Just After Step 1' },
-        ...(matchEve.matchedFlybyDate ? [{ ut: matchEve.matchedFlybyDate, formatted: formatShortUT(matchEve.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
+        ...(matchEveJ1.matchedFlybyDate ? [{ ut: matchEveJ1.matchedFlybyDate, formatted: formatShortUT(matchEveJ1.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
       ],
       sampledDatesCount: 2,
       minDateFormatted: formatShortUT(tEve1, 'ksp'),
       maxDateFormatted: formatShortUT(tEve2, 'ksp'),
       inboundVInfMinMs: Math.min(vecMag(vInfIn_E1), vecMag(vInfIn_E2)),
       inboundVInfMaxMs: Math.max(vecMag(vInfIn_E1), vecMag(vInfIn_E2)),
-      outboundVInfMinMs: Math.min(vecMag(vInfOut_E1_J1), vecMag(vInfOut_E2_J1), vecMag(vInfOut_E1_J2), vecMag(vInfOut_E2_J2)),
-      outboundVInfMaxMs: Math.max(vecMag(vInfOut_E1_J1), vecMag(vInfOut_E2_J1), vecMag(vInfOut_E1_J2), vecMag(vInfOut_E2_J2)),
-      matchedFlybyDateUt: matchEve.matchedFlybyDate,
-      matchedFlybyDateFormatted: matchEve.matchedFlybyDate ? formatShortUT(matchEve.matchedFlybyDate, 'ksp') : undefined,
-      matchedInboundVInfMs: matchEve.vInfInMag,
-      matchedOutboundVInfMs: matchEve.vInfOutMag,
-      deflectionAngleDeg: matchEve.deflectionAngle,
-      maxDeflectionAngleDeg: matchEve.maxDeflectionAngle,
-      periapsisAltKm: matchEve.periapsisAlt / 1000,
-      flybyMarginKm: matchEve.flybyMargin / 1000,
-      status: matchEve.isValid ? 'VALID_UNPOWERED' : (matchEve.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
-      statusLabel: matchEve.isValid ? '✓ Valid Unpowered Flyby' : matchEve.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
+      outboundVInfMinMs: Math.min(vecMag(vInfOut_E1_J1), vecMag(vInfOut_E2_J1)),
+      outboundVInfMaxMs: Math.max(vecMag(vInfOut_E1_J1), vecMag(vInfOut_E2_J1)),
+      matchedFlybyDateUt: matchEveJ1.matchedFlybyDate,
+      matchedFlybyDateFormatted: matchEveJ1.matchedFlybyDate ? formatShortUT(matchEveJ1.matchedFlybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchEveJ1.vInfInMag,
+      matchedOutboundVInfMs: matchEveJ1.vInfOutMag,
+      deflectionAngleDeg: matchEveJ1.deflectionAngle,
+      maxDeflectionAngleDeg: matchEveJ1.maxDeflectionAngle,
+      periapsisAltKm: matchEveJ1.periapsisAlt !== undefined ? matchEveJ1.periapsisAlt / 1000 : undefined,
+      flybyMarginKm: matchEveJ1.flybyMargin !== undefined ? matchEveJ1.flybyMargin / 1000 : undefined,
+      status: matchEveJ1.isValid ? 'VALID_UNPOWERED' : (matchEveJ1.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
+      statusLabel: matchEveJ1.isValid ? '✓ Valid Unpowered Flyby' : matchEveJ1.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
     },
     {
-      instanceId: 'inst-2',
+      instanceId: 'inst-1-j2',
+      bodyName: 'Eve',
+      flybyTitle: `Eve Flyby #2 (Arrival Jool tJ2: ${formatShortUT(tJool2, 'ksp')})`,
+      step1FlybyDateUt: tEveStep1,
+      step1FlybyDateFormatted: formatShortUT(tEveStep1, 'ksp'),
+      sampledDates: [
+        { ut: tEve1, formatted: formatShortUT(tEve1, 'ksp'), label: 'Just Before Step 1' },
+        { ut: tEve2, formatted: formatShortUT(tEve2, 'ksp'), label: 'Just After Step 1' },
+        ...(matchEveJ2.matchedFlybyDate ? [{ ut: matchEveJ2.matchedFlybyDate, formatted: formatShortUT(matchEveJ2.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
+      ],
+      sampledDatesCount: 2,
+      minDateFormatted: formatShortUT(tEve1, 'ksp'),
+      maxDateFormatted: formatShortUT(tEve2, 'ksp'),
+      inboundVInfMinMs: Math.min(vecMag(vInfIn_E1), vecMag(vInfIn_E2)),
+      inboundVInfMaxMs: Math.max(vecMag(vInfIn_E1), vecMag(vInfIn_E2)),
+      outboundVInfMinMs: Math.min(vecMag(vInfOut_E1_J2), vecMag(vInfOut_E2_J2)),
+      outboundVInfMaxMs: Math.max(vecMag(vInfOut_E1_J2), vecMag(vInfOut_E2_J2)),
+      matchedFlybyDateUt: matchEveJ2.matchedFlybyDate,
+      matchedFlybyDateFormatted: matchEveJ2.matchedFlybyDate ? formatShortUT(matchEveJ2.matchedFlybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchEveJ2.vInfInMag,
+      matchedOutboundVInfMs: matchEveJ2.vInfOutMag,
+      deflectionAngleDeg: matchEveJ2.deflectionAngle,
+      maxDeflectionAngleDeg: matchEveJ2.maxDeflectionAngle,
+      periapsisAltKm: matchEveJ2.periapsisAlt !== undefined ? matchEveJ2.periapsisAlt / 1000 : undefined,
+      flybyMarginKm: matchEveJ2.flybyMargin !== undefined ? matchEveJ2.flybyMargin / 1000 : undefined,
+      status: matchEveJ2.isValid ? 'VALID_UNPOWERED' : (matchEveJ2.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
+      statusLabel: matchEveJ2.isValid ? '✓ Valid Unpowered Flyby' : matchEveJ2.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
+    },
+    {
+      instanceId: 'inst-2-e1',
       bodyName: 'Jool',
+      flybyTitle: `Jool Flyby #1 (Inbound Eve tE1: ${formatShortUT(tEve1, 'ksp')})`,
       step1FlybyDateUt: tJoolStep1,
       step1FlybyDateFormatted: formatShortUT(tJoolStep1, 'ksp'),
       sampledDates: [
         { ut: tJool1, formatted: formatShortUT(tJool1, 'ksp'), label: 'Just Before Step 1' },
         { ut: tJool2, formatted: formatShortUT(tJool2, 'ksp'), label: 'Just After Step 1' },
-        ...(matchJool.matchedFlybyDate ? [{ ut: matchJool.matchedFlybyDate, formatted: formatShortUT(matchJool.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
+        ...(matchJoolE1.matchedFlybyDate ? [{ ut: matchJoolE1.matchedFlybyDate, formatted: formatShortUT(matchJoolE1.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
       ],
       sampledDatesCount: 2,
       minDateFormatted: formatShortUT(tJool1, 'ksp'),
       maxDateFormatted: formatShortUT(tJool2, 'ksp'),
-      inboundVInfMinMs: Math.min(vecMag(vInfIn_E1_J1), vecMag(vInfIn_E1_J2), vecMag(vInfIn_E2_J1), vecMag(vInfIn_E2_J2)),
-      inboundVInfMaxMs: Math.max(vecMag(vInfIn_E1_J1), vecMag(vInfIn_E1_J2), vecMag(vInfIn_E2_J1), vecMag(vInfIn_E2_J2)),
+      inboundVInfMinMs: Math.min(vecMag(vInfIn_E1_J1), vecMag(vInfIn_E1_J2)),
+      inboundVInfMaxMs: Math.max(vecMag(vInfIn_E1_J1), vecMag(vInfIn_E1_J2)),
       outboundVInfMinMs: Math.min(vecMag(vInfOut_J1), vecMag(vInfOut_J2)),
       outboundVInfMaxMs: Math.max(vecMag(vInfOut_J1), vecMag(vInfOut_J2)),
-      matchedFlybyDateUt: matchJool.matchedFlybyDate,
-      matchedFlybyDateFormatted: matchJool.matchedFlybyDate ? formatShortUT(matchJool.matchedFlybyDate, 'ksp') : undefined,
-      matchedInboundVInfMs: matchJool.vInfInMag,
-      matchedOutboundVInfMs: matchJool.vInfOutMag,
-      deflectionAngleDeg: matchJool.deflectionAngle,
-      maxDeflectionAngleDeg: matchJool.maxDeflectionAngle,
-      periapsisAltKm: matchJool.periapsisAlt / 1000,
-      flybyMarginKm: matchJool.flybyMargin / 1000,
-      status: matchJool.isValid ? 'VALID_UNPOWERED' : (matchJool.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
-      statusLabel: matchJool.isValid ? '✓ Valid Unpowered Flyby' : matchJool.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
+      matchedFlybyDateUt: matchJoolE1.matchedFlybyDate,
+      matchedFlybyDateFormatted: matchJoolE1.matchedFlybyDate ? formatShortUT(matchJoolE1.matchedFlybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchJoolE1.vInfInMag,
+      matchedOutboundVInfMs: matchJoolE1.vInfOutMag,
+      deflectionAngleDeg: matchJoolE1.deflectionAngle,
+      maxDeflectionAngleDeg: matchJoolE1.maxDeflectionAngle,
+      periapsisAltKm: matchJoolE1.periapsisAlt !== undefined ? matchJoolE1.periapsisAlt / 1000 : undefined,
+      flybyMarginKm: matchJoolE1.flybyMargin !== undefined ? matchJoolE1.flybyMargin / 1000 : undefined,
+      status: matchJoolE1.isValid ? 'VALID_UNPOWERED' : (matchJoolE1.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
+      statusLabel: matchJoolE1.isValid ? '✓ Valid Unpowered Flyby' : matchJoolE1.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
+    },
+    {
+      instanceId: 'inst-2-e2',
+      bodyName: 'Jool',
+      flybyTitle: `Jool Flyby #2 (Inbound Eve tE2: ${formatShortUT(tEve2, 'ksp')})`,
+      step1FlybyDateUt: tJoolStep1,
+      step1FlybyDateFormatted: formatShortUT(tJoolStep1, 'ksp'),
+      sampledDates: [
+        { ut: tJool1, formatted: formatShortUT(tJool1, 'ksp'), label: 'Just Before Step 1' },
+        { ut: tJool2, formatted: formatShortUT(tJool2, 'ksp'), label: 'Just After Step 1' },
+        ...(matchJoolE2.matchedFlybyDate ? [{ ut: matchJoolE2.matchedFlybyDate, formatted: formatShortUT(matchJoolE2.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
+      ],
+      sampledDatesCount: 2,
+      minDateFormatted: formatShortUT(tJool1, 'ksp'),
+      maxDateFormatted: formatShortUT(tJool2, 'ksp'),
+      inboundVInfMinMs: Math.min(vecMag(vInfIn_E2_J1), vecMag(vInfIn_E2_J2)),
+      inboundVInfMaxMs: Math.max(vecMag(vInfIn_E2_J1), vecMag(vInfIn_E2_J2)),
+      outboundVInfMinMs: Math.min(vecMag(vInfOut_J1), vecMag(vInfOut_J2)),
+      outboundVInfMaxMs: Math.max(vecMag(vInfOut_J1), vecMag(vInfOut_J2)),
+      matchedFlybyDateUt: matchJoolE2.matchedFlybyDate,
+      matchedFlybyDateFormatted: matchJoolE2.matchedFlybyDate ? formatShortUT(matchJoolE2.matchedFlybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchJoolE2.vInfInMag,
+      matchedOutboundVInfMs: matchJoolE2.vInfOutMag,
+      deflectionAngleDeg: matchJoolE2.deflectionAngle,
+      maxDeflectionAngleDeg: matchJoolE2.maxDeflectionAngle,
+      periapsisAltKm: matchJoolE2.periapsisAlt !== undefined ? matchJoolE2.periapsisAlt / 1000 : undefined,
+      flybyMarginKm: matchJoolE2.flybyMargin !== undefined ? matchJoolE2.flybyMargin / 1000 : undefined,
+      status: matchJoolE2.isValid ? 'VALID_UNPOWERED' : (matchJoolE2.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
+      statusLabel: matchJoolE2.isValid ? '✓ Valid Unpowered Flyby' : matchJoolE2.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
     }
   ];
 
@@ -668,7 +731,7 @@ export async function runKEJGStep2(customUTs?: { t1?: number; t2?: number; t3?: 
     const sol3 = solveLambert(stJoolMatch.pos, stGrannus.pos, t4 - joolDate, muSun, true);
 
     const vInfDep1 = vecSub(sol1.v1, stKerbin.vel);
-    const c3Dep = vecMag(vInfDep1) ** 2;
+    const c3Dep = (vecMag(vInfDep1) ** 2) / 1e6;
 
     bestSeq = {
       totalDvMs: (matchEve.stochasticDv || 0) + (matchJool.stochasticDv || 0),

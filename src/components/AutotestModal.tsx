@@ -754,7 +754,7 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                               Step 2 Flyby Sampling & Verification Debug Breakdown
                             </h5>
                             <span className="text-[11px] font-mono text-[#94A3B8]">
-                              {kejgStep2Result.flybyDebugList.length} Flyby Nodes Evaluated
+                              {kejgStep2Result.flybyDebugList.length} Flyby Verifications Evaluated
                             </span>
                           </div>
 
@@ -768,7 +768,7 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                                       {fbDebug.bodyName}
                                     </span>
                                     <span className="text-[#E2E8F0] font-bold text-xs">
-                                      {fbDebug.bodyName} Flyby Verification Debug
+                                      {fbDebug.flybyTitle || `${fbDebug.bodyName} Flyby Verification Debug`}
                                     </span>
                                   </div>
                                   <span className={`text-[11px] px-2.5 py-0.5 rounded-md font-semibold border ${
