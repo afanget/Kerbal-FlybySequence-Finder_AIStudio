@@ -223,8 +223,15 @@ export function countPossibleTransfers(
  */
 export function intersectInstanceDates(
   instances: InstanceNode[],
-  links: DirectionalLink[]
+  links: DirectionalLink[],
+  bodies?: CelestialBody[],
+  mainBody?: CelestialBody
 ): InstanceNode[] {
+  const bodyMap = new Map<string, CelestialBody>();
+  if (bodies) {
+    bodies.forEach(b => bodyMap.set(b.name, b));
+  }
+
   return instances.map(inst => {
     if (inst.validFlybyDates && inst.validFlybyDates.length > 0) {
       return inst;
@@ -240,9 +247,14 @@ export function intersectInstanceDates(
     const minD = inst.minDate ?? inst.computedMinDate ?? 0;
     const maxD = inst.maxDate ?? inst.computedMaxDate ?? minD + 31536000;
 
-    const samples = 15;
+    const body = bodyMap.get(inst.bodyName);
+    const period = (body && mainBody) ? getOrbitalPeriod(body, mainBody) : 31536000;
+    const range = Math.max(0, maxD - minD);
+    const rawN = Math.ceil((range / Math.max(1, period)) * SAMPLE_PER_PERIOD);
+    const samples = Math.min(MAX_SAMPLE_COUNT, Math.max(MIN_SAMPLE_COUNT, rawN));
+
     const validFlybyDates: number[] = [];
-    const step = (maxD - minD) / Math.max(1, samples - 1);
+    const step = range / Math.max(1, samples - 1);
     for (let i = 0; i < samples; i++) {
       validFlybyDates.push(minD + i * step);
     }
@@ -452,7 +464,7 @@ export async function runSequenceSearch(
   onProgress?.('Intersecting intermediate flyby dates...');
   await yieldUI();
   if (shouldStop?.()) return earlyReturn();
-  currInstances = intersectInstanceDates(currInstances, currLinks);
+  currInstances = intersectInstanceDates(currInstances, currLinks, bodies, mainBody);
   onPartialUpdate?.({ instances: currInstances, links: currLinks });
 
   // Step 5 & 6: Compute porkchops and filter flybys using consecutive least-cost pairs
