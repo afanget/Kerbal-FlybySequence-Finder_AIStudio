@@ -383,6 +383,16 @@ export default function App() {
 
   const activePorkchop = porkchopModalLinkId ? porkchops[porkchopModalLinkId] : undefined;
 
+  // Render dedicated full-page Autotest Inspector if active
+  if (autotestModalOpen) {
+    return (
+      <AutotestModal
+        isOpen={true}
+        onClose={() => setAutotestModalOpen(false)}
+      />
+    );
+  }
+
   return (
     <div id="ksp-app-root" className="min-h-screen bg-[#0D0D0E] text-[#E2E8F0] flex flex-col font-sans selection:bg-[#60A5FA] selection:text-black">
       {/* Top Header Bar & Selectors */}

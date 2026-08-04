@@ -27,7 +27,7 @@ import {
   ChevronRight,
   Rocket,
   Zap,
-  RotateCcw
+  ArrowLeft
 } from 'lucide-react';
 
 interface AutotestModalProps {
@@ -94,59 +94,80 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   const radToDeg = (rad: number) => (rad * 180 / Math.PI).toFixed(2) + '°';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto">
-      <div className="bg-[#1A1B1E] border border-[#2D2E33] rounded-xl shadow-2xl w-full max-w-6xl flex flex-col max-h-[92vh] my-auto overflow-hidden">
-        {/* Modal Header */}
-        <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 bg-[#25262B] border-b border-[#2D2E33]">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-[#60A5FA]/10 border border-[#60A5FA]/30 rounded-lg text-[#60A5FA]">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base font-medium text-[#E2E8F0] flex items-center gap-2">
-                Orbital Mechanics & Flyby Autotest Inspector
-              </h2>
-              <p className="text-xs text-[#94A3B8]">
-                Automated Physics Verification Suite: Lambert Solver & KEJG Multi-Body Flyby Sequence
-              </p>
+    <div className="min-h-screen bg-[#111215] text-[#E2E8F0] flex flex-col font-sans">
+      {/* Full Page Sticky Top Navigation Bar */}
+      <header className="sticky top-0 z-40 bg-[#1A1B1E] border-b border-[#2D2E33] shadow-lg px-6 py-4">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+          {/* Left: Back Button & Title */}
+          <div className="flex items-center gap-4">
+            <button
+              onClick={onClose}
+              className="flex items-center gap-2 px-3.5 py-2 bg-[#25262B] hover:bg-[#32343B] text-[#60A5FA] border border-[#2D2E33] rounded-lg transition text-xs font-semibold shadow"
+              title="Return to Main Mission Planner"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to Mission Planner</span>
+            </button>
+
+            <div className="h-6 w-[1px] bg-[#2D2E33]" />
+
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-[#60A5FA]/10 border border-[#60A5FA]/30 rounded-lg text-[#60A5FA]">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="text-base font-bold text-[#E2E8F0] flex items-center gap-2">
+                  Orbital Mechanics & Flyby Autotest Inspector
+                </h1>
+                <p className="text-xs text-[#94A3B8]">
+                  Automated Physics Verification Suite: Lambert Solver & KEJG Multi-Body Flyby Sequence
+                </p>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* Right: Actions & Status */}
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-2 text-xs text-[#94A3B8] bg-[#25262B] px-3 py-1.5 rounded-lg border border-[#2D2E33]">
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="font-mono">Suite Status: Operational</span>
+            </div>
+
             <button
               onClick={onClose}
-              className="p-1.5 text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#2D2E33] rounded transition"
+              className="p-2 text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#25262B] rounded-lg transition border border-[#2D2E33]"
               title="Close Autotest Inspector"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
+      </header>
 
-        {/* Modal Content - scrollable flex child */}
-        <div className="p-6 overflow-y-auto flex-1 min-h-0 flex flex-col gap-6">
-          {/* Section Toolbar */}
-          <div className="flex items-center justify-between text-xs text-[#94A3B8] pb-1 border-b border-[#2D2E33]/60">
-            <span className="font-mono flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              2 Test Suites Loaded
-            </span>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => { setLambertOpen(true); setKejgOpen(true); }}
-                className="hover:text-[#E2E8F0] underline transition font-mono text-[11px]"
-              >
-                Expand All
-              </button>
-              <span className="text-[#3F4046]">•</span>
-              <button
-                onClick={() => { setLambertOpen(false); setKejgOpen(false); }}
-                className="hover:text-[#E2E8F0] underline transition font-mono text-[11px]"
-              >
-                Collapse All
-              </button>
-            </div>
+      {/* Main Content Area - Full Standard Scrollable Page */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-8 flex flex-col gap-6">
+        {/* Section Toolbar */}
+        <div className="flex items-center justify-between text-xs text-[#94A3B8] pb-1 border-b border-[#2D2E33]/60">
+          <span className="font-mono flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+            2 Test Suites Loaded
+          </span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => { setLambertOpen(true); setKejgOpen(true); }}
+              className="hover:text-[#E2E8F0] underline transition font-mono text-[11px]"
+            >
+              Expand All
+            </button>
+            <span className="text-[#3F4046]">•</span>
+            <button
+              onClick={() => { setLambertOpen(false); setKejgOpen(false); }}
+              className="hover:text-[#E2E8F0] underline transition font-mono text-[11px]"
+            >
+              Collapse All
+            </button>
           </div>
+        </div>
           {/* SECTION 1: LAMBERT PHYSICS AUTOTEST */}
           <div className="bg-[#1F2024] border border-[#2D2E33] rounded-xl overflow-hidden">
             {/* Accordion Header */}
@@ -621,8 +642,24 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
               </div>
             )}
           </div>
-        </div>
+        </main>
+
+        {/* Bottom Sticky/Floating Return Bar */}
+        <footer className="sticky bottom-0 z-30 bg-[#1A1B1E]/95 backdrop-blur-md border-t border-[#2D2E33] py-3.5 px-6">
+          <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <div className="text-xs text-[#94A3B8] font-mono flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Autotest Inspection Page Active</span>
+            </div>
+            <button
+              onClick={onClose}
+              className="flex items-center gap-2 px-4 py-2 bg-[#60A5FA] hover:bg-blue-500 text-slate-950 font-bold text-xs rounded-lg transition shadow-lg"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Return to Mission Planner</span>
+            </button>
+          </div>
+        </footer>
       </div>
-    </div>
-  );
-};
+    );
+  };
