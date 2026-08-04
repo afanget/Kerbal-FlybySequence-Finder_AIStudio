@@ -112,6 +112,11 @@ export default function App() {
 
     if (presetKey === 'kerbin_grannus') {
       // Kerbin -> Eve -> Kerbin -> Jool -> Grannus
+      const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
+      setCurrentSystem(grannusSys);
+      setMainBodyName('Sun');
+      setTimeFormatMode('ksp');
+
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
@@ -170,6 +175,11 @@ export default function App() {
       ];
     } else if (presetKey === 'kej') {
       // Kerbin -> Eve -> Jool
+      const stockSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_ksp') || PRESET_SOLAR_SYSTEMS[0];
+      setCurrentSystem(stockSys);
+      setMainBodyName('Sun');
+      setTimeFormatMode('ksp');
+
       const y10d1 = parseKSPTimeToUT(10, 1, 0, 0, 0, timeFormatMode);
       newInsts = [
         { id: 'inst-0', bodyName: 'Kerbin', x: 150, y: 220, minDate: 0, maxC3: 25 },
@@ -202,6 +212,11 @@ export default function App() {
       ];
     } else if (presetKey === 'grand_tour') {
       // Grand Tour
+      const opmSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'outer_planet_mod') || PRESET_SOLAR_SYSTEMS[1];
+      setCurrentSystem(opmSys);
+      setMainBodyName('Sun');
+      setTimeFormatMode('ksp');
+
       newInsts = [
         { id: 'inst-0', bodyName: 'Kerbin', x: 120, y: 220, minDate: 0 },
         { id: 'inst-1', bodyName: 'Eve', x: 320, y: 140 },

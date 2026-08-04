@@ -678,6 +678,10 @@ export async function runSequenceSearch(
         }
       }
 
+      // Update porkchop matrices with flyby validation filtering
+      pc1.validMatrix = validEntry1;
+      pc2.validMatrix = validEntry2;
+
       // Count total valid transfers in pc1 and pc2
       let count1 = 0;
       for (let r = 0; r < pc1.validMatrix.length; r++) {
