@@ -17,7 +17,7 @@ import { solveLambert } from './lambert';
 import { evaluateFlybyAtDate } from './flyby';
 import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
-import { runSequenceSearch } from './solver';
+import { runSequenceSearch, SAMPLE_PER_PERIOD } from './solver';
 import { InstanceNode, DirectionalLink, FlybyDetail } from '../types';
 
 export interface AutotestCaseResult {
@@ -526,15 +526,17 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
   const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
-  const HALF_YEAR_SEC = 213 * 21600; // 0.5 KSP year (NB_SAMPLES_PER_PERIOD = 2)
+  const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
+  const eveSamplingPeriod = 0; // TODO get eve period / SAMPLE_PER_PERIOD
+  const eveHalfIdx = Math.floor(tEveStep1 / eveSamplingPeriod);
+  const tEveBefore = eveHalfIdx * eveSamplingPeriod;
+  const tEveAfter = (eveHalfIdx + 1) * eveSamplingPeriod;
 
-  const eveHalfIdx = Math.floor(tEveStep1 / HALF_YEAR_SEC);
-  const tEveBefore = eveHalfIdx * HALF_YEAR_SEC;
-  const tEveAfter = (eveHalfIdx + 1) * HALF_YEAR_SEC;
-
-  const joolHalfIdx = Math.floor(tJoolStep1 / HALF_YEAR_SEC);
-  const tJoolBefore = joolHalfIdx * HALF_YEAR_SEC;
-  const tJoolAfter = (joolHalfIdx + 1) * HALF_YEAR_SEC;
+  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
+  const joolSamplingPeriod = 0; // TODO get jool period / SAMPLE_PER_PERIOD
+  const joolHalfIdx = Math.floor(tJoolStep1 / joolSamplingPeriod);
+  const tJoolBefore = joolHalfIdx * joolSamplingPeriod;
+  const tJoolAfter = (joolHalfIdx + 1) * joolSamplingPeriod;
 
   // Define instances with explicit validFlybyDates (0.5 year period sampling around step 1 flybys)
   const instances: InstanceNode[] = [
