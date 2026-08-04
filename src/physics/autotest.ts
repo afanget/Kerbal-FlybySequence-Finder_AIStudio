@@ -526,7 +526,17 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
   const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
-  // Define instances with explicit validFlybyDates (date before step 1, exact step 1, date after step 1)
+  const HALF_YEAR_SEC = 213 * 21600; // 0.5 KSP year (NB_SAMPLES_PER_PERIOD = 2)
+
+  const eveHalfIdx = Math.floor(tEveStep1 / HALF_YEAR_SEC);
+  const tEveBefore = eveHalfIdx * HALF_YEAR_SEC;
+  const tEveAfter = (eveHalfIdx + 1) * HALF_YEAR_SEC;
+
+  const joolHalfIdx = Math.floor(tJoolStep1 / HALF_YEAR_SEC);
+  const tJoolBefore = joolHalfIdx * HALF_YEAR_SEC;
+  const tJoolAfter = (joolHalfIdx + 1) * HALF_YEAR_SEC;
+
+  // Define instances with explicit validFlybyDates (0.5 year period sampling around step 1 flybys)
   const instances: InstanceNode[] = [
     {
       id: 'inst-0',
@@ -543,7 +553,7 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
       bodyName: 'Eve',
       x: 300,
       y: 200,
-      validFlybyDates: [tEveStep1 - 21600, tEveStep1, tEveStep1 + 21600],
+      validFlybyDates: [tEveBefore, tEveAfter],
       minFlybyRadius: 100000,
     },
     {
@@ -551,7 +561,7 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
       bodyName: 'Jool',
       x: 500,
       y: 200,
-      validFlybyDates: [tJoolStep1 - 21600, tJoolStep1, tJoolStep1 + 21600],
+      validFlybyDates: [tJoolBefore, tJoolAfter],
       minFlybyRadius: 300000,
     },
     {
@@ -766,7 +776,7 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     passed: searchResults.sequences ? searchResults.sequences.length > 0 : false,
     timestamp: Date.now(),
     systemName: stockOpmGrannus.name,
-    samplingPerPeriod: 64,
+    samplingPerPeriod: 2,
     porkchopsComputedCount: totalGridPoints,
     validSequencesFound: searchResults.sequences ? searchResults.sequences.length : 0,
     bestSequence: bestSeq,

@@ -575,7 +575,7 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                     <div className="flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-amber-500" />
                       <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-[#E2E8F0]">
-                        Step 2: Sampled Dates Transfer Search (Period / {kejgStep2Result?.samplingPerPeriod || 64})
+                        Step 2: Sampled Dates Transfer Search (Period / {kejgStep2Result?.samplingPerPeriod || 2})
                       </h4>
                     </div>
 
