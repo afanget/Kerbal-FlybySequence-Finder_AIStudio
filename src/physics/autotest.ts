@@ -18,7 +18,7 @@ import { solveLambert } from './lambert';
 import { evaluateFlybyAtDate } from './flyby';
 import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
-import { runSequenceSearch, SAMPLE_PER_PERIOD } from './solver';
+import { runSequenceSearch } from './solver';
 import { InstanceNode, DirectionalLink, FlybyDetail } from '../types';
 
 export interface AutotestCaseResult {
@@ -519,22 +519,23 @@ export function runKEJGStep1(): KEJGStep1Result {
  * Step 2: Sampled dates search for Kerbin -> Eve -> Jool -> Grannus sequence
  */
 export async function runKEJGStep2(): Promise<KEJGStep2Result> {
-  const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
+  const SAMPLE_PER_PERIOD = 16;
+  const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus');
   const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
 
   const t1 = parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
-  const tEveStep1 = parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
+  const tEveStep1 = parseKSPTimeToUT(6, 312, 0, 0, 0, 'ksp');
   const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
   const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
   const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
-  const eveSamplingPeriod = eve ? getOrbitalPeriod(eve, sun) / SAMPLE_PER_PERIOD : 31536000 / SAMPLE_PER_PERIOD;
+  const eveSamplingPeriod = getOrbitalPeriod(eve, sun) / SAMPLE_PER_PERIOD;
   const eveHalfIdx = Math.floor(tEveStep1 / eveSamplingPeriod);
   const tEveBefore = eveHalfIdx * eveSamplingPeriod;
   const tEveAfter = (eveHalfIdx + 1) * eveSamplingPeriod;
 
   const jool = stockOpmGrannus.bodies.find(b => b.name === 'Jool');
-  const joolSamplingPeriod = jool ? getOrbitalPeriod(jool, sun) / SAMPLE_PER_PERIOD : 31536000 / SAMPLE_PER_PERIOD;
+  const joolSamplingPeriod = getOrbitalPeriod(jool, sun) / SAMPLE_PER_PERIOD;
   const joolHalfIdx = Math.floor(tJoolStep1 / joolSamplingPeriod);
   const tJoolBefore = joolHalfIdx * joolSamplingPeriod;
   const tJoolAfter = (joolHalfIdx + 1) * joolSamplingPeriod;
