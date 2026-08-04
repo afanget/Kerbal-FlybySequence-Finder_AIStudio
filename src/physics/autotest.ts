@@ -579,9 +579,9 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
 
   // Define links
   const links: DirectionalLink[] = [
-    { id: 'link-0-1', sourceInstanceId: 'inst-0', targetInstanceId: 'inst-1', minFlightDuration: 21600 * 30, maxFlightDuration: 21600 * 150 },
-    { id: 'link-1-2', sourceInstanceId: 'inst-1', targetInstanceId: 'inst-2', minFlightDuration: 21600 * 200, maxFlightDuration: 21600 * 2000 },
-    { id: 'link-2-3', sourceInstanceId: 'inst-2', targetInstanceId: 'inst-3', minFlightDuration: 21600 * 1000, maxFlightDuration: 21600 * 15000 },
+    { id: 'link-0-1', sourceInstanceId: 'inst-0', targetInstanceId: 'inst-1' },
+    { id: 'link-1-2', sourceInstanceId: 'inst-1', targetInstanceId: 'inst-2' },
+    { id: 'link-2-3', sourceInstanceId: 'inst-2', targetInstanceId: 'inst-3' },
   ];
 
   const searchResults = await runSequenceSearch(instances, links, stockOpmGrannus.bodies, sun, () => {}, () => false);
