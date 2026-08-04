@@ -83,12 +83,14 @@ export function evaluateFlybyAtDate(
 
   // Determine periapsis radius rp
   let rp = rpMin;
-  const isVInfMatched = Math.abs(vInMag - vOutMag) < 1.0;
+  const deltaC3 = Math.abs(vInMag * vInMag - vOutMag * vOutMag); // m²/s²
+  const isVInfMatched = deltaC3 < 100.0 || Math.abs(vInMag - vOutMag) < 1.0;
 
-  if (isVInfMatched && deflectionRad <= maxDeflection1Rad + 1e-4) {
+  if (isVInfMatched && deflectionRad <= maxDeflectionTotalRad + 1e-4) {
     const sinHalf = Math.sin(deflectionRad / 2);
+    const avgVInfSq = (vInMag * vInMag + vOutMag * vOutMag) / 2;
     if (sinHalf > 1e-6) {
-      rp = (mu / (vInMag * vInMag)) * (1 / sinHalf - 1);
+      rp = (mu / avgVInfSq) * (1 / sinHalf - 1);
     } else {
       rp = rpMin * 100;
     }
@@ -117,9 +119,14 @@ export function evaluateFlybyAtDate(
     poweredDv = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
   }
 
+  // If vInf is matched within 100 m²/s² and body can deflect enough, no powered maneuver is required
+  if (isVInfMatched && deflectionRad <= maxDeflectionTotalRad + 1e-4) {
+    poweredDv = 0;
+  }
+
   const isUnpowered = isVInfMatched && poweredDv < 0.1 && flybyMargin >= -1e-3;
 
-  const { stochasticDv } = calculateStochasticDvCore(
+  const { stochasticDv: baseStochasticDv } = calculateStochasticDvCore(
     body,
     periapsisAlt,
     vInMag,
@@ -127,6 +134,8 @@ export function evaluateFlybyAtDate(
     stochasticAltError,
     stochasticVelError
   );
+
+  const stochasticDv = baseStochasticDv + Math.sqrt(deltaC3);
 
   return {
     isValid: flybyMargin >= -1e-3,
@@ -347,38 +356,62 @@ export function matchUnpoweredFlyby(
     };
   }
   
-  // 3. Perform linear regression on v_infinity magnitudes to find crossing date (tMatch) and matched magnitude (vMatch).
-  const dt = t2 - t1;
+  const deltaC3_1 = Math.abs(vIn1 * vIn1 - vOut1 * vOut1);
+
+  // If abs(C3arr - C3dep) < 100 m²/s², vinf are considered matching directly at t1
+  // without needing to solve linear regression across [t1, t2]
   let tMatch = t1;
-  let vMatch = vIn1;
+  let vMatch = (vIn1 + vOut1) / 2;
+  let vecVInfInMatch = vecVInfIn1;
+  let vecVInfOutMatch = vecVInfOut1;
+  let deltaC3ForStochastic = deltaC3_1;
 
-  if (dt > 0) {
-    const mIn = (vIn2 - vIn1) / dt;
-    const mOut = (vOut2 - vOut1) / dt;
-    const denom = mIn - mOut;
+  if (deltaC3_1 >= 100.0) {
+    // Perform linear regression on v_infinity magnitudes to find crossing date (tMatch)
+    const dt = t2 - t1;
+    if (dt > 0) {
+      const mIn = (vIn2 - vIn1) / dt;
+      const mOut = (vOut2 - vOut1) / dt;
+      const denom = mIn - mOut;
 
-    if (Math.abs(denom) < 1e-12) {
-      if (Math.abs(vIn1 - vOut1) < 150.0) {
-        tMatch = t1;
-        vMatch = (vIn1 + vOut1) / 2;
+      if (Math.abs(denom) < 1e-12) {
+        if (Math.abs(vIn1 - vOut1) < 150.0) {
+          tMatch = t1;
+          vMatch = (vIn1 + vOut1) / 2;
+        } else {
+          return {
+            isValid: false,
+            periapsisAlt: 0,
+            flybyMargin: -minAlt,
+            deflectionAngle: 0,
+            maxDeflectionAngle: 0,
+            stochasticDv: 0,
+            vInfInMag: vIn1,
+            vInfOutMag: vOut1
+          };
+        }
       } else {
-        return {
-          isValid: false,
-          periapsisAlt: 0,
-          flybyMargin: -minAlt,
-          deflectionAngle: 0,
-          maxDeflectionAngle: 0,
-          stochasticDv: 0,
-          vInfInMag: vIn1,
-          vInfOutMag: vOut1
-        };
+        const deltaT = (vOut1 - vIn1) / denom;
+        const alpha = deltaT / dt;
+
+        if (alpha < 0 || alpha > 1) {
+          return {
+            isValid: false,
+            periapsisAlt: 0,
+            flybyMargin: -minAlt,
+            deflectionAngle: 0,
+            maxDeflectionAngle: 0,
+            stochasticDv: 0,
+            vInfInMag: vIn1,
+            vInfOutMag: vOut1
+          };
+        } else {
+          tMatch = t1 + deltaT;
+          vMatch = vIn1 + mIn * deltaT;
+        }
       }
     } else {
-      const deltaT = (vOut1 - vIn1) / denom;
-      const alpha = deltaT / dt;
-
-      // Ensure the linear regressions cross within range of [t1, t2]
-      if ( alpha < 0 || alpha > 1) {
+      if (Math.abs(vIn1 - vOut1) > 150.0) {
         return {
           isValid: false,
           periapsisAlt: 0,
@@ -389,41 +422,27 @@ export function matchUnpoweredFlyby(
           vInfInMag: vIn1,
           vInfOutMag: vOut1
         };
-      } else {
-        tMatch = t1 + deltaT;
-        vMatch = vIn1 + mIn * deltaT;
       }
+      vMatch = (vIn1 + vOut1) / 2;
     }
-  } else {
-    if (Math.abs(vIn1 - vOut1) > 150.0) {
-      return {
-        isValid: false,
-        periapsisAlt: 0,
-        flybyMargin: -minAlt,
-        deflectionAngle: 0,
-        maxDeflectionAngle: 0,
-        stochasticDv: 0,
-        vInfInMag: vIn1,
-        vInfOutMag: vOut1
-      };
-    }
-    vMatch = (vIn1 + vOut1) / 2;
+
+    const dtReg = t2 - t1;
+    const frac = (dtReg > 0) ? (tMatch - t1) / dtReg : 0;
+
+    vecVInfInMatch = {
+      x: vecVInfIn1.x + frac * (vecInfIn2.x - vecVInfIn1.x),
+      y: vecVInfIn1.y + frac * (vecInfIn2.y - vecVInfIn1.y),
+      z: vecVInfIn1.z + frac * (vecInfIn2.z - vecVInfIn1.z)
+    };
+
+    vecVInfOutMatch = {
+      x: vecVInfOut1.x + frac * (vecInfOut2.x - vecVInfOut1.x),
+      y: vecVInfOut1.y + frac * (vecInfOut2.y - vecVInfOut1.y),
+      z: vecVInfOut1.z + frac * (vecInfOut2.z - vecVInfOut1.z)
+    };
+
+    deltaC3ForStochastic = Math.abs(vecMag(vecVInfInMatch) ** 2 - vecMag(vecVInfOutMatch) ** 2);
   }
-
-  // 4. Compute interpolated 3D v_infinity vectors at tMatch date and calculate deflection angle.
-  const frac = (dt > 0) ? (tMatch - t1) / dt : 0;
-
-  const vecVInfInMatch: Vector3D = {
-    x: vecVInfIn1.x + frac * (vecInfIn2.x - vecVInfIn1.x),
-    y: vecVInfIn1.y + frac * (vecInfIn2.y - vecVInfIn1.y),
-    z: vecVInfIn1.z + frac * (vecInfIn2.z - vecVInfIn1.z)
-  };
-
-  const vecVInfOutMatch: Vector3D = {
-    x: vecVInfOut1.x + frac * (vecInfOut2.x - vecVInfOut1.x),
-    y: vecVInfOut1.y + frac * (vecInfOut2.y - vecVInfOut1.y),
-    z: vecVInfOut1.z + frac * (vecInfOut2.z - vecVInfOut1.z)
-  };
 
   const vInMatchMag = vecMag(vecVInfInMatch);
   const vOutMatchMag = vecMag(vecVInfOutMatch);
@@ -434,7 +453,7 @@ export function matchUnpoweredFlyby(
   const deflectionAngleRad = Math.acos(cosDelta);
   const deflectionAngleDeg = (deflectionAngleRad * 180) / Math.PI;
 
-  // 5. Check maximum deflection angle constraint at minimum periapsis altitude.
+  // Check maximum deflection angle constraint at minimum periapsis altitude.
   const eMin = 1 + (rpMin * vMatch * vMatch) / Math.max(1, mu);
   const maxDeflectionRad = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / eMin)));
   const maxDeflectionDeg = (maxDeflectionRad * 180) / Math.PI;
@@ -452,7 +471,7 @@ export function matchUnpoweredFlyby(
     };
   }
 
-  // 6. Calculate required periapsis altitude and check against minimum altitude limits.
+  // Calculate required periapsis altitude and check against minimum altitude limits.
   const sinHalfDelta = Math.sin(deflectionAngleRad / 2);
   let rpRequired = rpMin;
   if (sinHalfDelta > 1e-6) {
@@ -477,8 +496,8 @@ export function matchUnpoweredFlyby(
     };
   }
 
-  // 7. Calculate stochastic Delta-V for the flyby and return feasibility result.
-  const { stochasticDv } = calculateStochasticDvCore(
+  // Calculate stochastic Delta-V for the flyby, increased by sqrt(abs(delta-C3))
+  const { stochasticDv: baseStochasticDv } = calculateStochasticDvCore(
     body,
     periapsisAlt,
     vMatch,
@@ -486,6 +505,7 @@ export function matchUnpoweredFlyby(
     stochasticAltError,
     stochasticVelError
   );
+  const stochasticDv = baseStochasticDv + Math.sqrt(deltaC3ForStochastic);
 
   return {
     isValid: true,
