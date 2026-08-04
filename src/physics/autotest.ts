@@ -383,10 +383,10 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
 
   const muSun = getGravitationalParameter(sun);
 
-  const t1 = customUTs?.t1 ?? parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
-  const t2 = customUTs?.t2 ?? parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
-  const t3 = customUTs?.t3 ?? parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
-  const t4 = customUTs?.t4 ?? parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
+  const t1 = customUTs?.t1 ?? parseKSPTimeToUT( 6, 150, 0, 0, 0, 'ksp');
+  const t2 = customUTs?.t2 ?? parseKSPTimeToUT(10, 142, 0, 0, 0, 'ksp');
+  const t3 = customUTs?.t3 ?? parseKSPTimeToUT(11, 327, 0, 0, 0, 'ksp');
+  const t4 = customUTs?.t4 ?? parseKSPTimeToUT(41,  59, 0, 0, 0, 'ksp');
 
   // Leg 1: Kerbin -> Eve
   const dt1 = t2 - t1;
@@ -517,7 +517,7 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
  * Step 2: Sampled dates search for Kerbin -> Eve -> Jool -> Grannus sequence
  */
 export async function runKEJGStep2(customUTs?: { t1?: number; t2?: number; t3?: number; t4?: number }): Promise<KEJGStep2Result> {
-  const SAMPLE_PER_PERIOD = 2;
+  const SAMPLE_PER_PERIOD = 64;
   const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
   const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
   const kerbin = stockOpmGrannus.bodies.find(b => b.name === 'Kerbin')!;
@@ -526,10 +526,10 @@ export async function runKEJGStep2(customUTs?: { t1?: number; t2?: number; t3?: 
   const grannus = stockOpmGrannus.bodies.find(b => b.name === 'Grannus')!;
   const muSun = getGravitationalParameter(sun);
 
-  const t1 = customUTs?.t1 ?? parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
-  const tEveStep1 = customUTs?.t2 ?? parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
-  const tJoolStep1 = customUTs?.t3 ?? parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
-  const t4 = customUTs?.t4 ?? parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
+  const t1 = customUTs?.t1 ?? parseKSPTimeToUT(6, 150, 0, 0, 0, 'ksp');
+  const tEveStep1 = customUTs?.t2 ?? parseKSPTimeToUT(10, 142, 0, 0, 0, 'ksp');
+  const tJoolStep1 = customUTs?.t3 ?? parseKSPTimeToUT(11, 327, 0, 0, 0, 'ksp');
+  const t4 = customUTs?.t4 ?? parseKSPTimeToUT(41, 59, 0, 0, 0, 'ksp');
 
   // Compute sampling boundaries (0.5 year sampling period around step 1 flyby dates)
   const eveSamplingPeriod = getOrbitalPeriod(eve, sun) / SAMPLE_PER_PERIOD;

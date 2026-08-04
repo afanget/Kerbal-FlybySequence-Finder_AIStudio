@@ -46,10 +46,10 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
 
   // KEJG Step 1 flyby dates state
   const [step1UTs, setStep1UTs] = useState<{ t1: number; t2: number; t3: number; t4: number }>(() => ({
-    t1: parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp'),
-    t2: parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp'),
-    t3: parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp'),
-    t4: parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp'),
+    t1: parseKSPTimeToUT( 6, 150, 0, 0, 0, 'ksp'),
+    t2: parseKSPTimeToUT(10, 142, 0, 0, 0, 'ksp'),
+    t3: parseKSPTimeToUT(11, 327, 0, 0, 0, 'ksp'),
+    t4: parseKSPTimeToUT(41,  59, 0, 0, 0, 'ksp'),
   }));
 
   // KEJG Step results

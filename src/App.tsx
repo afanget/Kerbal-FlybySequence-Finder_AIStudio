@@ -120,9 +120,9 @@ export default function App() {
           bodyName: 'Kerbin',
           x: 120,
           y: 320,
-          minDate: (5-1) * kspYearSec,
-          maxDate: (15-1) * kspYearSec,
-          maxC3: 25,
+          minDate: (6-1) * kspYearSec,
+          maxDate: (7-1) * kspYearSec,
+          maxC3: 100,
         },
         {
           id: 'inst-1',
@@ -130,13 +130,6 @@ export default function App() {
           x: 320,
           y: 120,
           minFlybyRadius: 100000,
-        },
-        {
-          id: 'inst-2',
-          bodyName: 'Kerbin',
-          x: 520,
-          y: 320,
-          minFlybyRadius: 80000,
         },
         {
           id: 'inst-3',
@@ -150,9 +143,9 @@ export default function App() {
           bodyName: 'Grannus',
           x: 920,
           y: 320,
-          minDate: (38-1) * kspYearSec,
+          minDate: (41-1) * kspYearSec,
           maxDate: (42-1) * kspYearSec,
-          maxC3: 16
+          maxC3: 100
         },
       ];
 
@@ -163,13 +156,8 @@ export default function App() {
           targetInstanceId: 'inst-1',
         },
         {
-          id: 'link-1-2',
+          id: 'link-1-3',
           sourceInstanceId: 'inst-1',
-          targetInstanceId: 'inst-2',
-        },
-        {
-          id: 'link-2-3',
-          sourceInstanceId: 'inst-2',
           targetInstanceId: 'inst-3',
         },
         {
