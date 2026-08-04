@@ -267,7 +267,9 @@ export interface KEJGStep1Result {
 export interface KEJGSampledFlybyDebug {
   instanceId: string;
   bodyName: string;
-  sampledDates: { ut: number; formatted: string }[];
+  step1FlybyDateUt: number;
+  step1FlybyDateFormatted: string;
+  sampledDates: { ut: number; formatted: string; label?: string }[];
   sampledDatesCount: number;
   minDateFormatted: string;
   maxDateFormatted: string;
@@ -285,6 +287,62 @@ export interface KEJGSampledFlybyDebug {
   statusLabel: string;
   periapsisAltKm?: number;
   flybyMarginKm?: number;
+}
+
+function getDatesAroundStep1(
+  sortedDates: number[],
+  step1Ut: number,
+  matchedUt?: number
+): { ut: number; formatted: string; label: string }[] {
+  if (sortedDates.length === 0) return [];
+
+  const selectedMap = new Map<number, string>();
+
+  // Find date immediately before (or equal to) step1Ut
+  let before: number | undefined;
+  for (let i = 0; i < sortedDates.length; i++) {
+    if (sortedDates[i] <= step1Ut) {
+      before = sortedDates[i];
+    } else {
+      break;
+    }
+  }
+
+  // Find date immediately after (or equal to) step1Ut
+  let after: number | undefined;
+  for (let i = 0; i < sortedDates.length; i++) {
+    if (sortedDates[i] >= step1Ut) {
+      after = sortedDates[i];
+      break;
+    }
+  }
+
+  if (before !== undefined) {
+    const label = before === step1Ut ? 'Exact Step 1 Date' : 'Just Before Step 1';
+    selectedMap.set(before, label);
+  }
+
+  if (after !== undefined) {
+    const label = after === step1Ut ? 'Exact Step 1 Date' : 'Just After Step 1';
+    selectedMap.set(after, label);
+  }
+
+  if (matchedUt !== undefined && sortedDates.includes(matchedUt)) {
+    const existing = selectedMap.get(matchedUt);
+    if (existing) {
+      selectedMap.set(matchedUt, `${existing} / Matched`);
+    } else {
+      selectedMap.set(matchedUt, 'Step 2 Matched');
+    }
+  }
+
+  return Array.from(selectedMap.entries())
+    .map(([ut, label]) => ({
+      ut,
+      formatted: formatShortUT(ut, 'ksp'),
+      label,
+    }))
+    .sort((a, b) => a.ut - b.ut);
 }
 
 export interface KEJGStep2Result {
@@ -521,6 +579,9 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const pc12 = searchResults.porkchops['link-1-2'];
   const pc23 = searchResults.porkchops['link-2-3'];
 
+  const tEveStep1 = parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
+  const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
+
   // 1. Eve debug info
   const eveBody = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
   if (eveBody && pc01 && pc12) {
@@ -528,7 +589,8 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     pc01.arrDates.forEach(d => eveDateSet.add(d));
     pc12.depDates.forEach(d => eveDateSet.add(d));
     const sortedEveDates = Array.from(eveDateSet).sort((a, b) => a - b);
-    const sampledDatesEve = sortedEveDates.map(ut => ({ ut, formatted: formatShortUT(ut, 'ksp') }));
+    const matchedEve = bestSeqFlybys.find(f => f.bodyName === 'Eve');
+    const sampledDatesEve = getDatesAroundStep1(sortedEveDates, tEveStep1, matchedEve?.flybyDate);
 
     let inMin = Infinity, inMax = -Infinity;
     if (pc01.vTransArrMatrix) {
@@ -560,7 +622,6 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
       }
     }
 
-    const matchedEve = bestSeqFlybys.find(f => f.bodyName === 'Eve');
     const status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH' = matchedEve
       ? (matchedEve.deflectionAngle <= matchedEve.maxDeflectionAngle && matchedEve.flybyMargin >= 0
           ? 'VALID_UNPOWERED' : 'POWERED_REQUIRED')
@@ -569,10 +630,12 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     flybyDebugList.push({
       instanceId: 'inst-1',
       bodyName: 'Eve',
+      step1FlybyDateUt: tEveStep1,
+      step1FlybyDateFormatted: formatShortUT(tEveStep1, 'ksp'),
       sampledDates: sampledDatesEve,
-      sampledDatesCount: sampledDatesEve.length,
-      minDateFormatted: sampledDatesEve.length > 0 ? sampledDatesEve[0].formatted : 'N/A',
-      maxDateFormatted: sampledDatesEve.length > 0 ? sampledDatesEve[sampledDatesEve.length - 1].formatted : 'N/A',
+      sampledDatesCount: sortedEveDates.length,
+      minDateFormatted: sortedEveDates.length > 0 ? formatShortUT(sortedEveDates[0], 'ksp') : 'N/A',
+      maxDateFormatted: sortedEveDates.length > 0 ? formatShortUT(sortedEveDates[sortedEveDates.length - 1], 'ksp') : 'N/A',
       inboundVInfMinMs: isFinite(inMin) ? inMin : 0,
       inboundVInfMaxMs: isFinite(inMax) ? inMax : 0,
       outboundVInfMinMs: isFinite(outMin) ? outMin : 0,
@@ -597,7 +660,8 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     pc12.arrDates.forEach(d => joolDateSet.add(d));
     pc23.depDates.forEach(d => joolDateSet.add(d));
     const sortedJoolDates = Array.from(joolDateSet).sort((a, b) => a - b);
-    const sampledDatesJool = sortedJoolDates.map(ut => ({ ut, formatted: formatShortUT(ut, 'ksp') }));
+    const matchedJool = bestSeqFlybys.find(f => f.bodyName === 'Jool');
+    const sampledDatesJool = getDatesAroundStep1(sortedJoolDates, tJoolStep1, matchedJool?.flybyDate);
 
     let inMin = Infinity, inMax = -Infinity;
     if (pc12.vTransArrMatrix) {
@@ -629,7 +693,6 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
       }
     }
 
-    const matchedJool = bestSeqFlybys.find(f => f.bodyName === 'Jool');
     const status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH' = matchedJool
       ? (matchedJool.deflectionAngle <= matchedJool.maxDeflectionAngle && matchedJool.flybyMargin >= 0
           ? 'VALID_UNPOWERED' : 'POWERED_REQUIRED')
@@ -638,10 +701,12 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     flybyDebugList.push({
       instanceId: 'inst-2',
       bodyName: 'Jool',
+      step1FlybyDateUt: tJoolStep1,
+      step1FlybyDateFormatted: formatShortUT(tJoolStep1, 'ksp'),
       sampledDates: sampledDatesJool,
-      sampledDatesCount: sampledDatesJool.length,
-      minDateFormatted: sampledDatesJool.length > 0 ? sampledDatesJool[0].formatted : 'N/A',
-      maxDateFormatted: sampledDatesJool.length > 0 ? sampledDatesJool[sampledDatesJool.length - 1].formatted : 'N/A',
+      sampledDatesCount: sortedJoolDates.length,
+      minDateFormatted: sortedJoolDates.length > 0 ? formatShortUT(sortedJoolDates[0], 'ksp') : 'N/A',
+      maxDateFormatted: sortedJoolDates.length > 0 ? formatShortUT(sortedJoolDates[sortedJoolDates.length - 1], 'ksp') : 'N/A',
       inboundVInfMinMs: isFinite(inMin) ? inMin : 0,
       inboundVInfMaxMs: isFinite(inMax) ? inMax : 0,
       outboundVInfMinMs: isFinite(outMin) ? outMin : 0,

@@ -668,30 +668,37 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                                   </span>
                                 </div>
 
-                                {/* 1. Sampled Dates around Flyby */}
+                                {/* 1. Sampled Dates around Step 1 Flyby */}
                                 <div className="bg-[#1F2024] p-3 rounded-lg border border-[#2D2E33]/80 flex flex-col gap-2">
                                   <div className="flex items-center justify-between text-[11px] text-[#94A3B8]">
                                     <span className="font-bold text-[#E2E8F0] flex items-center gap-1.5">
                                       <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                                      1. Sampled Dates Around {fbDebug.bodyName} Flyby:
+                                      1. Sampled Dates Around Step 1 {fbDebug.bodyName} Flyby ({fbDebug.step1FlybyDateFormatted}):
                                     </span>
                                     <span>
-                                      {fbDebug.sampledDatesCount} dates ({fbDebug.minDateFormatted} ➔ {fbDebug.maxDateFormatted})
+                                      {fbDebug.sampledDates.length} shown of {fbDebug.sampledDatesCount} total grid dates
                                     </span>
                                   </div>
-                                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-2 bg-[#1A1B1E] rounded border border-[#2D2E33]/60">
+                                  <div className="flex flex-wrap gap-2 p-2.5 bg-[#1A1B1E] rounded-lg border border-[#2D2E33]/60">
                                     {fbDebug.sampledDates.map((d, dIdx) => (
-                                      <span
+                                      <div
                                         key={dIdx}
-                                        className={`text-[10px] px-2 py-0.5 rounded border font-mono ${
+                                        className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border font-mono ${
                                           fbDebug.matchedFlybyDateFormatted === d.formatted
                                             ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 font-bold ring-1 ring-amber-500/50'
-                                            : 'bg-[#25262B] text-[#94A3B8] border-[#2D2E33]'
+                                            : 'bg-[#25262B] text-[#E2E8F0] border-[#2D2E33]'
                                         }`}
-                                        title={`UT: ${d.ut.toFixed(0)} seconds`}
+                                        title={`UT: ${d.ut.toFixed(0)} s`}
                                       >
-                                        {d.formatted}
-                                      </span>
+                                        <span className="font-bold">{d.formatted}</span>
+                                        {d.label && (
+                                          <span className={`text-[9px] px-1.5 py-0.2 rounded ${
+                                            d.label.includes('Step 1') ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                          }`}>
+                                            {d.label}
+                                          </span>
+                                        )}
+                                      </div>
                                     ))}
                                   </div>
                                 </div>
