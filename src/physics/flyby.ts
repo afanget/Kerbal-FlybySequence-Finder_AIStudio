@@ -19,6 +19,129 @@ export interface FlybyFeasibility {
   vInfOutMag: number; // m/s
 }
 
+export interface FlybyEvaluationResult {
+  isValid: boolean;
+  isUnpowered: boolean;
+  vInfInMag: number;
+  vInfOutMag: number;
+  deflectionAngleDeg: number;
+  maxDeflectionAngleDeg: number;
+  periapsisAlt: number; // meters
+  flybyMargin: number;  // meters
+  poweredDv: number;    // m/s required at periapsis if powered (0 if unpowered)
+  stochasticDv: number; // m/s
+}
+
+/**
+ * Unified evaluation for both unpowered and powered flybys at a specific body and date.
+ */
+export function evaluateFlybyAtDate(
+  body: CelestialBody,
+  vInfIn: Vector3D,
+  vInfOut: Vector3D,
+  date: number,
+  minFlybyAltOverride?: number,
+  stochasticAltError?: number,
+  stochasticVelError?: number
+): FlybyEvaluationResult {
+  const mu = getGravitationalParameter(body);
+  const R = body.radius || 100000;
+  const minAlt = getMinFlybyAlt(body, minFlybyAltOverride);
+  const rpMin = R + minAlt;
+
+  const vInMag = vecMag(vInfIn);
+  const vOutMag = vecMag(vInfOut);
+
+  if (vInMag <= 0 || vOutMag <= 0) {
+    return {
+      isValid: false,
+      isUnpowered: false,
+      vInfInMag: vInMag,
+      vInfOutMag: vOutMag,
+      deflectionAngleDeg: 0,
+      maxDeflectionAngleDeg: 0,
+      periapsisAlt: 0,
+      flybyMargin: -minAlt,
+      poweredDv: 0,
+      stochasticDv: 0,
+    };
+  }
+
+  // Deflection angle between inbound and outbound v_infinity vectors
+  const cosDelta = Math.max(-1, Math.min(1, vecDot(vInfIn, vInfOut) / (vInMag * vOutMag)));
+  const deflectionRad = Math.acos(cosDelta);
+  const deflectionAngleDeg = (deflectionRad * 180) / Math.PI;
+
+  // Hyperbolic eccentricities at minimum periapsis rpMin
+  const e1Min = 1 + (rpMin * vInMag * vInMag) / Math.max(1, mu);
+  const e2Min = 1 + (rpMin * vOutMag * vOutMag) / Math.max(1, mu);
+
+  const maxDeflection1Rad = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / e1Min)));
+  const maxDeflection2Rad = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / e2Min)));
+  const maxDeflectionTotalRad = (maxDeflection1Rad + maxDeflection2Rad) / 2;
+  const maxDeflectionAngleDeg = (maxDeflectionTotalRad * 180) / Math.PI;
+
+  // Determine periapsis radius rp
+  let rp = rpMin;
+  const isVInfMatched = Math.abs(vInMag - vOutMag) < 1.0;
+
+  if (isVInfMatched && deflectionRad <= maxDeflection1Rad + 1e-4) {
+    const sinHalf = Math.sin(deflectionRad / 2);
+    if (sinHalf > 1e-6) {
+      rp = (mu / (vInMag * vInMag)) * (1 / sinHalf - 1);
+    } else {
+      rp = rpMin * 100;
+    }
+  }
+
+  rp = Math.max(rpMin, rp);
+  const periapsisAlt = rp - R;
+  const flybyMargin = periapsisAlt - minAlt;
+
+  // Periapsis velocities on inbound and outbound hyperbolas
+  const vpIn = Math.sqrt(vInMag * vInMag + (2 * mu) / rp);
+  const vpOut = Math.sqrt(vOutMag * vOutMag + (2 * mu) / rp);
+
+  // Deflection provided by the orbit geometry at periapsis rp
+  const e1 = 1 + (rp * vInMag * vInMag) / Math.max(1, mu);
+  const e2 = 1 + (rp * vOutMag * vOutMag) / Math.max(1, mu);
+  const delta1 = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / e1)));
+  const delta2 = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / e2)));
+  const deltaTotalPrv = (delta1 + delta2) / 2;
+
+  const excessAngle = Math.max(0, deflectionRad - deltaTotalPrv);
+
+  // Powered delta-V required at periapsis
+  let poweredDv = Math.abs(vpOut - vpIn);
+  if (excessAngle > 1e-5) {
+    poweredDv = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
+  }
+
+  const isUnpowered = isVInfMatched && poweredDv < 0.1 && flybyMargin >= -1e-3;
+
+  const { stochasticDv } = calculateStochasticDvCore(
+    body,
+    periapsisAlt,
+    vInMag,
+    vOutMag,
+    stochasticAltError,
+    stochasticVelError
+  );
+
+  return {
+    isValid: flybyMargin >= -1e-3,
+    isUnpowered,
+    vInfInMag: vInMag,
+    vInfOutMag: vOutMag,
+    deflectionAngleDeg,
+    maxDeflectionAngleDeg,
+    periapsisAlt,
+    flybyMargin,
+    poweredDv,
+    stochasticDv,
+  };
+}
+
 export const DEFAULT_STOCHASTIC_ALT_ERROR = 10000; // 10 km in meters
 export const DEFAULT_STOCHASTIC_VEL_ERROR = 1.0;   // 1 m/s
 
