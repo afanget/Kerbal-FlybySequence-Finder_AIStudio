@@ -164,7 +164,7 @@ export default function App() {
           id: 'link-3-4',
           sourceInstanceId: 'inst-3',
           targetInstanceId: 'inst-4',
-          minFlightDuration: daysToSeconds(11500, 'ksp'),
+          minFlightDuration: daysToSeconds(9500, 'ksp'),
           maxFlightDuration: daysToSeconds(250000, 'ksp'),
         },
       ];
