@@ -676,7 +676,7 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                                       1. Sampled Dates Around Step 1 {fbDebug.bodyName} Flyby ({fbDebug.step1FlybyDateFormatted}):
                                     </span>
                                     <span>
-                                      {fbDebug.sampledDates.length} shown of {fbDebug.sampledDatesCount} total grid dates
+                                      {fbDebug.sampledDates.length} Dates Evaluated (Before, Step 1, After)
                                     </span>
                                   </div>
                                   <div className="flex flex-wrap gap-2 p-2.5 bg-[#1A1B1E] rounded-lg border border-[#2D2E33]/60">

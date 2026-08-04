@@ -137,22 +137,27 @@ export function generateLinkEndDates(
     const srcBody = src ? bodyMap.get(src.bodyName) : undefined;
     const tgtBody = tgt ? bodyMap.get(tgt.bodyName) : undefined;
 
-    const srcMinDate = src?.minDate ?? src?.computedMinDate ?? 0;
-    const srcMaxDate = src?.maxDate ?? src?.computedMaxDate ?? srcMinDate + 31536000;
+    let departureSampleCount: number;
+    if (src?.validFlybyDates && src.validFlybyDates.length > 0) {
+      departureSampleCount = src.validFlybyDates.length;
+    } else {
+      const srcMinDate = src?.minDate ?? src?.computedMinDate ?? 0;
+      const srcMaxDate = src?.maxDate ?? src?.computedMaxDate ?? srcMinDate + 31536000;
+      const srcPeriod = srcBody ? getOrbitalPeriod(srcBody, mainBody) : 31536000;
+      const srcRawN = Math.ceil(((srcMaxDate - srcMinDate) / Math.max(1, srcPeriod)) * SAMPLE_PER_PERIOD);
+      departureSampleCount = Math.min(MAX_SAMPLE_COUNT, Math.max(MIN_SAMPLE_COUNT, srcRawN));
+    }
 
-    const tgtMinDate = tgt?.minDate ?? tgt?.computedMinDate ?? 0;
-    const tgtMaxDate = tgt?.maxDate ?? tgt?.computedMaxDate ?? tgtMinDate + 31536000;
-
-    const srcPeriod = srcBody ? getOrbitalPeriod(srcBody, mainBody) : 31536000;
-    const tgtPeriod = tgtBody ? getOrbitalPeriod(tgtBody, mainBody) : 31536000;
-
-    // Minimum samples calculation formula as specified by user
-    const srcRawN = Math.ceil(((srcMaxDate - srcMinDate) / Math.max(1, srcPeriod)) * SAMPLE_PER_PERIOD);
-    const tgtRawN = Math.ceil(((tgtMaxDate - tgtMinDate) / Math.max(1, tgtPeriod)) * SAMPLE_PER_PERIOD);
-
-    // Cap between MIN and MAX_SAMPLE_COUNT for responsive browser execution speed
-    const departureSampleCount = Math.min(MAX_SAMPLE_COUNT, Math.max(MIN_SAMPLE_COUNT, srcRawN));
-    const arrivalSampleCount = Math.min(MAX_SAMPLE_COUNT, Math.max(MIN_SAMPLE_COUNT, tgtRawN));
+    let arrivalSampleCount: number;
+    if (tgt?.validFlybyDates && tgt.validFlybyDates.length > 0) {
+      arrivalSampleCount = tgt.validFlybyDates.length;
+    } else {
+      const tgtMinDate = tgt?.minDate ?? tgt?.computedMinDate ?? 0;
+      const tgtMaxDate = tgt?.maxDate ?? tgt?.computedMaxDate ?? tgtMinDate + 31536000;
+      const tgtPeriod = tgtBody ? getOrbitalPeriod(tgtBody, mainBody) : 31536000;
+      const tgtRawN = Math.ceil(((tgtMaxDate - tgtMinDate) / Math.max(1, tgtPeriod)) * SAMPLE_PER_PERIOD);
+      arrivalSampleCount = Math.min(MAX_SAMPLE_COUNT, Math.max(MIN_SAMPLE_COUNT, tgtRawN));
+    }
 
     return {
       ...link,
@@ -170,25 +175,32 @@ export function countPossibleTransfers(
   srcInstance: InstanceNode,
   tgtInstance: InstanceNode
 ): { totalPossible: number; srcDates: number[]; tgtDates: number[] } {
-  const srcMin = srcInstance.minDate ?? srcInstance.computedMinDate ?? 0;
-  const srcMax = srcInstance.maxDate ?? srcInstance.computedMaxDate ?? srcMin + 31536000;
-
-  const tgtMin = tgtInstance.minDate ?? tgtInstance.computedMinDate ?? 0;
-  const tgtMax = tgtInstance.maxDate ?? tgtInstance.computedMaxDate ?? tgtMin + 31536000;
-
-  const nDep = link.departureSampleCount || 10;
-  const nArr = link.arrivalSampleCount || 10;
-
-  const srcDates: number[] = [];
-  const stepDep = (srcMax - srcMin) / Math.max(1, nDep - 1);
-  for (let i = 0; i < nDep; i++) {
-    srcDates.push(srcMin + i * stepDep);
+  let srcDates: number[];
+  if (srcInstance.validFlybyDates && srcInstance.validFlybyDates.length > 0) {
+    srcDates = srcInstance.validFlybyDates;
+  } else {
+    const srcMin = srcInstance.minDate ?? srcInstance.computedMinDate ?? 0;
+    const srcMax = srcInstance.maxDate ?? srcInstance.computedMaxDate ?? srcMin + 31536000;
+    const nDep = link.departureSampleCount || 10;
+    srcDates = [];
+    const stepDep = (srcMax - srcMin) / Math.max(1, nDep - 1);
+    for (let i = 0; i < nDep; i++) {
+      srcDates.push(srcMin + i * stepDep);
+    }
   }
 
-  const tgtDates: number[] = [];
-  const stepArr = (tgtMax - tgtMin) / Math.max(1, nArr - 1);
-  for (let j = 0; j < nArr; j++) {
-    tgtDates.push(tgtMin + j * stepArr);
+  let tgtDates: number[];
+  if (tgtInstance.validFlybyDates && tgtInstance.validFlybyDates.length > 0) {
+    tgtDates = tgtInstance.validFlybyDates;
+  } else {
+    const tgtMin = tgtInstance.minDate ?? tgtInstance.computedMinDate ?? 0;
+    const tgtMax = tgtInstance.maxDate ?? tgtInstance.computedMaxDate ?? tgtMin + 31536000;
+    const nArr = link.arrivalSampleCount || 10;
+    tgtDates = [];
+    const stepArr = (tgtMax - tgtMin) / Math.max(1, nArr - 1);
+    for (let j = 0; j < nArr; j++) {
+      tgtDates.push(tgtMin + j * stepArr);
+    }
   }
 
   let totalPossible = 0;
@@ -214,6 +226,10 @@ export function intersectInstanceDates(
   links: DirectionalLink[]
 ): InstanceNode[] {
   return instances.map(inst => {
+    if (inst.validFlybyDates && inst.validFlybyDates.length > 0) {
+      return inst;
+    }
+
     const incoming = links.filter(l => l.targetInstanceId === inst.id);
     const outgoing = links.filter(l => l.sourceInstanceId === inst.id);
 

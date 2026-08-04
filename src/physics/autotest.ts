@@ -522,13 +522,45 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
 
   const t1 = parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
+  const tEveStep1 = parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
+  const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
+  const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
-  // Define instances
+  // Define instances with explicit validFlybyDates (date before step 1, exact step 1, date after step 1)
   const instances: InstanceNode[] = [
-    { id: 'inst-0', bodyName: 'Kerbin', x: 100, y: 200, minDate: t1 - 21600 * 100, maxDate: t1 + 21600 * 100, maxC3: 120 },
-    { id: 'inst-1', bodyName: 'Eve', x: 300, y: 200, minFlybyRadius: 100000 },
-    { id: 'inst-2', bodyName: 'Jool', x: 500, y: 200, minFlybyRadius: 300000 },
-    { id: 'inst-3', bodyName: 'Grannus', x: 700, y: 200 },
+    {
+      id: 'inst-0',
+      bodyName: 'Kerbin',
+      x: 100,
+      y: 200,
+      minDate: t1,
+      maxDate: t1,
+      validFlybyDates: [t1],
+      maxC3: 120,
+    },
+    {
+      id: 'inst-1',
+      bodyName: 'Eve',
+      x: 300,
+      y: 200,
+      validFlybyDates: [tEveStep1 - 21600, tEveStep1, tEveStep1 + 21600],
+      minFlybyRadius: 100000,
+    },
+    {
+      id: 'inst-2',
+      bodyName: 'Jool',
+      x: 500,
+      y: 200,
+      validFlybyDates: [tJoolStep1 - 21600, tJoolStep1, tJoolStep1 + 21600],
+      minFlybyRadius: 300000,
+    },
+    {
+      id: 'inst-3',
+      bodyName: 'Grannus',
+      x: 700,
+      y: 200,
+      validFlybyDates: [t4],
+    },
   ];
 
   // Define links
@@ -578,9 +610,6 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const pc01 = searchResults.porkchops['link-0-1'];
   const pc12 = searchResults.porkchops['link-1-2'];
   const pc23 = searchResults.porkchops['link-2-3'];
-
-  const tEveStep1 = parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
-  const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
 
   // 1. Eve debug info
   const eveBody = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
