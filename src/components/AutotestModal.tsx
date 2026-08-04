@@ -94,10 +94,10 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   const radToDeg = (rad: number) => (rad * 180 / Math.PI).toFixed(2) + '°';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto">
-      <div className="bg-[#1A1B1E] border border-[#2D2E33] rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto">
+      <div className="bg-[#1A1B1E] border border-[#2D2E33] rounded-xl shadow-2xl w-full max-w-6xl flex flex-col max-h-[92vh] my-auto overflow-hidden">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-[#25262B] border-b border-[#2D2E33]">
+        <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 bg-[#25262B] border-b border-[#2D2E33]">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-[#60A5FA]/10 border border-[#60A5FA]/30 rounded-lg text-[#60A5FA]">
               <ShieldCheck className="w-5 h-5" />
@@ -116,43 +116,37 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
             <button
               onClick={onClose}
               className="p-1.5 text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#2D2E33] rounded transition"
+              title="Close Autotest Inspector"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Modal Content */}
-        <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-6 custom-scrollbar">
-          {/* Overview Banner & Suite Description */}
-          <div className="bg-[#1F2024] border border-[#2D2E33] rounded-xl p-5 flex flex-col gap-3 font-sans">
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#60A5FA]">
-              <Sparkles className="w-4 h-4 text-[#60A5FA]" />
-              <span>Autotest Suite Overview & Physics Scope</span>
-            </div>
-            <p className="text-xs text-[#E2E8F0] leading-relaxed">
-              This interactive inspector executes an automated physics verification suite designed to validate the precision and physical consistency of the 3D Lambert trajectory solver, orbital element conversions, and multi-body gravity assist (KEJG) sequence calculations.
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1 text-xs text-[#94A3B8]">
-              <div className="bg-[#25262B] border border-[#2D2E33] p-3 rounded-lg flex flex-col gap-1">
-                <span className="font-semibold text-[#60A5FA] flex items-center gap-1.5">
-                  <Orbit className="w-3.5 h-3.5" /> 1. Lambert Solver & Orbital Coherence
-                </span>
-                <p className="text-[11px] leading-relaxed text-[#CBD5E1]">
-                  Propagates 3D state vectors [r1, v1] ➔ [r2, v2] across time of flight Δt, verifies Lambert boundary conditions (Δv velocity matching error &lt; 0.5%), and reconstructs Keplerian elements (a, e, i, Ω, ω) to ensure numerical stability across elliptical, parabolic, and hyperbolic trajectories.
-                </p>
-              </div>
-              <div className="bg-[#25262B] border border-[#2D2E33] p-3 rounded-lg flex flex-col gap-1">
-                <span className="font-semibold text-[#A855F7] flex items-center gap-1.5">
-                  <Rocket className="w-3.5 h-3.5" /> 2. KEJG Multi-Body Flyby Sequence
-                </span>
-                <p className="text-[11px] leading-relaxed text-[#CBD5E1]">
-                  Evaluates interstellar gravity assist trajectories for Kerbin ➔ Eve ➔ Jool ➔ Grannus in Stock + OPM + Grannus. Verifies hyperbolic v_inf vector matching, unpowered vs. powered flyby deflection angles, periapsis margins, and sampled porkchop grid solves.
-                </p>
-              </div>
+        {/* Modal Content - scrollable flex child */}
+        <div className="p-6 overflow-y-auto flex-1 min-h-0 flex flex-col gap-6">
+          {/* Section Toolbar */}
+          <div className="flex items-center justify-between text-xs text-[#94A3B8] pb-1 border-b border-[#2D2E33]/60">
+            <span className="font-mono flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              2 Test Suites Loaded
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => { setLambertOpen(true); setKejgOpen(true); }}
+                className="hover:text-[#E2E8F0] underline transition font-mono text-[11px]"
+              >
+                Expand All
+              </button>
+              <span className="text-[#3F4046]">•</span>
+              <button
+                onClick={() => { setLambertOpen(false); setKejgOpen(false); }}
+                className="hover:text-[#E2E8F0] underline transition font-mono text-[11px]"
+              >
+                Collapse All
+              </button>
             </div>
           </div>
-
           {/* SECTION 1: LAMBERT PHYSICS AUTOTEST */}
           <div className="bg-[#1F2024] border border-[#2D2E33] rounded-xl overflow-hidden">
             {/* Accordion Header */}
@@ -195,12 +189,6 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
             {/* Accordion Body */}
             {lambertOpen && (
               <div className="p-5 flex flex-col gap-5">
-                {/* Section Detailed Description */}
-                <div className="text-xs text-[#CBD5E1] bg-[#1A1B1E] border border-[#2D2E33] rounded-lg p-3.5 leading-relaxed">
-                  <span className="font-semibold text-[#60A5FA]">Lambert Test Scope: </span>
-                  Select an orbit type below (Elliptical, Parabolic, or Hyperbolic) to inspect state propagation at departure (t1) and arrival (t2), velocity vector matching via <code className="text-[#60A5FA] bg-[#25262B] px-1 py-0.5 rounded">solveLambert</code>, and accuracy of reconstructed orbital parameters.
-                </div>
-
                 {/* Test Case Selector Tabs */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   {suiteResult?.cases.map((c) => (
@@ -467,14 +455,6 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
             {/* Accordion Body */}
             {kejgOpen && (
               <div className="p-5 flex flex-col gap-6">
-                {/* Section Detailed Description */}
-                <div className="text-xs text-[#CBD5E1] bg-[#1A1B1E] border border-[#2D2E33] rounded-lg p-3.5 leading-relaxed">
-                  <span className="font-semibold text-[#A855F7]">KEJG Multi-Body Flyby Scope: </span>
-                  Evaluates multi-leg gravity assist trajectories along the <strong className="text-[#E2E8F0]">Kerbin ➔ Eve ➔ Jool ➔ Grannus</strong> route in the Stock + OPM + Grannus solar system. 
-                  <span className="text-[#A855F7] font-semibold"> Step 1</span> evaluates fixed departure/arrival dates to check hyperbolic vector deflection and required flyby maneuvers. 
-                  <span className="text-amber-400 font-semibold"> Step 2</span> runs an automated porkchop grid search sampled at 1/64th orbital periods to find viable trajectory sequences and minimize mission Δv.
-                </div>
-
                 {/* STEP 1 RESULT CARD */}
                 <div className="bg-[#1A1B1E] border border-[#2D2E33] rounded-xl p-5 flex flex-col gap-4">
                   <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#2D2E33]">
