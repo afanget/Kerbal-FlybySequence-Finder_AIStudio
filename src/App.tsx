@@ -11,6 +11,7 @@ import {
   DirectionalLink,
   CanvasGraphConfig,
   PorkchopPlotData,
+  SequencePorkchopData,
   FlyableSequenceResult
 } from './types';
 import { PRESET_SOLAR_SYSTEMS } from './data/solarSystems';
@@ -19,6 +20,7 @@ import { CanvasGraph } from './components/CanvasGraph';
 import { InstanceModal } from './components/InstanceModal';
 import { LinkModal } from './components/LinkModal';
 import { PorkchopViewer } from './components/PorkchopViewer';
+import { SequencePorkchopViewer } from './components/SequencePorkchopViewer';
 import { ResultsTable } from './components/ResultsTable';
 import { AutotestModal } from './components/AutotestModal';
 import {
@@ -47,6 +49,8 @@ export default function App() {
 
   // Results & Search State
   const [porkchops, setPorkchops] = useState<Record<string, PorkchopPlotData>>({});
+  const [sequencePorkchops, setSequencePorkchops] = useState<Record<string, SequencePorkchopData>>({});
+  const [selectedSeqPorkchopId, setSelectedSeqPorkchopId] = useState<string | null>(null);
   const [results, setResults] = useState<FlyableSequenceResult[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchStatusText, setSearchStatusText] = useState<string>('Computing transfers...');
@@ -361,6 +365,7 @@ export default function App() {
           if (partial.instances) setInstances(partial.instances);
           if (partial.links) setLinks(partial.links);
           if (partial.porkchops) setPorkchops(prev => ({ ...prev, ...partial.porkchops }));
+          if (partial.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...partial.sequencePorkchops }));
         },
         () => stopSearchRef.current
       );
@@ -368,6 +373,7 @@ export default function App() {
       setInstances(res.updatedInstances);
       setLinks(res.updatedLinks);
       setPorkchops(res.porkchops);
+      if (res.sequencePorkchops) setSequencePorkchops(res.sequencePorkchops);
       setResults(res.sequences);
     } catch (err) {
       console.error('Search error:', err);
@@ -462,6 +468,8 @@ export default function App() {
             bodies={currentSystem.bodies}
             mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
             porkchops={porkchops}
+            sequencePorkchops={sequencePorkchops}
+            onOpenSequencePorkchop={(seqPcId) => setSelectedSeqPorkchopId(seqPcId)}
             links={links}
             instances={instances}
           />
@@ -498,6 +506,15 @@ export default function App() {
           porkchop={activePorkchop}
           timeFormatMode={timeFormatMode}
           onClose={() => setPorkchopModalLinkId(null)}
+        />
+      )}
+
+      {/* 3-Instance Sequence Porkchop Plot Modal */}
+      {selectedSeqPorkchopId && sequencePorkchops[selectedSeqPorkchopId] && (
+        <SequencePorkchopViewer
+          seqPorkchop={sequencePorkchops[selectedSeqPorkchopId]}
+          timeFormatMode={timeFormatMode}
+          onClose={() => setSelectedSeqPorkchopId(null)}
         />
       )}
 

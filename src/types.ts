@@ -120,6 +120,27 @@ export interface PorkchopPlotData {
   vTransArrMatrix?: Vector3D[][];
 }
 
+export interface SequencePorkchopData {
+  id: string;
+  sequenceLabel: string;
+  sourceInstanceId: string;
+  flybyInstanceId: string;
+  targetInstanceId: string;
+  sourceBody: string;
+  flybyBody: string;
+  targetBody: string;
+  depDates: number[];
+  arrDates: number[];
+  c3DepAMatrix: number[][];
+  c3ArrBMatrix: number[][];
+  c3DepBMatrix: number[][];
+  c3ArrCMatrix: number[][];
+  poweredDvBMatrix: number[][];
+  flybyDateMatrix: number[][];
+  flightTimeMatrix: number[][];
+  validMatrix: boolean[][];
+}
+
 export interface FlybyDetail {
   bodyName: string;
   instanceId: string;

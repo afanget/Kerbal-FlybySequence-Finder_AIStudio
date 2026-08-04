@@ -4,13 +4,13 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, PorkchopPlotData, DirectionalLink, InstanceNode } from '../types';
+import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode } from '../types';
 import { formatUT, formatShortUT, formatDuration, daysToSeconds } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
 import { getBodyStateAtUT, getGravitationalParameter, stateToOrbitalElements, Vector3D } from '../physics/kepler';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
 import * as XLSX from 'xlsx';
-import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, RefreshCw, Terminal, CheckCircle2, XCircle } from 'lucide-react';
+import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, RefreshCw, Terminal, CheckCircle2, XCircle, Compass, Activity } from 'lucide-react';
 
 interface ResultsTableProps {
   results: FlyableSequenceResult[];
@@ -22,6 +22,8 @@ interface ResultsTableProps {
   bodies?: CelestialBody[];
   mainBody?: CelestialBody;
   porkchops?: Record<string, PorkchopPlotData>;
+  sequencePorkchops?: Record<string, SequencePorkchopData>;
+  onOpenSequencePorkchop?: (seqPcId: string) => void;
   links?: DirectionalLink[];
   instances?: InstanceNode[];
 }
@@ -50,6 +52,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   bodies = [],
   mainBody,
   porkchops,
+  sequencePorkchops,
+  onOpenSequencePorkchop,
   links,
   instances,
 }) => {
@@ -382,6 +386,34 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 3-Instance Sequence Porkchops Banner */}
+      {sequencePorkchops && Object.keys(sequencePorkchops).length > 0 && (
+        <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+              <Compass className="w-4 h-4 text-[#38BDF8]" />
+              <span>3-Instance Sequence Porkchops</span>
+            </div>
+            <span className="text-[11px] font-mono text-[#94A3B8]">
+              {Object.keys(sequencePorkchops).length} plot(s) available
+            </span>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {Object.values(sequencePorkchops).map(seqPc => (
+              <button
+                key={seqPc.id}
+                onClick={() => onOpenSequencePorkchop?.(seqPc.id)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] border border-[#38BDF8]/40 text-[#38BDF8] transition text-xs font-mono font-medium shadow-sm cursor-pointer"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>{seqPc.sequenceLabel} Porkchop Plot</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Column Reordering & Column Visibility Controls */}
       <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">
