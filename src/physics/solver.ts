@@ -17,7 +17,7 @@ import { solveLambert, LambertSolution } from './lambert';
 import { matchUnpoweredFlyby, FlybyFeasibility } from './flyby';
 
 const MIN_SAMPLE_COUNT = 20;
-const SAMPLE_PER_PERIOD = 64;
+export const SAMPLE_PER_PERIOD = 2;
 const MAX_SAMPLE_COUNT = 50000;
 
 export interface SolverProgress {

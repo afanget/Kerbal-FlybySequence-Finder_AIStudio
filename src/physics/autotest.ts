@@ -11,7 +11,8 @@ import {
   vecSub,
   vecMag,
   getBodyStateAtUT,
-  getGravitationalParameter
+  getGravitationalParameter,
+  getOrbitalPeriod
 } from './kepler';
 import { solveLambert } from './lambert';
 import { evaluateFlybyAtDate } from './flyby';
@@ -527,13 +528,13 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
   const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
-  const eveSamplingPeriod = 0; // TODO get eve period / SAMPLE_PER_PERIOD
+  const eveSamplingPeriod = eve ? getOrbitalPeriod(eve, sun) / SAMPLE_PER_PERIOD : 31536000 / SAMPLE_PER_PERIOD;
   const eveHalfIdx = Math.floor(tEveStep1 / eveSamplingPeriod);
   const tEveBefore = eveHalfIdx * eveSamplingPeriod;
   const tEveAfter = (eveHalfIdx + 1) * eveSamplingPeriod;
 
-  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
-  const joolSamplingPeriod = 0; // TODO get jool period / SAMPLE_PER_PERIOD
+  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Jool');
+  const joolSamplingPeriod = jool ? getOrbitalPeriod(jool, sun) / SAMPLE_PER_PERIOD : 31536000 / SAMPLE_PER_PERIOD;
   const joolHalfIdx = Math.floor(tJoolStep1 / joolSamplingPeriod);
   const tJoolBefore = joolHalfIdx * joolSamplingPeriod;
   const tJoolAfter = (joolHalfIdx + 1) * joolSamplingPeriod;
