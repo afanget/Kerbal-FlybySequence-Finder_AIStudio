@@ -323,7 +323,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                       : 'bg-[#18181B]/95 border-[#2D2E33] text-[#94A3B8] hover:border-[#60A5FA] hover:text-[#E2E8F0]'
                   }`}>
                     <span className="font-mono font-medium text-[9.5px] whitespace-nowrap">
-                      {formatDuration(link.minFlightDuration, timeFormatMode)} - {formatDuration(link.maxFlightDuration, timeFormatMode)}
+                      {link.minFlightDuration !== undefined ? formatDuration(link.minFlightDuration, timeFormatMode) : '0d'} - {link.maxFlightDuration !== undefined ? formatDuration(link.maxFlightDuration, timeFormatMode) : '∞'}
                     </span>
                     {link.possibleTransfersCount !== undefined && (
                       <div className="flex items-center gap-1 text-[9px] mt-0.5">

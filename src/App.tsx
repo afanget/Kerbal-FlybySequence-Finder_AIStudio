@@ -286,8 +286,6 @@ export default function App() {
       id: `link-${Date.now()}`,
       sourceInstanceId: sourceId,
       targetInstanceId: targetId,
-      minFlightDuration: daysToSeconds(10, timeFormatMode),
-      maxFlightDuration: daysToSeconds(500, timeFormatMode),
     };
 
     setLinks([...links, newLink]);
