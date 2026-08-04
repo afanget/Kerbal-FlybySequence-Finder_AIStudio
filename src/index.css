@@ -32,16 +32,37 @@
 
 /* Custom crisp scrollbar for dark theme */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #0D0D0E;
+  background: #141517;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2D2E33;
-  border-radius: 3px;
+  background: #3F4046;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #60A5FA;
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #3F4046 #141517;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #141517;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #3F4046;
+  border-radius: 4px;
+  border: 1px solid #141517;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #60A5FA;
 }
