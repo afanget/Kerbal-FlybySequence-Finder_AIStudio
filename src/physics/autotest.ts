@@ -18,7 +18,7 @@ import { evaluateFlybyAtDate } from './flyby';
 import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
 import { runSequenceSearch } from './solver';
-import { InstanceNode, DirectionalLink } from '../types';
+import { InstanceNode, DirectionalLink, FlybyDetail } from '../types';
 
 export interface AutotestCaseResult {
   caseId: string;
@@ -264,6 +264,29 @@ export interface KEJGStep1Result {
   totalFlybyPoweredDvMs: number;
 }
 
+export interface KEJGSampledFlybyDebug {
+  instanceId: string;
+  bodyName: string;
+  sampledDates: { ut: number; formatted: string }[];
+  sampledDatesCount: number;
+  minDateFormatted: string;
+  maxDateFormatted: string;
+  inboundVInfMinMs: number;
+  inboundVInfMaxMs: number;
+  outboundVInfMinMs: number;
+  outboundVInfMaxMs: number;
+  matchedFlybyDateUt?: number;
+  matchedFlybyDateFormatted?: string;
+  matchedInboundVInfMs?: number;
+  matchedOutboundVInfMs?: number;
+  deflectionAngleDeg?: number;
+  maxDeflectionAngleDeg?: number;
+  status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH';
+  statusLabel: string;
+  periapsisAltKm?: number;
+  flybyMarginKm?: number;
+}
+
 export interface KEJGStep2Result {
   passed: boolean;
   timestamp: number;
@@ -278,6 +301,7 @@ export interface KEJGStep2Result {
     travelTimesDays: number[];
     flybys: KEJGFlybyInfo[];
   };
+  flybyDebugList?: KEJGSampledFlybyDebug[];
 }
 
 export interface KEJGAutotestSuiteResult {
@@ -459,11 +483,12 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
   const searchResults = await runSequenceSearch(instances, links, stockOpmGrannus.bodies, sun, () => {}, () => false);
 
   let bestSeq;
+  let bestSeqFlybys: FlybyDetail[] = [];
   if (searchResults.sequences && searchResults.sequences.length > 0) {
     const seq = searchResults.sequences[0];
+    bestSeqFlybys = seq.flybys || [];
 
-    const flybys = seq.flybys || [];
-    const flybyInfos: KEJGFlybyInfo[] = flybys.map(f => ({
+    const flybyInfos: KEJGFlybyInfo[] = bestSeqFlybys.map(f => ({
       bodyName: f.bodyName,
       ut: f.flybyDate,
       inboundVInfMag: f.vInfInMag,
@@ -489,6 +514,151 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     };
   }
 
+  // Construct detailed debug info for Eve (inst-1) and Jool (inst-2)
+  const flybyDebugList: KEJGSampledFlybyDebug[] = [];
+
+  const pc01 = searchResults.porkchops['link-0-1'];
+  const pc12 = searchResults.porkchops['link-1-2'];
+  const pc23 = searchResults.porkchops['link-2-3'];
+
+  // 1. Eve debug info
+  const eveBody = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
+  if (eveBody && pc01 && pc12) {
+    const eveDateSet = new Set<number>();
+    pc01.arrDates.forEach(d => eveDateSet.add(d));
+    pc12.depDates.forEach(d => eveDateSet.add(d));
+    const sortedEveDates = Array.from(eveDateSet).sort((a, b) => a - b);
+    const sampledDatesEve = sortedEveDates.map(ut => ({ ut, formatted: formatShortUT(ut, 'ksp') }));
+
+    let inMin = Infinity, inMax = -Infinity;
+    if (pc01.vTransArrMatrix) {
+      for (let i = 0; i < pc01.depDates.length; i++) {
+        for (let j = 0; j < pc01.arrDates.length; j++) {
+          const vTrans = pc01.vTransArrMatrix[i]?.[j];
+          if (vTrans) {
+            const stEve = getBodyStateAtUT(eveBody, sun, pc01.arrDates[j]);
+            const vInf = vecMag(vecSub(vTrans, stEve.vel));
+            if (vInf < inMin) inMin = vInf;
+            if (vInf > inMax) inMax = vInf;
+          }
+        }
+      }
+    }
+
+    let outMin = Infinity, outMax = -Infinity;
+    if (pc12.vTransDepMatrix) {
+      for (let m = 0; m < pc12.depDates.length; m++) {
+        for (let n = 0; n < pc12.arrDates.length; n++) {
+          const vTrans = pc12.vTransDepMatrix[m]?.[n];
+          if (vTrans) {
+            const stEve = getBodyStateAtUT(eveBody, sun, pc12.depDates[m]);
+            const vInf = vecMag(vecSub(vTrans, stEve.vel));
+            if (vInf < outMin) outMin = vInf;
+            if (vInf > outMax) outMax = vInf;
+          }
+        }
+      }
+    }
+
+    const matchedEve = bestSeqFlybys.find(f => f.bodyName === 'Eve');
+    const status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH' = matchedEve
+      ? (matchedEve.deflectionAngle <= matchedEve.maxDeflectionAngle && matchedEve.flybyMargin >= 0
+          ? 'VALID_UNPOWERED' : 'POWERED_REQUIRED')
+      : 'NO_FEASIBLE_MATCH';
+
+    flybyDebugList.push({
+      instanceId: 'inst-1',
+      bodyName: 'Eve',
+      sampledDates: sampledDatesEve,
+      sampledDatesCount: sampledDatesEve.length,
+      minDateFormatted: sampledDatesEve.length > 0 ? sampledDatesEve[0].formatted : 'N/A',
+      maxDateFormatted: sampledDatesEve.length > 0 ? sampledDatesEve[sampledDatesEve.length - 1].formatted : 'N/A',
+      inboundVInfMinMs: isFinite(inMin) ? inMin : 0,
+      inboundVInfMaxMs: isFinite(inMax) ? inMax : 0,
+      outboundVInfMinMs: isFinite(outMin) ? outMin : 0,
+      outboundVInfMaxMs: isFinite(outMax) ? outMax : 0,
+      matchedFlybyDateUt: matchedEve?.flybyDate,
+      matchedFlybyDateFormatted: matchedEve ? formatShortUT(matchedEve.flybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchedEve?.vInfInMag,
+      matchedOutboundVInfMs: matchedEve?.vInfOutMag,
+      deflectionAngleDeg: matchedEve?.deflectionAngle,
+      maxDeflectionAngleDeg: matchedEve?.maxDeflectionAngle,
+      periapsisAltKm: matchedEve ? matchedEve.periapsisAlt / 1000 : undefined,
+      flybyMarginKm: matchedEve ? matchedEve.flybyMargin / 1000 : undefined,
+      status,
+      statusLabel: status === 'VALID_UNPOWERED' ? '✓ Valid Unpowered Flyby' : status === 'POWERED_REQUIRED' ? '⚠ Powered Assist Required' : '✗ No Match',
+    });
+  }
+
+  // 2. Jool debug info
+  const joolBody = stockOpmGrannus.bodies.find(b => b.name === 'Jool');
+  if (joolBody && pc12 && pc23) {
+    const joolDateSet = new Set<number>();
+    pc12.arrDates.forEach(d => joolDateSet.add(d));
+    pc23.depDates.forEach(d => joolDateSet.add(d));
+    const sortedJoolDates = Array.from(joolDateSet).sort((a, b) => a - b);
+    const sampledDatesJool = sortedJoolDates.map(ut => ({ ut, formatted: formatShortUT(ut, 'ksp') }));
+
+    let inMin = Infinity, inMax = -Infinity;
+    if (pc12.vTransArrMatrix) {
+      for (let i = 0; i < pc12.depDates.length; i++) {
+        for (let j = 0; j < pc12.arrDates.length; j++) {
+          const vTrans = pc12.vTransArrMatrix[i]?.[j];
+          if (vTrans) {
+            const stJool = getBodyStateAtUT(joolBody, sun, pc12.arrDates[j]);
+            const vInf = vecMag(vecSub(vTrans, stJool.vel));
+            if (vInf < inMin) inMin = vInf;
+            if (vInf > inMax) inMax = vInf;
+          }
+        }
+      }
+    }
+
+    let outMin = Infinity, outMax = -Infinity;
+    if (pc23.vTransDepMatrix) {
+      for (let m = 0; m < pc23.depDates.length; m++) {
+        for (let n = 0; n < pc23.arrDates.length; n++) {
+          const vTrans = pc23.vTransDepMatrix[m]?.[n];
+          if (vTrans) {
+            const stJool = getBodyStateAtUT(joolBody, sun, pc23.depDates[m]);
+            const vInf = vecMag(vecSub(vTrans, stJool.vel));
+            if (vInf < outMin) outMin = vInf;
+            if (vInf > outMax) outMax = vInf;
+          }
+        }
+      }
+    }
+
+    const matchedJool = bestSeqFlybys.find(f => f.bodyName === 'Jool');
+    const status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH' = matchedJool
+      ? (matchedJool.deflectionAngle <= matchedJool.maxDeflectionAngle && matchedJool.flybyMargin >= 0
+          ? 'VALID_UNPOWERED' : 'POWERED_REQUIRED')
+      : 'NO_FEASIBLE_MATCH';
+
+    flybyDebugList.push({
+      instanceId: 'inst-2',
+      bodyName: 'Jool',
+      sampledDates: sampledDatesJool,
+      sampledDatesCount: sampledDatesJool.length,
+      minDateFormatted: sampledDatesJool.length > 0 ? sampledDatesJool[0].formatted : 'N/A',
+      maxDateFormatted: sampledDatesJool.length > 0 ? sampledDatesJool[sampledDatesJool.length - 1].formatted : 'N/A',
+      inboundVInfMinMs: isFinite(inMin) ? inMin : 0,
+      inboundVInfMaxMs: isFinite(inMax) ? inMax : 0,
+      outboundVInfMinMs: isFinite(outMin) ? outMin : 0,
+      outboundVInfMaxMs: isFinite(outMax) ? outMax : 0,
+      matchedFlybyDateUt: matchedJool?.flybyDate,
+      matchedFlybyDateFormatted: matchedJool ? formatShortUT(matchedJool.flybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchedJool?.vInfInMag,
+      matchedOutboundVInfMs: matchedJool?.vInfOutMag,
+      deflectionAngleDeg: matchedJool?.deflectionAngle,
+      maxDeflectionAngleDeg: matchedJool?.maxDeflectionAngle,
+      periapsisAltKm: matchedJool ? matchedJool.periapsisAlt / 1000 : undefined,
+      flybyMarginKm: matchedJool ? matchedJool.flybyMargin / 1000 : undefined,
+      status,
+      statusLabel: status === 'VALID_UNPOWERED' ? '✓ Valid Unpowered Flyby' : status === 'POWERED_REQUIRED' ? '⚠ Powered Assist Required' : '✗ No Match',
+    });
+  }
+
   let totalGridPoints = 0;
   if (searchResults.porkchops) {
     Object.values(searchResults.porkchops).forEach(pc => {
@@ -506,5 +676,6 @@ export async function runKEJGStep2(): Promise<KEJGStep2Result> {
     porkchopsComputedCount: totalGridPoints,
     validSequencesFound: searchResults.sequences ? searchResults.sequences.length : 0,
     bestSequence: bestSeq,
+    flybyDebugList,
   };
 }

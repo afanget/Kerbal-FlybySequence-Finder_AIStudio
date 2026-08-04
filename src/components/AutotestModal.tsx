@@ -632,6 +632,162 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                           </div>
                         </div>
                       )}
+
+                      {/* Step 2 Flyby Debug Information */}
+                      {kejgStep2Result.flybyDebugList && kejgStep2Result.flybyDebugList.length > 0 && (
+                        <div className="flex flex-col gap-4 pt-3 border-t border-[#2D2E33]">
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-xs font-mono font-bold text-amber-400 uppercase tracking-wider flex items-center gap-2">
+                              <Compass className="w-4 h-4 text-amber-400" />
+                              Step 2 Flyby Sampling & Verification Debug Breakdown
+                            </h5>
+                            <span className="text-[11px] font-mono text-[#94A3B8]">
+                              {kejgStep2Result.flybyDebugList.length} Flyby Nodes Evaluated
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-4">
+                            {kejgStep2Result.flybyDebugList.map((fbDebug) => (
+                              <div key={fbDebug.instanceId} className="bg-[#25262B] border border-[#2D2E33] rounded-xl p-4 flex flex-col gap-3 font-mono text-xs shadow-md">
+                                {/* Flyby Header & Status */}
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2D2E33] pb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="px-2 py-0.5 bg-purple-500/10 border border-purple-500/30 rounded text-purple-400 font-bold text-xs">
+                                      {fbDebug.bodyName}
+                                    </span>
+                                    <span className="text-[#E2E8F0] font-bold text-xs">
+                                      {fbDebug.bodyName} Flyby Verification Debug
+                                    </span>
+                                  </div>
+                                  <span className={`text-[11px] px-2.5 py-0.5 rounded-md font-semibold border ${
+                                    fbDebug.status === 'VALID_UNPOWERED'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                      : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                  }`}>
+                                    {fbDebug.statusLabel}
+                                  </span>
+                                </div>
+
+                                {/* 1. Sampled Dates around Flyby */}
+                                <div className="bg-[#1F2024] p-3 rounded-lg border border-[#2D2E33]/80 flex flex-col gap-2">
+                                  <div className="flex items-center justify-between text-[11px] text-[#94A3B8]">
+                                    <span className="font-bold text-[#E2E8F0] flex items-center gap-1.5">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                                      1. Sampled Dates Around {fbDebug.bodyName} Flyby:
+                                    </span>
+                                    <span>
+                                      {fbDebug.sampledDatesCount} dates ({fbDebug.minDateFormatted} ➔ {fbDebug.maxDateFormatted})
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-2 bg-[#1A1B1E] rounded border border-[#2D2E33]/60">
+                                    {fbDebug.sampledDates.map((d, dIdx) => (
+                                      <span
+                                        key={dIdx}
+                                        className={`text-[10px] px-2 py-0.5 rounded border font-mono ${
+                                          fbDebug.matchedFlybyDateFormatted === d.formatted
+                                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 font-bold ring-1 ring-amber-500/50'
+                                            : 'bg-[#25262B] text-[#94A3B8] border-[#2D2E33]'
+                                        }`}
+                                        title={`UT: ${d.ut.toFixed(0)} seconds`}
+                                      >
+                                        {d.formatted}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* 2 & 3. Inbound/Outbound v_inf Ranges & Matching Date */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {/* Inbound & Outbound Ranges */}
+                                  <div className="bg-[#1F2024] p-3 rounded-lg border border-[#2D2E33]/80 flex flex-col gap-2 text-[11px]">
+                                    <div className="font-bold text-[#E2E8F0] flex items-center gap-1.5 border-b border-[#2D2E33]/60 pb-1">
+                                      <Activity className="w-3.5 h-3.5 text-blue-400" />
+                                      2. Inbound & Outbound v_inf Ranges:
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Inbound v_inf Range:</span>
+                                      <span className="text-blue-400 font-bold">
+                                        {fbDebug.inboundVInfMinMs.toFixed(1)} – {fbDebug.inboundVInfMaxMs.toFixed(1)} m/s
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Outbound v_inf Range:</span>
+                                      <span className="text-purple-400 font-bold">
+                                        {fbDebug.outboundVInfMinMs.toFixed(1)} – {fbDebug.outboundVInfMaxMs.toFixed(1)} m/s
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Matching Date for v_inf */}
+                                  <div className="bg-[#1F2024] p-3 rounded-lg border border-[#2D2E33]/80 flex flex-col gap-2 text-[11px]">
+                                    <div className="font-bold text-[#E2E8F0] flex items-center gap-1.5 border-b border-[#2D2E33]/60 pb-1">
+                                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                                      3. Matching Date for v_inf:
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Matched Flyby Date:</span>
+                                      <span className="text-amber-400 font-bold">{fbDebug.matchedFlybyDateFormatted || 'N/A'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Inbound / Outbound:</span>
+                                      <span className="text-[#E2E8F0]">
+                                        {fbDebug.matchedInboundVInfMs ? fbDebug.matchedInboundVInfMs.toFixed(1) + ' m/s' : 'N/A'} / {fbDebug.matchedOutboundVInfMs ? fbDebug.matchedOutboundVInfMs.toFixed(1) + ' m/s' : 'N/A'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* 4 & 5. Deflection Angle vs Max & Flyby Status */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {/* Deflection angle vs max */}
+                                  <div className="bg-[#1F2024] p-3 rounded-lg border border-[#2D2E33]/80 flex flex-col gap-2 text-[11px]">
+                                    <div className="font-bold text-[#E2E8F0] flex items-center gap-1.5 border-b border-[#2D2E33]/60 pb-1">
+                                      <Compass className="w-3.5 h-3.5 text-emerald-400" />
+                                      4. Deflection Angle vs Maximum:
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Required Turn Angle (δ):</span>
+                                      <span className="text-[#E2E8F0] font-bold">{fbDebug.deflectionAngleDeg !== undefined ? fbDebug.deflectionAngleDeg.toFixed(2) + '°' : 'N/A'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Maximum Turn Angle (δ_max):</span>
+                                      <span className="text-emerald-400 font-bold">{fbDebug.maxDeflectionAngleDeg !== undefined ? fbDebug.maxDeflectionAngleDeg.toFixed(2) + '°' : 'N/A'}</span>
+                                    </div>
+                                    {fbDebug.deflectionAngleDeg !== undefined && fbDebug.maxDeflectionAngleDeg !== undefined && (
+                                      <div className="text-[10px] text-right font-semibold pt-0.5">
+                                        {fbDebug.deflectionAngleDeg <= fbDebug.maxDeflectionAngleDeg ? (
+                                          <span className="text-emerald-400">✓ δ ≤ δ_max (Achievable Unpowered)</span>
+                                        ) : (
+                                          <span className="text-amber-400">⚠ δ &gt; δ_max (Requires Powered Burn)</span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Flyby Status & Clearance */}
+                                  <div className="bg-[#1F2024] p-3 rounded-lg border border-[#2D2E33]/80 flex flex-col gap-2 text-[11px]">
+                                    <div className="font-bold text-[#E2E8F0] flex items-center gap-1.5 border-b border-[#2D2E33]/60 pb-1">
+                                      <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+                                      5. Flyby Status & Clearance:
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Flyby Status:</span>
+                                      <span className="font-bold text-emerald-400">{fbDebug.statusLabel}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-[#94A3B8]">Periapsis Alt / Clearance:</span>
+                                      <span className="text-[#E2E8F0]">
+                                        {fbDebug.periapsisAltKm !== undefined ? fbDebug.periapsisAltKm.toFixed(0) + ' km' : 'N/A'} 
+                                        {fbDebug.flybyMarginKm !== undefined ? ` (Margin: ${fbDebug.flybyMarginKm.toFixed(0)} km)` : ''}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="p-4 text-center text-xs text-[#94A3B8] font-mono">
