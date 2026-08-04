@@ -79,7 +79,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     decile2 = validValues[idx20];
   }
 
-  const effectiveMin = Math.max(1e-4, minVal);
+  const effectiveMin = Math.max(10, minVal);
   const capByFactor = effectiveMin * Math.pow(1.1, 16);
   // User requirement: maxCap = max(effectiveMin * 1.1^16, 2nd decile)
   const redCap = Math.max(capByFactor, decile2);
@@ -355,7 +355,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
 
           {/* Color Scale Legend */}
           <div className="flex items-center justify-between text-[10px] text-[#A1A1AA] bg-[#09090B] p-2 rounded-lg border border-[#27272A]">
-            <span className="font-semibold text-blue-400">Min: {minVal.toFixed(1)} {tabs.find(t=>t.key===activeTab)?.unit}</span>
+            <span className="font-semibold text-blue-400">Min: {effectiveMin.toFixed(1)} {tabs.find(t=>t.key===activeTab)?.unit}</span>
             <div className="flex-1 mx-3 h-2 rounded bg-gradient-to-r from-blue-600 via-green-500 via-yellow-400 to-red-600 border border-[#27272A]" />
             <span className="font-semibold text-red-400">Red Cap: &ge;{redCap.toFixed(1)} {tabs.find(t=>t.key===activeTab)?.unit}</span>
           </div>

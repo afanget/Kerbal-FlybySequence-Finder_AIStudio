@@ -124,58 +124,20 @@ export default function App() {
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
-        {
-          id: 'inst-0',
-          bodyName: 'Kerbin',
-          x: 120,
-          y: 320,
-          minDate: (6-1) * kspYearSec,
-          maxDate: (7-1) * kspYearSec,
-          maxC3: 100,
-        },
-        {
-          id: 'inst-1',
-          bodyName: 'Eve',
-          x: 320,
-          y: 120,
-          minFlybyRadius: 100000,
-        },
-        {
-          id: 'inst-3',
-          bodyName: 'Jool',
-          x: 720,
-          y: 120,
-          minFlybyRadius: 210000,
-        },
-        {
-          id: 'inst-4',
-          bodyName: 'Grannus',
-          x: 920,
-          y: 320,
-          minDate: (41-1) * kspYearSec,
-          maxDate: (42-1) * kspYearSec,
-          maxC3: 25
-        },
+        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (7-1) * kspYearSec, maxC3: 100},
+        {id: 'inst-E1', bodyName: 'Eve'    , x: 320, y: 120, minFlybyRadius: 100000},
+        {id: 'inst-J', bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000},
+        {id: 'inst-U', bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000},
+        {id: 'inst-G', bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25},
       ];
 
       newLinks = [
-        {
-          id: 'link-0-1',
-          sourceInstanceId: 'inst-0',
-          targetInstanceId: 'inst-1',
-        },
-        {
-          id: 'link-1-3',
-          sourceInstanceId: 'inst-1',
-          targetInstanceId: 'inst-3',
-        },
-        {
-          id: 'link-3-4',
-          sourceInstanceId: 'inst-3',
-          targetInstanceId: 'inst-4',
-          minFlightDuration: daysToSeconds(9500, 'ksp'),
-          maxFlightDuration: daysToSeconds(250000, 'ksp'),
-        },
+        {id: 'link-K1-E1', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-E1'},
+        {id: 'link-K1-J', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-J'},
+        {id: 'link-E1-J', sourceInstanceId: 'inst-E1', targetInstanceId: 'inst-J'},
+        {id: 'link-J-U', sourceInstanceId: 'inst-J', targetInstanceId: 'inst-U'},
+        {id: 'link-U-G', sourceInstanceId: 'inst-U', targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(7500, 'ksp')},
+        {id: 'link-J-G', sourceInstanceId: 'inst-J', targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(9500, 'ksp')},
       ];
     } else if (presetKey === 'kej') {
       // Kerbin -> Eve -> Jool
