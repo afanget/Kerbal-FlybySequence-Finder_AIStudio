@@ -13,6 +13,7 @@ import {
   KEJGStep1Result,
   KEJGStep2Result
 } from '../physics/autotest';
+import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
 import {
   X,
   CheckCircle2,
@@ -43,6 +44,14 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   const [lambertOpen, setLambertOpen] = useState<boolean>(true);
   const [kejgOpen, setKejgOpen] = useState<boolean>(true);
 
+  // KEJG Step 1 flyby dates state
+  const [step1UTs, setStep1UTs] = useState<{ t1: number; t2: number; t3: number; t4: number }>(() => ({
+    t1: parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp'),
+    t2: parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp'),
+    t3: parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp'),
+    t4: parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp'),
+  }));
+
   // KEJG Step results
   const [kejgStep1Result, setKejgStep1Result] = useState<KEJGStep1Result | null>(() => runKEJGStep1());
   const [kejgStep2Result, setKejgStep2Result] = useState<KEJGStep2Result | null>(null);
@@ -51,7 +60,7 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   const [step2Running, setStep2Running] = useState<boolean>(false);
 
   useEffect(() => {
-    runKEJGStep2().then(setKejgStep2Result).catch(console.error);
+    runKEJGStep2(step1UTs).then(setKejgStep2Result).catch(console.error);
   }, []);
 
   if (!isOpen) return null;
@@ -64,7 +73,7 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   const handleRunKEJGStep1 = () => {
     setStep1Running(true);
     setTimeout(() => {
-      const res = runKEJGStep1();
+      const res = runKEJGStep1(step1UTs);
       setKejgStep1Result(res);
       setStep1Running(false);
     }, 50);
@@ -73,13 +82,24 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   const handleRunKEJGStep2 = async () => {
     setStep2Running(true);
     try {
-      const res = await runKEJGStep2();
+      const res = await runKEJGStep2(step1UTs);
       setKejgStep2Result(res);
     } catch (err) {
       console.error(err);
     } finally {
       setStep2Running(false);
     }
+  };
+
+  const handleAdjustDate = (key: 't1' | 't2' | 't3' | 't4', deltaDays: number) => {
+    const KSP_DAY_SEC = 21600;
+    const newUTs = {
+      ...step1UTs,
+      [key]: Math.max(0, step1UTs[key] + deltaDays * KSP_DAY_SEC),
+    };
+    setStep1UTs(newUTs);
+    setKejgStep1Result(runKEJGStep1(newUTs));
+    runKEJGStep2(newUTs).then(setKejgStep2Result).catch(console.error);
   };
 
   const selectedCase: AutotestCaseResult | undefined = suiteResult?.cases.find(c => c.caseId === selectedCaseId) || suiteResult?.cases[0];
@@ -484,9 +504,6 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                       <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-[#E2E8F0]">
                         Step 1: Exact Date Sequence Evaluation
                       </h4>
-                      <span className="text-[11px] font-mono text-[#94A3B8]">
-                        (Kerbin: Y6D231 | Eve: Y6D295 | Jool: Y9D308 | Grannus: Y41D192)
-                      </span>
                     </div>
 
                     {kejgStep1Result && (
@@ -498,6 +515,101 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                         {kejgStep1Result.passed ? '✓ SUCCESSFUL TRANSFERS' : '✗ FAILED SOLVE'}
                       </span>
                     )}
+                  </div>
+
+                  {/* Step 1 Flyby Dates Adjuster */}
+                  <div className="flex flex-wrap items-center gap-2 p-3 bg-[#25262B] rounded-lg border border-[#2D2E33] font-mono text-xs">
+                    <span className="text-[#94A3B8] font-bold text-[10px] uppercase tracking-wider mr-1">
+                      Adjust Flyby Dates:
+                    </span>
+                    
+                    {/* Kerbin */}
+                    <div className="flex items-center gap-1.5 bg-[#1F2024] px-2.5 py-1 rounded border border-[#2D2E33]">
+                      <span className="text-[#60A5FA] font-bold text-[11px]">Kerbin:</span>
+                      <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t1, 'ksp')}</span>
+                      <div className="flex items-center gap-1 ml-1">
+                        <button
+                          onClick={() => handleAdjustDate('t1', -1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Subtract 1 day (-21600s)"
+                        >
+                          -1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t1', 1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Add 1 day (+21600s)"
+                        >
+                          +1d
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Eve */}
+                    <div className="flex items-center gap-1.5 bg-[#1F2024] px-2.5 py-1 rounded border border-[#2D2E33]">
+                      <span className="text-purple-400 font-bold text-[11px]">Eve:</span>
+                      <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t2, 'ksp')}</span>
+                      <div className="flex items-center gap-1 ml-1">
+                        <button
+                          onClick={() => handleAdjustDate('t2', -1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Subtract 1 day (-21600s)"
+                        >
+                          -1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t2', 1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Add 1 day (+21600s)"
+                        >
+                          +1d
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Jool */}
+                    <div className="flex items-center gap-1.5 bg-[#1F2024] px-2.5 py-1 rounded border border-[#2D2E33]">
+                      <span className="text-emerald-400 font-bold text-[11px]">Jool:</span>
+                      <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t3, 'ksp')}</span>
+                      <div className="flex items-center gap-1 ml-1">
+                        <button
+                          onClick={() => handleAdjustDate('t3', -1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Subtract 1 day (-21600s)"
+                        >
+                          -1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t3', 1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Add 1 day (+21600s)"
+                        >
+                          +1d
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Grannus */}
+                    <div className="flex items-center gap-1.5 bg-[#1F2024] px-2.5 py-1 rounded border border-[#2D2E33]">
+                      <span className="text-cyan-400 font-bold text-[11px]">Grannus:</span>
+                      <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t4, 'ksp')}</span>
+                      <div className="flex items-center gap-1 ml-1">
+                        <button
+                          onClick={() => handleAdjustDate('t4', -1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Subtract 1 day (-21600s)"
+                        >
+                          -1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t4', 1)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          title="Add 1 day (+21600s)"
+                        >
+                          +1d
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                   {kejgStep1Result ? (

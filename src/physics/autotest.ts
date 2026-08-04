@@ -15,11 +15,9 @@ import {
   getOrbitalPeriod
 } from './kepler';
 import { solveLambert } from './lambert';
-import { evaluateFlybyAtDate } from './flyby';
+import { evaluateFlybyAtDate, matchUnpoweredFlyby } from './flyby';
 import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
-import { runSequenceSearch } from './solver';
-import { InstanceNode, DirectionalLink, FlybyDetail } from '../types';
 
 export interface AutotestCaseResult {
   caseId: string;
@@ -375,7 +373,7 @@ export interface KEJGAutotestSuiteResult {
  * Jool: Y9 D308
  * Grannus: Y41 D192
  */
-export function runKEJGStep1(): KEJGStep1Result {
+export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number; t4?: number }): KEJGStep1Result {
   const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
   const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
   const kerbin = stockOpmGrannus.bodies.find(b => b.name === 'Kerbin')!;
@@ -385,10 +383,10 @@ export function runKEJGStep1(): KEJGStep1Result {
 
   const muSun = getGravitationalParameter(sun);
 
-  const t1 = parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
-  const t2 = parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
-  const t3 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
-  const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
+  const t1 = customUTs?.t1 ?? parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
+  const t2 = customUTs?.t2 ?? parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
+  const t3 = customUTs?.t3 ?? parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
+  const t4 = customUTs?.t4 ?? parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
   // Leg 1: Kerbin -> Eve
   const dt1 = t2 - t1;
@@ -518,271 +516,212 @@ export function runKEJGStep1(): KEJGStep1Result {
 /**
  * Step 2: Sampled dates search for Kerbin -> Eve -> Jool -> Grannus sequence
  */
-export async function runKEJGStep2(): Promise<KEJGStep2Result> {
-  const SAMPLE_PER_PERIOD = 16;
-  const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus');
+export async function runKEJGStep2(customUTs?: { t1?: number; t2?: number; t3?: number; t4?: number }): Promise<KEJGStep2Result> {
+  const SAMPLE_PER_PERIOD = 2;
+  const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
   const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
+  const kerbin = stockOpmGrannus.bodies.find(b => b.name === 'Kerbin')!;
+  const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve')!;
+  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Jool')!;
+  const grannus = stockOpmGrannus.bodies.find(b => b.name === 'Grannus')!;
+  const muSun = getGravitationalParameter(sun);
 
-  const t1 = parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
-  const tEveStep1 = parseKSPTimeToUT(6, 312, 0, 0, 0, 'ksp');
-  const tJoolStep1 = parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
-  const t4 = parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
+  const t1 = customUTs?.t1 ?? parseKSPTimeToUT(6, 231, 0, 0, 0, 'ksp');
+  const tEveStep1 = customUTs?.t2 ?? parseKSPTimeToUT(6, 295, 0, 0, 0, 'ksp');
+  const tJoolStep1 = customUTs?.t3 ?? parseKSPTimeToUT(9, 308, 0, 0, 0, 'ksp');
+  const t4 = customUTs?.t4 ?? parseKSPTimeToUT(41, 192, 0, 0, 0, 'ksp');
 
-  const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
+  // Compute sampling boundaries (0.5 year sampling period around step 1 flyby dates)
   const eveSamplingPeriod = getOrbitalPeriod(eve, sun) / SAMPLE_PER_PERIOD;
   const eveHalfIdx = Math.floor(tEveStep1 / eveSamplingPeriod);
-  const tEveBefore = eveHalfIdx * eveSamplingPeriod;
-  const tEveAfter = (eveHalfIdx + 1) * eveSamplingPeriod;
+  const tEve1 = eveHalfIdx * eveSamplingPeriod;
+  const tEve2 = (eveHalfIdx + 1) * eveSamplingPeriod;
 
-  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Jool');
   const joolSamplingPeriod = getOrbitalPeriod(jool, sun) / SAMPLE_PER_PERIOD;
   const joolHalfIdx = Math.floor(tJoolStep1 / joolSamplingPeriod);
-  const tJoolBefore = joolHalfIdx * joolSamplingPeriod;
-  const tJoolAfter = (joolHalfIdx + 1) * joolSamplingPeriod;
+  const tJool1 = joolHalfIdx * joolSamplingPeriod;
+  const tJool2 = (joolHalfIdx + 1) * joolSamplingPeriod;
 
-  // Define instances with explicit validFlybyDates (0.5 year period sampling around step 1 flybys)
-  const instances: InstanceNode[] = [
+  // States at all dates
+  const stKerbin = getBodyStateAtUT(kerbin, sun, t1);
+  const stEve1 = getBodyStateAtUT(eve, sun, tEve1);
+  const stEve2 = getBodyStateAtUT(eve, sun, tEve2);
+  const stJool1 = getBodyStateAtUT(jool, sun, tJool1);
+  const stJool2 = getBodyStateAtUT(jool, sun, tJool2);
+  const stGrannus = getBodyStateAtUT(grannus, sun, t4);
+
+  // Compute the 8 transfers (direct call of solveLambert)
+  // Leg 1: Kerbin -> Eve (2 solves)
+  const sol_K_E1 = solveLambert(stKerbin.pos, stEve1.pos, tEve1 - t1, muSun, true);
+  const sol_K_E2 = solveLambert(stKerbin.pos, stEve2.pos, tEve2 - t1, muSun, true);
+
+  // Leg 2: Eve -> Jool (4 solves)
+  const sol_E1_J1 = solveLambert(stEve1.pos, stJool1.pos, tJool1 - tEve1, muSun, true);
+  const sol_E1_J2 = solveLambert(stEve1.pos, stJool2.pos, tJool2 - tEve1, muSun, true);
+  const sol_E2_J1 = solveLambert(stEve2.pos, stJool1.pos, tJool1 - tEve2, muSun, true);
+  const sol_E2_J2 = solveLambert(stEve2.pos, stJool2.pos, tJool2 - tEve2, muSun, true);
+
+  // Leg 3: Jool -> Grannus (2 solves)
+  const sol_J1_G = solveLambert(stJool1.pos, stGrannus.pos, t4 - tJool1, muSun, true);
+  const sol_J2_G = solveLambert(stJool2.pos, stGrannus.pos, t4 - tJool2, muSun, true);
+
+  // Match the 2 flybys (direct call of matchUnpoweredFlyby)
+  // 1. Eve Flyby Match
+  const vInfIn_E1 = vecSub(sol_K_E1.v2, stEve1.vel);
+  const vInfIn_E2 = vecSub(sol_K_E2.v2, stEve2.vel);
+
+  const vInfOut_E1_J1 = vecSub(sol_E1_J1.v1, stEve1.vel);
+  const vInfOut_E2_J1 = vecSub(sol_E2_J1.v1, stEve2.vel);
+  const vInfOut_E1_J2 = vecSub(sol_E1_J2.v1, stEve1.vel);
+  const vInfOut_E2_J2 = vecSub(sol_E2_J2.v1, stEve2.vel);
+
+  const matchEveJ1 = matchUnpoweredFlyby(eve, vInfIn_E1, vInfIn_E2, vInfOut_E1_J1, vInfOut_E2_J1, tEve1, tEve2, 100000);
+  const matchEveJ2 = matchUnpoweredFlyby(eve, vInfIn_E1, vInfIn_E2, vInfOut_E1_J2, vInfOut_E2_J2, tEve1, tEve2, 100000);
+
+  const matchEve = (matchEveJ1.isValid || !matchEveJ2.isValid) ? matchEveJ1 : matchEveJ2;
+
+  // 2. Jool Flyby Match
+  const vInfOut_J1 = vecSub(sol_J1_G.v1, stJool1.vel);
+  const vInfOut_J2 = vecSub(sol_J2_G.v1, stJool2.vel);
+
+  const vInfIn_E1_J1 = vecSub(sol_E1_J1.v2, stJool1.vel);
+  const vInfIn_E1_J2 = vecSub(sol_E1_J2.v2, stJool2.vel);
+  const vInfIn_E2_J1 = vecSub(sol_E2_J1.v2, stJool1.vel);
+  const vInfIn_E2_J2 = vecSub(sol_E2_J2.v2, stJool2.vel);
+
+  const matchJoolE1 = matchUnpoweredFlyby(jool, vInfIn_E1_J1, vInfIn_E1_J2, vInfOut_J1, vInfOut_J2, tJool1, tJool2, 300000);
+  const matchJoolE2 = matchUnpoweredFlyby(jool, vInfIn_E2_J1, vInfIn_E2_J2, vInfOut_J1, vInfOut_J2, tJool1, tJool2, 300000);
+
+  const matchJool = (matchJoolE1.isValid || !matchJoolE2.isValid) ? matchJoolE1 : matchJoolE2;
+
+  // Debug flyby list
+  const flybyDebugList: KEJGSampledFlybyDebug[] = [
     {
-      id: 'inst-0',
-      bodyName: 'Kerbin',
-      x: 100,
-      y: 200,
-      minDate: t1,
-      maxDate: t1,
-      validFlybyDates: [t1],
-      maxC3: 120,
-    },
-    {
-      id: 'inst-1',
-      bodyName: 'Eve',
-      x: 300,
-      y: 200,
-      validFlybyDates: [tEveBefore, tEveAfter],
-      minFlybyRadius: 100000,
-    },
-    {
-      id: 'inst-2',
-      bodyName: 'Jool',
-      x: 500,
-      y: 200,
-      validFlybyDates: [tJoolBefore, tJoolAfter],
-      minFlybyRadius: 300000,
-    },
-    {
-      id: 'inst-3',
-      bodyName: 'Grannus',
-      x: 700,
-      y: 200,
-      validFlybyDates: [t4],
-    },
-  ];
-
-  // Define links
-  const links: DirectionalLink[] = [
-    { id: 'link-0-1', sourceInstanceId: 'inst-0', targetInstanceId: 'inst-1' },
-    { id: 'link-1-2', sourceInstanceId: 'inst-1', targetInstanceId: 'inst-2' },
-    { id: 'link-2-3', sourceInstanceId: 'inst-2', targetInstanceId: 'inst-3' },
-  ];
-
-  const searchResults = await runSequenceSearch(instances, links, stockOpmGrannus.bodies, sun, () => {}, () => false);
-
-  let bestSeq;
-  let bestSeqFlybys: FlybyDetail[] = [];
-  if (searchResults.sequences && searchResults.sequences.length > 0) {
-    const seq = searchResults.sequences[0];
-    bestSeqFlybys = seq.flybys || [];
-
-    const flybyInfos: KEJGFlybyInfo[] = bestSeqFlybys.map(f => ({
-      bodyName: f.bodyName,
-      ut: f.flybyDate,
-      inboundVInfMag: f.vInfInMag,
-      outboundVInfMag: f.vInfOutMag,
-      deflectionAngleDeg: f.deflectionAngle,
-      maxDeflectionAngleDeg: f.maxDeflectionAngle,
-      periapsisAltKm: f.periapsisAlt / 1000,
-      flybyMarginKm: f.flybyMargin / 1000,
-      poweredDvMs: 0,
-      stochasticDvMs: f.stochasticDv,
-      isUnpowered: true,
-    }));
-
-    bestSeq = {
-      totalDvMs: seq.totalDv,
-      c3Dep: seq.depC3,
-      datesFormatted: [
-        formatShortUT(seq.depDate, 'ksp'),
-        ...seq.transfers.map(t => formatShortUT(t.arrDate, 'ksp'))
-      ],
-      travelTimesDays: seq.transfers.map(t => Math.round(t.flightTime / 21600)),
-      flybys: flybyInfos,
-    };
-  }
-
-  // Construct detailed debug info for Eve (inst-1) and Jool (inst-2)
-  const flybyDebugList: KEJGSampledFlybyDebug[] = [];
-
-  const pc01 = searchResults.porkchops['link-0-1'];
-  const pc12 = searchResults.porkchops['link-1-2'];
-  const pc23 = searchResults.porkchops['link-2-3'];
-
-  // 1. Eve debug info
-  const eveBody = stockOpmGrannus.bodies.find(b => b.name === 'Eve');
-  if (eveBody && pc01 && pc12) {
-    const eveDateSet = new Set<number>();
-    pc01.arrDates.forEach(d => eveDateSet.add(d));
-    pc12.depDates.forEach(d => eveDateSet.add(d));
-    const sortedEveDates = Array.from(eveDateSet).sort((a, b) => a - b);
-    const matchedEve = bestSeqFlybys.find(f => f.bodyName === 'Eve');
-    const sampledDatesEve = getDatesAroundStep1(sortedEveDates, tEveStep1, matchedEve?.flybyDate);
-
-    let inMin = Infinity, inMax = -Infinity;
-    if (pc01.vTransArrMatrix) {
-      for (let i = 0; i < pc01.depDates.length; i++) {
-        for (let j = 0; j < pc01.arrDates.length; j++) {
-          const vTrans = pc01.vTransArrMatrix[i]?.[j];
-          if (vTrans) {
-            const stEve = getBodyStateAtUT(eveBody, sun, pc01.arrDates[j]);
-            const vInf = vecMag(vecSub(vTrans, stEve.vel));
-            if (vInf < inMin) inMin = vInf;
-            if (vInf > inMax) inMax = vInf;
-          }
-        }
-      }
-    }
-
-    let outMin = Infinity, outMax = -Infinity;
-    if (pc12.vTransDepMatrix) {
-      for (let m = 0; m < pc12.depDates.length; m++) {
-        for (let n = 0; n < pc12.arrDates.length; n++) {
-          const vTrans = pc12.vTransDepMatrix[m]?.[n];
-          if (vTrans) {
-            const stEve = getBodyStateAtUT(eveBody, sun, pc12.depDates[m]);
-            const vInf = vecMag(vecSub(vTrans, stEve.vel));
-            if (vInf < outMin) outMin = vInf;
-            if (vInf > outMax) outMax = vInf;
-          }
-        }
-      }
-    }
-
-    const status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH' = matchedEve
-      ? (matchedEve.deflectionAngle <= matchedEve.maxDeflectionAngle && matchedEve.flybyMargin >= 0
-          ? 'VALID_UNPOWERED' : 'POWERED_REQUIRED')
-      : 'NO_FEASIBLE_MATCH';
-
-    flybyDebugList.push({
       instanceId: 'inst-1',
       bodyName: 'Eve',
       step1FlybyDateUt: tEveStep1,
       step1FlybyDateFormatted: formatShortUT(tEveStep1, 'ksp'),
-      sampledDates: sampledDatesEve,
-      sampledDatesCount: sortedEveDates.length,
-      minDateFormatted: sortedEveDates.length > 0 ? formatShortUT(sortedEveDates[0], 'ksp') : 'N/A',
-      maxDateFormatted: sortedEveDates.length > 0 ? formatShortUT(sortedEveDates[sortedEveDates.length - 1], 'ksp') : 'N/A',
-      inboundVInfMinMs: isFinite(inMin) ? inMin : 0,
-      inboundVInfMaxMs: isFinite(inMax) ? inMax : 0,
-      outboundVInfMinMs: isFinite(outMin) ? outMin : 0,
-      outboundVInfMaxMs: isFinite(outMax) ? outMax : 0,
-      matchedFlybyDateUt: matchedEve?.flybyDate,
-      matchedFlybyDateFormatted: matchedEve ? formatShortUT(matchedEve.flybyDate, 'ksp') : undefined,
-      matchedInboundVInfMs: matchedEve?.vInfInMag,
-      matchedOutboundVInfMs: matchedEve?.vInfOutMag,
-      deflectionAngleDeg: matchedEve?.deflectionAngle,
-      maxDeflectionAngleDeg: matchedEve?.maxDeflectionAngle,
-      periapsisAltKm: matchedEve ? matchedEve.periapsisAlt / 1000 : undefined,
-      flybyMarginKm: matchedEve ? matchedEve.flybyMargin / 1000 : undefined,
-      status,
-      statusLabel: status === 'VALID_UNPOWERED' ? '✓ Valid Unpowered Flyby' : status === 'POWERED_REQUIRED' ? '⚠ Powered Assist Required' : '✗ No Match',
-    });
-  }
-
-  // 2. Jool debug info
-  const joolBody = stockOpmGrannus.bodies.find(b => b.name === 'Jool');
-  if (joolBody && pc12 && pc23) {
-    const joolDateSet = new Set<number>();
-    pc12.arrDates.forEach(d => joolDateSet.add(d));
-    pc23.depDates.forEach(d => joolDateSet.add(d));
-    const sortedJoolDates = Array.from(joolDateSet).sort((a, b) => a - b);
-    const matchedJool = bestSeqFlybys.find(f => f.bodyName === 'Jool');
-    const sampledDatesJool = getDatesAroundStep1(sortedJoolDates, tJoolStep1, matchedJool?.flybyDate);
-
-    let inMin = Infinity, inMax = -Infinity;
-    if (pc12.vTransArrMatrix) {
-      for (let i = 0; i < pc12.depDates.length; i++) {
-        for (let j = 0; j < pc12.arrDates.length; j++) {
-          const vTrans = pc12.vTransArrMatrix[i]?.[j];
-          if (vTrans) {
-            const stJool = getBodyStateAtUT(joolBody, sun, pc12.arrDates[j]);
-            const vInf = vecMag(vecSub(vTrans, stJool.vel));
-            if (vInf < inMin) inMin = vInf;
-            if (vInf > inMax) inMax = vInf;
-          }
-        }
-      }
-    }
-
-    let outMin = Infinity, outMax = -Infinity;
-    if (pc23.vTransDepMatrix) {
-      for (let m = 0; m < pc23.depDates.length; m++) {
-        for (let n = 0; n < pc23.arrDates.length; n++) {
-          const vTrans = pc23.vTransDepMatrix[m]?.[n];
-          if (vTrans) {
-            const stJool = getBodyStateAtUT(joolBody, sun, pc23.depDates[m]);
-            const vInf = vecMag(vecSub(vTrans, stJool.vel));
-            if (vInf < outMin) outMin = vInf;
-            if (vInf > outMax) outMax = vInf;
-          }
-        }
-      }
-    }
-
-    const status: 'VALID_UNPOWERED' | 'POWERED_REQUIRED' | 'INVALID_MARGIN' | 'NO_FEASIBLE_MATCH' = matchedJool
-      ? (matchedJool.deflectionAngle <= matchedJool.maxDeflectionAngle && matchedJool.flybyMargin >= 0
-          ? 'VALID_UNPOWERED' : 'POWERED_REQUIRED')
-      : 'NO_FEASIBLE_MATCH';
-
-    flybyDebugList.push({
+      sampledDates: [
+        { ut: tEve1, formatted: formatShortUT(tEve1, 'ksp'), label: 'Just Before Step 1' },
+        { ut: tEve2, formatted: formatShortUT(tEve2, 'ksp'), label: 'Just After Step 1' },
+        ...(matchEve.matchedFlybyDate ? [{ ut: matchEve.matchedFlybyDate, formatted: formatShortUT(matchEve.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
+      ],
+      sampledDatesCount: 2,
+      minDateFormatted: formatShortUT(tEve1, 'ksp'),
+      maxDateFormatted: formatShortUT(tEve2, 'ksp'),
+      inboundVInfMinMs: Math.min(vecMag(vInfIn_E1), vecMag(vInfIn_E2)),
+      inboundVInfMaxMs: Math.max(vecMag(vInfIn_E1), vecMag(vInfIn_E2)),
+      outboundVInfMinMs: Math.min(vecMag(vInfOut_E1_J1), vecMag(vInfOut_E2_J1), vecMag(vInfOut_E1_J2), vecMag(vInfOut_E2_J2)),
+      outboundVInfMaxMs: Math.max(vecMag(vInfOut_E1_J1), vecMag(vInfOut_E2_J1), vecMag(vInfOut_E1_J2), vecMag(vInfOut_E2_J2)),
+      matchedFlybyDateUt: matchEve.matchedFlybyDate,
+      matchedFlybyDateFormatted: matchEve.matchedFlybyDate ? formatShortUT(matchEve.matchedFlybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchEve.vInfInMag,
+      matchedOutboundVInfMs: matchEve.vInfOutMag,
+      deflectionAngleDeg: matchEve.deflectionAngle,
+      maxDeflectionAngleDeg: matchEve.maxDeflectionAngle,
+      periapsisAltKm: matchEve.periapsisAlt / 1000,
+      flybyMarginKm: matchEve.flybyMargin / 1000,
+      status: matchEve.isValid ? 'VALID_UNPOWERED' : (matchEve.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
+      statusLabel: matchEve.isValid ? '✓ Valid Unpowered Flyby' : matchEve.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
+    },
+    {
       instanceId: 'inst-2',
       bodyName: 'Jool',
       step1FlybyDateUt: tJoolStep1,
       step1FlybyDateFormatted: formatShortUT(tJoolStep1, 'ksp'),
-      sampledDates: sampledDatesJool,
-      sampledDatesCount: sortedJoolDates.length,
-      minDateFormatted: sortedJoolDates.length > 0 ? formatShortUT(sortedJoolDates[0], 'ksp') : 'N/A',
-      maxDateFormatted: sortedJoolDates.length > 0 ? formatShortUT(sortedJoolDates[sortedJoolDates.length - 1], 'ksp') : 'N/A',
-      inboundVInfMinMs: isFinite(inMin) ? inMin : 0,
-      inboundVInfMaxMs: isFinite(inMax) ? inMax : 0,
-      outboundVInfMinMs: isFinite(outMin) ? outMin : 0,
-      outboundVInfMaxMs: isFinite(outMax) ? outMax : 0,
-      matchedFlybyDateUt: matchedJool?.flybyDate,
-      matchedFlybyDateFormatted: matchedJool ? formatShortUT(matchedJool.flybyDate, 'ksp') : undefined,
-      matchedInboundVInfMs: matchedJool?.vInfInMag,
-      matchedOutboundVInfMs: matchedJool?.vInfOutMag,
-      deflectionAngleDeg: matchedJool?.deflectionAngle,
-      maxDeflectionAngleDeg: matchedJool?.maxDeflectionAngle,
-      periapsisAltKm: matchedJool ? matchedJool.periapsisAlt / 1000 : undefined,
-      flybyMarginKm: matchedJool ? matchedJool.flybyMargin / 1000 : undefined,
-      status,
-      statusLabel: status === 'VALID_UNPOWERED' ? '✓ Valid Unpowered Flyby' : status === 'POWERED_REQUIRED' ? '⚠ Powered Assist Required' : '✗ No Match',
-    });
-  }
+      sampledDates: [
+        { ut: tJool1, formatted: formatShortUT(tJool1, 'ksp'), label: 'Just Before Step 1' },
+        { ut: tJool2, formatted: formatShortUT(tJool2, 'ksp'), label: 'Just After Step 1' },
+        ...(matchJool.matchedFlybyDate ? [{ ut: matchJool.matchedFlybyDate, formatted: formatShortUT(matchJool.matchedFlybyDate, 'ksp'), label: 'Matched Date' }] : [])
+      ],
+      sampledDatesCount: 2,
+      minDateFormatted: formatShortUT(tJool1, 'ksp'),
+      maxDateFormatted: formatShortUT(tJool2, 'ksp'),
+      inboundVInfMinMs: Math.min(vecMag(vInfIn_E1_J1), vecMag(vInfIn_E1_J2), vecMag(vInfIn_E2_J1), vecMag(vInfIn_E2_J2)),
+      inboundVInfMaxMs: Math.max(vecMag(vInfIn_E1_J1), vecMag(vInfIn_E1_J2), vecMag(vInfIn_E2_J1), vecMag(vInfIn_E2_J2)),
+      outboundVInfMinMs: Math.min(vecMag(vInfOut_J1), vecMag(vInfOut_J2)),
+      outboundVInfMaxMs: Math.max(vecMag(vInfOut_J1), vecMag(vInfOut_J2)),
+      matchedFlybyDateUt: matchJool.matchedFlybyDate,
+      matchedFlybyDateFormatted: matchJool.matchedFlybyDate ? formatShortUT(matchJool.matchedFlybyDate, 'ksp') : undefined,
+      matchedInboundVInfMs: matchJool.vInfInMag,
+      matchedOutboundVInfMs: matchJool.vInfOutMag,
+      deflectionAngleDeg: matchJool.deflectionAngle,
+      maxDeflectionAngleDeg: matchJool.maxDeflectionAngle,
+      periapsisAltKm: matchJool.periapsisAlt / 1000,
+      flybyMarginKm: matchJool.flybyMargin / 1000,
+      status: matchJool.isValid ? 'VALID_UNPOWERED' : (matchJool.matchedFlybyDate ? 'POWERED_REQUIRED' : 'NO_FEASIBLE_MATCH'),
+      statusLabel: matchJool.isValid ? '✓ Valid Unpowered Flyby' : matchJool.matchedFlybyDate ? '⚠ Powered Assist Required' : '✗ No Match',
+    }
+  ];
 
-  let totalGridPoints = 0;
-  if (searchResults.porkchops) {
-    Object.values(searchResults.porkchops).forEach(pc => {
-      if (pc && pc.depDates && pc.arrDates) {
-        totalGridPoints += pc.depDates.length * pc.arrDates.length;
-      }
-    });
+  let bestSeq;
+  const isOverallValid = matchEve.isValid && matchJool.isValid;
+  if (matchEve.matchedFlybyDate && matchJool.matchedFlybyDate) {
+    const eveDate = matchEve.matchedFlybyDate;
+    const joolDate = matchJool.matchedFlybyDate;
+
+    const stEveMatch = getBodyStateAtUT(eve, sun, eveDate);
+    const stJoolMatch = getBodyStateAtUT(jool, sun, joolDate);
+
+    const sol1 = solveLambert(stKerbin.pos, stEveMatch.pos, eveDate - t1, muSun, true);
+    const sol2 = solveLambert(stEveMatch.pos, stJoolMatch.pos, joolDate - eveDate, muSun, true);
+    const sol3 = solveLambert(stJoolMatch.pos, stGrannus.pos, t4 - joolDate, muSun, true);
+
+    const vInfDep1 = vecSub(sol1.v1, stKerbin.vel);
+    const c3Dep = vecMag(vInfDep1) ** 2;
+
+    bestSeq = {
+      totalDvMs: (matchEve.stochasticDv || 0) + (matchJool.stochasticDv || 0),
+      c3Dep,
+      datesFormatted: [
+        formatShortUT(t1, 'ksp'),
+        formatShortUT(eveDate, 'ksp'),
+        formatShortUT(joolDate, 'ksp'),
+        formatShortUT(t4, 'ksp')
+      ],
+      travelTimesDays: [
+        Math.round((eveDate - t1) / 21600),
+        Math.round((joolDate - eveDate) / 21600),
+        Math.round((t4 - joolDate) / 21600)
+      ],
+      flybys: [
+        {
+          bodyName: 'Eve',
+          ut: eveDate,
+          inboundVInfMag: matchEve.vInfInMag,
+          outboundVInfMag: matchEve.vInfOutMag,
+          deflectionAngleDeg: matchEve.deflectionAngle,
+          maxDeflectionAngleDeg: matchEve.maxDeflectionAngle,
+          periapsisAltKm: matchEve.periapsisAlt / 1000,
+          flybyMarginKm: matchEve.flybyMargin / 1000,
+          poweredDvMs: 0,
+          stochasticDvMs: matchEve.stochasticDv,
+          isUnpowered: matchEve.isValid
+        },
+        {
+          bodyName: 'Jool',
+          ut: joolDate,
+          inboundVInfMag: matchJool.vInfInMag,
+          outboundVInfMag: matchJool.vInfOutMag,
+          deflectionAngleDeg: matchJool.deflectionAngle,
+          maxDeflectionAngleDeg: matchJool.maxDeflectionAngle,
+          periapsisAltKm: matchJool.periapsisAlt / 1000,
+          flybyMarginKm: matchJool.flybyMargin / 1000,
+          poweredDvMs: 0,
+          stochasticDvMs: matchJool.stochasticDv,
+          isUnpowered: matchJool.isValid
+        }
+      ]
+    };
   }
 
   return {
-    passed: searchResults.sequences ? searchResults.sequences.length > 0 : false,
+    passed: isOverallValid,
     timestamp: Date.now(),
     systemName: stockOpmGrannus.name,
     samplingPerPeriod: 2,
-    porkchopsComputedCount: totalGridPoints,
-    validSequencesFound: searchResults.sequences ? searchResults.sequences.length : 0,
+    porkchopsComputedCount: 8,
+    validSequencesFound: isOverallValid ? 1 : 0,
     bestSequence: bestSeq,
     flybyDebugList,
   };
