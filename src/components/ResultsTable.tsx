@@ -401,7 +401,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {Object.values(sequencePorkchops).map(seqPc => (
+            {(Object.values(sequencePorkchops) as SequencePorkchopData[]).map(seqPc => (
               <button
                 key={seqPc.id}
                 onClick={() => onOpenSequencePorkchop?.(seqPc.id)}
