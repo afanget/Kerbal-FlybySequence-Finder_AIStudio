@@ -47,6 +47,9 @@ export interface InstanceNode {
   maxDate?: number; // UT in seconds (undefined = unconstrained)
   minFlybyRadius?: number; // meters above surface (default = atmosphereHeight || 10000)
   maxC3?: number; // m^2 / s^2 (undefined = no limit)
+  dateSampleCount?: number; // Override date sampling count N for this instance
+  isSourceOverride?: boolean; // Explicitly mark instance as a valid sequence source/start
+  isTargetOverride?: boolean; // Explicitly mark instance as a valid sequence target/end
 
   // Step 1 computed bounds (derived)
   computedMinDate?: number;
@@ -123,11 +126,14 @@ export interface PorkchopPlotData {
 export interface SequencePorkchopData {
   id: string;
   sequenceLabel: string;
+  is4Body?: boolean;
   sourceInstanceId: string;
   flybyInstanceId: string;
+  flyby2InstanceId?: string;
   targetInstanceId: string;
   sourceBody: string;
   flybyBody: string;
+  flyby2Body?: string;
   targetBody: string;
   depDates: number[];
   arrDates: number[];
@@ -135,8 +141,13 @@ export interface SequencePorkchopData {
   c3ArrBMatrix: number[][];
   c3DepBMatrix: number[][];
   c3ArrCMatrix: number[][];
+  c3DepCMatrix?: number[][];
+  c3ArrDMatrix?: number[][];
   poweredDvBMatrix: number[][];
+  poweredDvCMatrix?: number[][];
+  totalPoweredDvMatrix?: number[][];
   flybyDateMatrix: number[][];
+  flyby2DateMatrix?: number[][];
   flightTimeMatrix: number[][];
   validMatrix: boolean[][];
 }

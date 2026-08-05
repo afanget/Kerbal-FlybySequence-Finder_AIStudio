@@ -14,24 +14,30 @@ interface SequencePorkchopViewerProps {
   onClose: () => void;
 }
 
-export type SeqViewTab = 'c3DepA' | 'c3ArrB' | 'c3DepB' | 'c3ArrC' | 'poweredDvB';
+export type SeqViewTab = 'c3DepA' | 'c3ArrB' | 'c3DepB' | 'c3ArrC' | 'c3ArrD' | 'poweredDvB' | 'poweredDvC' | 'totalPoweredDv';
 
 export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   seqPorkchop,
   timeFormatMode,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<SeqViewTab>('poweredDvB');
+  const is4Body = !!seqPorkchop.is4Body;
+  const [activeTab, setActiveTab] = useState<SeqViewTab>(is4Body ? 'totalPoweredDv' : 'poweredDvB');
   const [hoverData, setHoverData] = useState<{
     depDate: number;
     flybyDate: number;
+    flyby2Date?: number;
     arrDate: number;
     flightTime: number;
     c3DepA: number;
     c3ArrB: number;
     c3DepB: number;
     c3ArrC: number;
+    c3DepC?: number;
+    c3ArrD?: number;
     poweredDvB: number;
+    poweredDvC?: number;
+    totalPoweredDv?: number;
     isValid: boolean;
     xPct: number;
     yPct: number;
@@ -48,7 +54,10 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       case 'c3ArrB': return seqPorkchop.c3ArrBMatrix;
       case 'c3DepB': return seqPorkchop.c3DepBMatrix;
       case 'c3ArrC': return seqPorkchop.c3ArrCMatrix;
+      case 'c3ArrD': return seqPorkchop.c3ArrDMatrix || seqPorkchop.c3ArrCMatrix;
       case 'poweredDvB': return seqPorkchop.poweredDvBMatrix;
+      case 'poweredDvC': return seqPorkchop.poweredDvCMatrix || seqPorkchop.poweredDvBMatrix;
+      case 'totalPoweredDv': return seqPorkchop.totalPoweredDvMatrix || seqPorkchop.poweredDvBMatrix;
     }
   };
 
@@ -150,24 +159,34 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       const depDate = seqPorkchop.depDates[i];
       const arrDate = seqPorkchop.arrDates[j];
       const flybyDate = seqPorkchop.flybyDateMatrix[i]?.[j] || (depDate + arrDate) / 2;
+      const flyby2Date = seqPorkchop.flyby2DateMatrix?.[i]?.[j];
       const flightTime = seqPorkchop.flightTimeMatrix[i]?.[j] || (arrDate - depDate);
       const c3DepA = seqPorkchop.c3DepAMatrix[i]?.[j] || 0;
       const c3ArrB = seqPorkchop.c3ArrBMatrix[i]?.[j] || 0;
       const c3DepB = seqPorkchop.c3DepBMatrix[i]?.[j] || 0;
       const c3ArrC = seqPorkchop.c3ArrCMatrix[i]?.[j] || 0;
+      const c3DepC = seqPorkchop.c3DepCMatrix?.[i]?.[j];
+      const c3ArrD = seqPorkchop.c3ArrDMatrix?.[i]?.[j];
       const poweredDvB = seqPorkchop.poweredDvBMatrix[i]?.[j] || 0;
+      const poweredDvC = seqPorkchop.poweredDvCMatrix?.[i]?.[j];
+      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] ?? poweredDvB;
       const isValid = seqPorkchop.validMatrix[i]?.[j] || false;
 
       setHoverData({
         depDate,
         flybyDate,
+        flyby2Date,
         arrDate,
         flightTime,
         c3DepA,
         c3ArrB,
         c3DepB,
         c3ArrC,
+        c3DepC,
+        c3ArrD,
         poweredDvB,
+        poweredDvC,
+        totalPoweredDv,
         isValid,
         xPct: (x / rect.width) * 100,
         yPct: (y / rect.height) * 100,
@@ -175,38 +194,71 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     }
   };
 
-  const tabs: { key: SeqViewTab; label: string; desc: string; unit: string }[] = [
-    {
-      key: 'c3DepA',
-      label: `Dep C3 (${seqPorkchop.sourceBody})`,
-      desc: `Departure C3 from ${seqPorkchop.sourceBody}`,
-      unit: 'km²/s²',
-    },
-    {
-      key: 'c3ArrB',
-      label: `Arr C3 (${seqPorkchop.flybyBody})`,
-      desc: `Inbound arrival C3 at ${seqPorkchop.flybyBody}`,
-      unit: 'km²/s²',
-    },
-    {
-      key: 'c3DepB',
-      label: `Dep C3 (${seqPorkchop.flybyBody})`,
-      desc: `Outbound departure C3 from ${seqPorkchop.flybyBody}`,
-      unit: 'km²/s²',
-    },
-    {
-      key: 'c3ArrC',
-      label: `Arr C3 (${seqPorkchop.targetBody})`,
-      desc: `Arrival C3 at ${seqPorkchop.targetBody}`,
-      unit: 'km²/s²',
-    },
-    {
-      key: 'poweredDvB',
-      label: `Powered Flyby Δv (${seqPorkchop.flybyBody})`,
-      desc: `Minimum powered flyby maneuver at ${seqPorkchop.flybyBody}`,
-      unit: 'm/s',
-    },
-  ];
+  const tabs: { key: SeqViewTab; label: string; desc: string; unit: string }[] = is4Body
+    ? [
+        {
+          key: 'totalPoweredDv',
+          label: `Total Powered Δv`,
+          desc: `Sum of powered flyby maneuvers at ${seqPorkchop.flybyBody} & ${seqPorkchop.flyby2Body}`,
+          unit: 'm/s',
+        },
+        {
+          key: 'poweredDvB',
+          label: `Flyby 1 Δv (${seqPorkchop.flybyBody})`,
+          desc: `Powered flyby maneuver at ${seqPorkchop.flybyBody}`,
+          unit: 'm/s',
+        },
+        {
+          key: 'poweredDvC',
+          label: `Flyby 2 Δv (${seqPorkchop.flyby2Body})`,
+          desc: `Powered flyby maneuver at ${seqPorkchop.flyby2Body}`,
+          unit: 'm/s',
+        },
+        {
+          key: 'c3DepA',
+          label: `Dep C3 (${seqPorkchop.sourceBody})`,
+          desc: `Departure C3 from ${seqPorkchop.sourceBody}`,
+          unit: 'km²/s²',
+        },
+        {
+          key: 'c3ArrD',
+          label: `Arr C3 (${seqPorkchop.targetBody})`,
+          desc: `Arrival C3 at ${seqPorkchop.targetBody}`,
+          unit: 'km²/s²',
+        },
+      ]
+    : [
+        {
+          key: 'c3DepA',
+          label: `Dep C3 (${seqPorkchop.sourceBody})`,
+          desc: `Departure C3 from ${seqPorkchop.sourceBody}`,
+          unit: 'km²/s²',
+        },
+        {
+          key: 'c3ArrB',
+          label: `Arr C3 (${seqPorkchop.flybyBody})`,
+          desc: `Inbound arrival C3 at ${seqPorkchop.flybyBody}`,
+          unit: 'km²/s²',
+        },
+        {
+          key: 'c3DepB',
+          label: `Dep C3 (${seqPorkchop.flybyBody})`,
+          desc: `Outbound departure C3 from ${seqPorkchop.flybyBody}`,
+          unit: 'km²/s²',
+        },
+        {
+          key: 'c3ArrC',
+          label: `Arr C3 (${seqPorkchop.targetBody})`,
+          desc: `Arrival C3 at ${seqPorkchop.targetBody}`,
+          unit: 'km²/s²',
+        },
+        {
+          key: 'poweredDvB',
+          label: `Powered Flyby Δv (${seqPorkchop.flybyBody})`,
+          desc: `Minimum powered flyby maneuver at ${seqPorkchop.flybyBody}`,
+          unit: 'm/s',
+        },
+      ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
@@ -220,11 +272,10 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                3-Instance Sequence Porkchop Plot
+                {is4Body ? '4-Instance Sequence Porkchop Plot' : '3-Instance Sequence Porkchop Plot'}
               </h2>
               <p className="text-[11px] text-[#A1A1AA]">
                 <span className="text-[#60A5FA] font-semibold">{seqPorkchop.sequenceLabel}</span>
-                {' · '}{seqPorkchop.sourceBody} ➔ {seqPorkchop.flybyBody} ➔ {seqPorkchop.targetBody}
               </p>
             </div>
           </div>
@@ -312,39 +363,74 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                 <span className="text-white font-semibold">{formatShortUT(hoverData.depDate, timeFormatMode)}</span>
               </div>
               <div>
-                <span className="text-[#71717A] block text-[10px]">Flyby ({seqPorkchop.flybyBody}):</span>
+                <span className="text-[#71717A] block text-[10px]">Flyby 1 ({seqPorkchop.flybyBody}):</span>
                 <span className="text-[#38BDF8] font-semibold">{formatShortUT(hoverData.flybyDate, timeFormatMode)}</span>
               </div>
+              {is4Body && hoverData.flyby2Date ? (
+                <div>
+                  <span className="text-[#71717A] block text-[10px]">Flyby 2 ({seqPorkchop.flyby2Body}):</span>
+                  <span className="text-[#38BDF8] font-semibold">{formatShortUT(hoverData.flyby2Date, timeFormatMode)}</span>
+                </div>
+              ) : null}
               <div>
                 <span className="text-[#71717A] block text-[10px]">Arr ({seqPorkchop.targetBody}):</span>
                 <span className="text-white font-semibold">{formatShortUT(hoverData.arrDate, timeFormatMode)}</span>
               </div>
-              <div>
-                <span className="text-[#71717A] block text-[10px]">Flight Time:</span>
-                <span className="text-white font-semibold">{formatDuration(hoverData.flightTime, timeFormatMode)}</span>
-              </div>
+              {!is4Body && (
+                <div>
+                  <span className="text-[#71717A] block text-[10px]">Flight Time:</span>
+                  <span className="text-white font-semibold">{formatDuration(hoverData.flightTime, timeFormatMode)}</span>
+                </div>
+              )}
 
               <div className="border-t border-[#27272A] pt-1 col-span-2 sm:col-span-4 grid grid-cols-5 gap-1 text-[10px]">
-                <div className={activeTab === 'c3DepA' ? 'text-[#38BDF8] font-bold' : ''}>
-                  <span className="text-[#71717A] block text-[9px]">Dep C3</span>
-                  <span>{hoverData.isValid ? `${hoverData.c3DepA.toFixed(1)}` : 'N/A'}</span>
-                </div>
-                <div className={activeTab === 'c3ArrB' ? 'text-[#38BDF8] font-bold' : ''}>
-                  <span className="text-[#71717A] block text-[9px]">Arr C3</span>
-                  <span>{hoverData.isValid ? `${hoverData.c3ArrB.toFixed(1)}` : 'N/A'}</span>
-                </div>
-                <div className={activeTab === 'c3DepB' ? 'text-[#38BDF8] font-bold' : ''}>
-                  <span className="text-[#71717A] block text-[9px]">Dep C3</span>
-                  <span>{hoverData.isValid ? `${hoverData.c3DepB.toFixed(1)}` : 'N/A'}</span>
-                </div>
-                <div className={activeTab === 'c3ArrC' ? 'text-[#38BDF8] font-bold' : ''}>
-                  <span className="text-[#71717A] block text-[9px]">Arr C3</span>
-                  <span>{hoverData.isValid ? `${hoverData.c3ArrC.toFixed(1)}` : 'N/A'}</span>
-                </div>
-                <div className={activeTab === 'poweredDvB' ? 'text-[#38BDF8] font-bold' : ''}>
-                  <span className="text-[#71717A] block text-[9px]">Powered Δv</span>
-                  <span>{hoverData.isValid ? `${hoverData.poweredDvB.toFixed(1)} m/s` : 'N/A'}</span>
-                </div>
+                {is4Body ? (
+                  <>
+                    <div className={activeTab === 'totalPoweredDv' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Total Powered Δv</span>
+                      <span>{hoverData.isValid ? `${hoverData.totalPoweredDv?.toFixed(1)} m/s` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'poweredDvB' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Flyby 1 Δv</span>
+                      <span>{hoverData.isValid ? `${hoverData.poweredDvB.toFixed(1)} m/s` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'poweredDvC' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Flyby 2 Δv</span>
+                      <span>{hoverData.isValid ? `${hoverData.poweredDvC?.toFixed(1)} m/s` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'c3DepA' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Dep C3</span>
+                      <span>{hoverData.isValid ? `${hoverData.c3DepA.toFixed(1)}` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'c3ArrD' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Arr C3</span>
+                      <span>{hoverData.isValid ? `${hoverData.c3ArrD?.toFixed(1)}` : 'N/A'}</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className={activeTab === 'c3DepA' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Dep C3</span>
+                      <span>{hoverData.isValid ? `${hoverData.c3DepA.toFixed(1)}` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'c3ArrB' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Arr C3</span>
+                      <span>{hoverData.isValid ? `${hoverData.c3ArrB.toFixed(1)}` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'c3DepB' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Dep C3</span>
+                      <span>{hoverData.isValid ? `${hoverData.c3DepB.toFixed(1)}` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'c3ArrC' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Arr C3</span>
+                      <span>{hoverData.isValid ? `${hoverData.c3ArrC.toFixed(1)}` : 'N/A'}</span>
+                    </div>
+                    <div className={activeTab === 'poweredDvB' ? 'text-[#38BDF8] font-bold' : ''}>
+                      <span className="text-[#71717A] block text-[9px]">Powered Δv</span>
+                      <span>{hoverData.isValid ? `${hoverData.poweredDvB.toFixed(1)} m/s` : 'N/A'}</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           ) : (

@@ -5,6 +5,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { InstanceNode, DirectionalLink, CelestialBody, PorkchopPlotData } from '../types';
+import { isInstanceSource, isInstanceTarget } from '../physics/solver';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import { Plus, Trash2, ArrowRight, Settings2, Info, Eye, Sliders } from 'lucide-react';
 
@@ -368,9 +369,41 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
             const isLinkTarget = linkSourceId !== null && linkSourceId !== inst.id;
 
             // Determine status chip
+            const isSrc = isInstanceSource(inst, links);
+            const isTgt = isInstanceTarget(inst, links);
+            const hasIn = links.some(l => l.targetInstanceId === inst.id);
+            const hasOut = links.some(l => l.sourceInstanceId === inst.id);
+
             let statusLabel = 'FLYBY';
-            if (index === 0) statusLabel = 'SOURCE';
-            else if (index === instances.length - 1) statusLabel = 'TARGET';
+            let statusColor = '#94A3B8';
+
+            if (isSrc && isTgt) {
+              statusLabel = 'SRC / TGT';
+              statusColor = '#38BDF8';
+            } else if (isSrc && !hasIn) {
+              statusLabel = 'SOURCE';
+              statusColor = '#10B981';
+            } else if (isTgt && !hasOut) {
+              statusLabel = 'TARGET';
+              statusColor = '#F59E0B';
+            } else if (hasIn && hasOut) {
+              if (inst.isTargetOverride) {
+                statusLabel = 'FLYBY (TGT)';
+                statusColor = '#F59E0B';
+              } else if (inst.isSourceOverride) {
+                statusLabel = 'FLYBY (SRC)';
+                statusColor = '#10B981';
+              } else {
+                statusLabel = 'FLYBY';
+                statusColor = '#94A3B8';
+              }
+            } else if (isSrc) {
+              statusLabel = 'SOURCE';
+              statusColor = '#10B981';
+            } else if (isTgt) {
+              statusLabel = 'TARGET';
+              statusColor = '#F59E0B';
+            }
 
             return (
               <g
@@ -422,7 +455,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                 {/* Status Label */}
                 <text
                   y="-3"
-                  fill={index === 0 ? "#10B981" : index === instances.length - 1 ? "#F59E0B" : "#94A3B8"}
+                  fill={statusColor}
                   fontSize="7.5"
                   fontWeight="700"
                   textAnchor="middle"

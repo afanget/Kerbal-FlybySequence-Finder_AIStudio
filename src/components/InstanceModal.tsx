@@ -43,6 +43,11 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
   );
 
   const [maxC3, setMaxC3] = useState<string>(instance.maxC3 !== undefined ? String(instance.maxC3) : '');
+  const [dateSampleCount, setDateSampleCount] = useState<string>(
+    instance.dateSampleCount !== undefined ? String(instance.dateSampleCount) : ''
+  );
+  const [isSourceOverride, setIsSourceOverride] = useState<boolean | undefined>(instance.isSourceOverride);
+  const [isTargetOverride, setIsTargetOverride] = useState<boolean | undefined>(instance.isTargetOverride);
 
   const handleApplyCalendarMin = () => {
     const ut = parseKSPTimeToUT(minYear, minDay, 0, 0, 0, timeFormatMode);
@@ -62,6 +67,9 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
       maxDate: maxDateSec !== '' ? parseFloat(maxDateSec) : undefined,
       minFlybyRadius: minFlybyRadius !== '' ? parseFloat(minFlybyRadius) : undefined,
       maxC3: maxC3 !== '' ? parseFloat(maxC3) : undefined,
+      dateSampleCount: dateSampleCount !== '' ? parseInt(dateSampleCount, 10) : undefined,
+      isSourceOverride,
+      isTargetOverride,
     });
     onClose();
   };
@@ -211,13 +219,13 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
             </div>
           </div>
 
-          {/* Flyby Radius & C3 Constraints */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* Flyby Radius, C3 & Sample Count Constraints */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-1">
               <div className="flex justify-between items-center">
                 <label className="text-[11px] font-serif uppercase tracking-wider text-[#E2E8F0] flex items-center gap-1">
                   <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                  Min Flyby Altitude (m)
+                  Min Altitude (m)
                 </label>
                 {minFlybyRadius !== '' && (
                   <button
@@ -233,11 +241,11 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 type="number"
                 value={minFlybyRadius}
                 onChange={(e) => setMinFlybyRadius(e.target.value)}
-                placeholder="Default atmosphere + 10km"
+                placeholder="Atmosphere + 10km"
                 className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
               />
               <span className="text-[10px] text-[#64748B]">
-                Above surface (Atmosphere = {body?.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'})
+                Above surface ({body?.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'})
               </span>
             </div>
 
@@ -245,7 +253,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
               <div className="flex justify-between items-center">
                 <label className="text-[11px] font-serif uppercase tracking-wider text-[#E2E8F0] flex items-center gap-1">
                   <Compass className="w-3.5 h-3.5 text-[#60A5FA]" />
-                  Max C3 Limit (km²/s²)
+                  Max C3 (km²/s²)
                 </label>
                 {maxC3 !== '' && (
                   <button
@@ -265,7 +273,74 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 placeholder="No limit"
                 className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
               />
-              <span className="text-[10px] text-[#64748B]">Hyperbolic excess energy max</span>
+              <span className="text-[10px] text-[#64748B]">Hyperbolic excess max</span>
+            </div>
+
+            <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-1">
+              <div className="flex justify-between items-center">
+                <label className="text-[11px] font-serif uppercase tracking-wider text-[#E2E8F0] flex items-center gap-1">
+                  <Compass className="w-3.5 h-3.5 text-emerald-400" />
+                  Date Samples (N)
+                </label>
+                {dateSampleCount !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setDateSampleCount('')}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
+                  >
+                    Unset
+                  </button>
+                )}
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={dateSampleCount}
+                onChange={(e) => setDateSampleCount(e.target.value)}
+                placeholder="Auto (Period based)"
+                className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-emerald-400 font-mono text-xs focus:border-emerald-400 focus:outline-none"
+              />
+              <span className="text-[10px] text-[#64748B]">1 = fixed date, N &gt; 1 = N samples</span>
+            </div>
+          </div>
+
+          {/* Sequence Trajectory Role Overrides */}
+          <div className="bg-[#25262B] p-3.5 rounded border border-[#2D2E33] flex flex-col gap-2.5">
+            <div className="flex items-center gap-2 text-[#E2E8F0] font-semibold text-xs border-b border-[#2D2E33] pb-2">
+              <Compass className="w-4 h-4 text-[#38BDF8]" />
+              <span className="uppercase text-[11px] tracking-wider font-serif">Sequence Trajectory Role</span>
+            </div>
+            <p className="text-[11px] text-[#94A3B8] leading-relaxed">
+              By default, instances with no incoming arrows act as <strong className="text-emerald-400 font-mono">Source</strong> (starts) and instances with no outgoing arrows act as <strong className="text-amber-400 font-mono">Target</strong> (destinations). You can explicitly enable Source or Target status on any flyby body to evaluate shorter or intermediate sequences in the same results table.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <label className="flex items-start gap-2.5 p-2 bg-[#1A1B1E] border border-[#2D2E33] rounded hover:border-[#38BDF8]/50 cursor-pointer transition select-none">
+                <input
+                  type="checkbox"
+                  checked={isSourceOverride ?? false}
+                  onChange={(e) => setIsSourceOverride(e.target.checked)}
+                  className="mt-0.5 rounded border-[#2D2E33] bg-[#25262B] text-[#38BDF8] focus:ring-[#38BDF8]"
+                />
+                <div className="flex flex-col">
+                  <span className="text-[#E2E8F0] font-semibold text-xs text-emerald-400">Sequence Source</span>
+                  <span className="text-[10px] text-[#64748B]">Allow trajectories to start from this instance</span>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-2 bg-[#1A1B1E] border border-[#2D2E33] rounded hover:border-[#38BDF8]/50 cursor-pointer transition select-none">
+                <input
+                  type="checkbox"
+                  checked={isTargetOverride ?? false}
+                  onChange={(e) => setIsTargetOverride(e.target.checked)}
+                  className="mt-0.5 rounded border-[#2D2E33] bg-[#25262B] text-[#38BDF8] focus:ring-[#38BDF8]"
+                />
+                <div className="flex flex-col">
+                  <span className="text-[#E2E8F0] font-semibold text-xs text-amber-400">Sequence Target</span>
+                  <span className="text-[10px] text-[#64748B]">Allow trajectories to terminate at this instance</span>
+                </div>
+              </label>
             </div>
           </div>
 

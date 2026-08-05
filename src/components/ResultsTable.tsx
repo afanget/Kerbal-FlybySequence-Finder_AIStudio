@@ -61,6 +61,13 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [sortKey, setSortKey] = useState<ResultTableColumnKey>('totalStochasticDv');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [expandedSeqId, setExpandedSeqId] = useState<string | null>(null);
+  const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
+
+  const uniqueSequencePaths = useMemo(() => {
+    const set = new Set<string>();
+    results.forEach(r => set.add(r.bodyNames.join(' ➔ ')));
+    return Array.from(set);
+  }, [results]);
 
   // Pre-flyby position & speed error parameters (default 10 km and 1.0 m/s)
   const [stochasticAltErrorKm, setStochasticAltErrorKm] = useState<number>(10);
@@ -199,6 +206,11 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     });
   }, [recomputedResults, sortKey, sortAsc]);
 
+  const filteredResults = useMemo(() => {
+    if (selectedPathFilter === 'ALL') return sortedResults;
+    return sortedResults.filter(r => r.bodyNames.join(' ➔ ') === selectedPathFilter);
+  }, [sortedResults, selectedPathFilter]);
+
   const handleSort = (key: ResultTableColumnKey) => {
     if (sortKey === key) {
       setSortAsc(!sortAsc);
@@ -215,7 +227,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
       return;
     }
 
-    const exportRows = sortedResults.map((seq, idx) => {
+    const exportRows = filteredResults.map((seq, idx) => {
       const isLongFlight = seq.totalFlightTime > daysToSeconds(10, timeFormatMode);
       const depCal = isLongFlight ? formatShortUT(seq.depDate, timeFormatMode) : formatUT(seq.depDate, timeFormatMode);
       const arrCal = isLongFlight ? formatShortUT(seq.arrDate, timeFormatMode) : formatUT(seq.arrDate, timeFormatMode);
@@ -393,7 +405,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
               <Compass className="w-4 h-4 text-[#38BDF8]" />
-              <span>3-Instance Sequence Porkchops</span>
+              <span>Multi-Instance Sequence Porkchops</span>
             </div>
             <span className="text-[11px] font-mono text-[#94A3B8]">
               {Object.keys(sequencePorkchops).length} plot(s) available
@@ -411,6 +423,35 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                 <span>{seqPc.sequenceLabel} Porkchop Plot</span>
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Sequence Path Filter (if multiple distinct paths exist) */}
+      {uniqueSequencePaths.length > 1 && (
+        <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <Compass className="w-4 h-4 text-[#38BDF8]" />
+            <span className="font-semibold text-[#E2E8F0] uppercase tracking-wider text-[11px]">
+              Sequence Path Filter:
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedPathFilter}
+              onChange={(e) => setSelectedPathFilter(e.target.value)}
+              className="bg-[#1A1B1E] border border-[#2D2E33] text-[#38BDF8] rounded px-3 py-1.5 text-xs font-mono font-bold focus:outline-none focus:border-[#38BDF8]"
+            >
+              <option value="ALL">All Sequence Paths ({results.length} total solutions)</option>
+              {uniqueSequencePaths.map(pathStr => {
+                const count = results.filter(r => r.bodyNames.join(' ➔ ') === pathStr).length;
+                return (
+                  <option key={pathStr} value={pathStr}>
+                    {pathStr} ({count} solution{count === 1 ? '' : 's'})
+                  </option>
+                );
+              })}
+            </select>
           </div>
         </div>
       )}
@@ -468,8 +509,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-[#2D2E33] font-mono">
-            {sortedResults.length > 0 ? (
-              sortedResults.map((seq, index) => {
+            {filteredResults.length > 0 ? (
+              filteredResults.map((seq, index) => {
                 const isExpanded = expandedSeqId === seq.id;
                 const isLongFlight = seq.totalFlightTime > daysToSeconds(10, timeFormatMode);
                 const sumC3Stoch = seq.depC3 + seq.arrC3 + (seq.totalStochasticDv / 1000) ** 2;

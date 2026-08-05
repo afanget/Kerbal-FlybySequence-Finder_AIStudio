@@ -124,11 +124,11 @@ export default function App() {
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
-        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (7-1) * kspYearSec, maxC3: 100},
+        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 100},
         {id: 'inst-E1', bodyName: 'Eve'    , x: 320, y: 120, minFlybyRadius: 100000},
         {id: 'inst-J', bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000},
         {id: 'inst-U', bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000},
-        {id: 'inst-G', bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25},
+        {id: 'inst-G', bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25, dateSampleCount: 1},
       ];
 
       newLinks = [
