@@ -27,8 +27,17 @@ export interface SolverProgress {
   instances: InstanceNode[];
   links: DirectionalLink[];
   porkchops: Record<string, PorkchopPlotData>;
+  sequencePorkchops?: Record<string, SequencePorkchopData>;
   validSequences: FlyableSequenceResult[];
   isComplete: boolean;
+}
+
+export interface SolverResult {
+  updatedInstances: InstanceNode[];
+  updatedLinks: DirectionalLink[];
+  porkchops: Record<string, PorkchopPlotData>;
+  sequencePorkchops?: Record<string, SequencePorkchopData>;
+  sequences: FlyableSequenceResult[];
 }
 
 /**
@@ -1650,4 +1659,304 @@ async function findValidTrajectoriesForPath(
   }
 
   await search(0, []);
+}
+
+/**
+ * Alternative Sequence Search Algorithm ("Search possible sequences (another way)")
+ * Directly searches multi-body trajectory sequences across all valid paths without grid pruning.
+ * Computes flybys (including powered flyby maneuver delta-V if required).
+ * Applies 100-day window filter: keeps global minimum fuel cost sequence + sequences at least 100 days later.
+ * Sorts all matching sequences by sum(C3d, C3a, stocDv²).
+ */
+export async function runSequenceSearchAlt(
+  instances: InstanceNode[],
+  links: DirectionalLink[],
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  onProgress?: ProgressCallback,
+  onPartialUpdate?: (partial: Partial<SolverProgress>) => void,
+  shouldStop?: () => boolean
+): Promise<SolverResult> {
+  let currInstances = [...instances];
+  let currLinks = [...links];
+  const porkchops: Record<string, PorkchopPlotData> = {};
+  const sequencePorkchops: Record<string, SequencePorkchopData> = {};
+
+  const earlyReturn = (): SolverResult => ({
+    updatedInstances: currInstances,
+    updatedLinks: currLinks,
+    porkchops,
+    sequencePorkchops,
+    sequences: []
+  });
+
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  // Step 1: Propagate date bounds
+  onProgress?.('Propagating date bounds...');
+  await yieldUI();
+  if (shouldStop?.()) return earlyReturn();
+  currInstances = propagateDateBounds(currInstances, currLinks);
+  onPartialUpdate?.({ instances: currInstances, links: currLinks });
+
+  // Step 2: Identify sequence paths
+  const startInstances = currInstances.filter(i => isInstanceSource(i, currLinks));
+  const allPaths: DirectionalLink[][] = [];
+  for (const startInst of startInstances) {
+    allPaths.push(...findAllPaths(startInst.id, currLinks, currInstances));
+  }
+
+  if (allPaths.length === 0) {
+    onProgress?.('No complete sequence paths found.');
+    return earlyReturn();
+  }
+
+  const allKeptSequences: FlyableSequenceResult[] = [];
+
+  for (let pIdx = 0; pIdx < allPaths.length; pIdx++) {
+    if (shouldStop?.()) return earlyReturn();
+    const pathLinks = allPaths[pIdx];
+    const pathInsts: InstanceNode[] = [];
+    pathInsts.push(currInstances.find(i => i.id === pathLinks[0].sourceInstanceId)!);
+    for (const l of pathLinks) {
+      pathInsts.push(currInstances.find(i => i.id === l.targetInstanceId)!);
+    }
+
+    const pathStr = pathInsts.map(i => i.bodyName).join(' ➔ ');
+    onProgress?.(`Searching trajectories for path ${pIdx + 1}/${allPaths.length}: ${pathStr}...`);
+    await yieldUI();
+
+    const srcInst = pathInsts[0];
+    const t0Min = srcInst.computedMinDate !== undefined ? srcInst.computedMinDate : 0;
+    const t0Max = srcInst.computedMaxDate !== undefined ? srcInst.computedMaxDate : t0Min + 3600 * 24 * 365 * 20;
+    const dateRange = Math.max(3600 * 24 * 30, t0Max - t0Min);
+
+    // Fine-grained departure dates sampling
+    const numT0Samples = Math.min(100, Math.max(30, Math.floor(dateRange / (3600 * 24 * 20))));
+    const stepT0 = dateRange / Math.max(1, numT0Samples - 1);
+
+    const candidatesForPath: FlyableSequenceResult[] = [];
+
+    const evaluatePathBranch = async (
+      legIdx: number,
+      tPrev: number,
+      currentTransfers: LambertTransferResult[],
+      currentFlybys: FlybyDetail[],
+      currentSolPrev?: LambertSolution
+    ) => {
+      if (shouldStop?.()) return;
+
+      if (legIdx === pathLinks.length) {
+        // Reached target instance! Assemble sequence result
+        const solFirst = currentTransfers[0].sol!;
+        const solLast = currentTransfers[currentTransfers.length - 1].sol!;
+
+        const depInstNode = pathInsts[0];
+        const arrInstNode = pathInsts[pathInsts.length - 1];
+
+        const depBody = bodyMap.get(depInstNode.bodyName) || mainBody;
+        const arrBody = bodyMap.get(arrInstNode.bodyName) || mainBody;
+
+        const depState = getBodyStateAtUT(depBody, mainBody, currentTransfers[0].depDate);
+        const arrState = getBodyStateAtUT(arrBody, mainBody, tPrev);
+
+        const vInfDepVec = vecSub(solFirst.v1, depState.vel);
+        const vInfArrVec = vecSub(solLast.v2, arrState.vel);
+
+        const depC3 = (vecMag(vInfDepVec) ** 2) / 1e6;
+        const arrC3 = (vecMag(vInfArrVec) ** 2) / 1e6;
+
+        if (depInstNode.maxC3 !== undefined && depC3 > depInstNode.maxC3) return;
+        if (arrInstNode.maxC3 !== undefined && arrC3 > arrInstNode.maxC3) return;
+
+        let totalStochasticDv = 0;
+        currentFlybys.forEach(f => {
+          totalStochasticDv += f.stochasticDv + (f.poweredDv || 0);
+        });
+
+        const seqResult: FlyableSequenceResult = {
+          id: `seq-alt-${pathInsts.map(i => i.id).join('-')}-${Math.round(currentTransfers[0].depDate)}-${Math.round(tPrev)}-${candidatesForPath.length}`,
+          instanceIds: pathInsts.map(i => i.id),
+          bodyNames: pathInsts.map(i => i.bodyName),
+          depDate: currentTransfers[0].depDate,
+          arrDate: tPrev,
+          totalFlightTime: tPrev - currentTransfers[0].depDate,
+          depC3,
+          arrC3,
+          totalStochasticDv,
+          totalDv: totalStochasticDv,
+          transfers: currentTransfers,
+          flybys: currentFlybys
+        };
+
+        candidatesForPath.push(seqResult);
+        return;
+      }
+
+      const link = pathLinks[legIdx];
+      const srcNode = pathInsts[legIdx];
+      const tgtNode = pathInsts[legIdx + 1];
+
+      const srcBody = bodyMap.get(srcNode.bodyName) || mainBody;
+      const tgtBody = bodyMap.get(tgtNode.bodyName) || mainBody;
+
+      const aSrc = srcBody.semiMajorAxis || 1e10;
+      const aTgt = tgtBody.semiMajorAxis || 1e10;
+      const aTrans = (aSrc + aTgt) / 2;
+      const hohmannDur = Math.PI * Math.sqrt(Math.pow(aTrans, 3) / (mainBody.stdGravParam || 1e12));
+
+      const minDur = link.minFlightDuration !== undefined ? link.minFlightDuration : Math.max(3600 * 24 * 5, hohmannDur * 0.15);
+      const maxDur = link.maxFlightDuration !== undefined ? link.maxFlightDuration : Math.min(3600 * 24 * 365 * 30, hohmannDur * 3.0);
+
+      const durRange = Math.max(3600 * 24 * 10, maxDur - minDur);
+      const numDurSamples = Math.min(45, Math.max(15, Math.floor(durRange / (3600 * 24 * 20))));
+      const durStep = durRange / Math.max(1, numDurSamples - 1);
+
+      const stSrc = getBodyStateAtUT(srcBody, mainBody, tPrev);
+
+      for (let dIdx = 0; dIdx < numDurSamples; dIdx++) {
+        const dt = minDur + dIdx * durStep;
+        const tCurr = tPrev + dt;
+
+        if (tgtNode.computedMinDate !== undefined && tCurr < tgtNode.computedMinDate) continue;
+        if (tgtNode.computedMaxDate !== undefined && tCurr > tgtNode.computedMaxDate) continue;
+
+        const stTgt = getBodyStateAtUT(tgtBody, mainBody, tCurr);
+        const sol = solveLambert(stSrc.pos, stTgt.pos, dt, mainBody.stdGravParam || 1e12, true);
+        if (!sol.isValid) continue;
+
+        let flybyDetail: FlybyDetail | undefined = undefined;
+
+        if (legIdx > 0) {
+          const vInfIn = vecSub(currentSolPrev!.v2, stSrc.vel);
+          const vInfOut = vecSub(sol.v1, stSrc.vel);
+
+          const flybyEval = evaluateFlybyAtDate(
+            srcBody,
+            vInfIn,
+            vInfOut,
+            tPrev,
+            srcNode.minFlybyRadius
+          );
+
+          if (!flybyEval.isValid) continue;
+
+          if (srcNode.maxC3 !== undefined) {
+            const c3In = (flybyEval.vInfInMag / 1000) ** 2;
+            const c3Out = (flybyEval.vInfOutMag / 1000) ** 2;
+            if (c3In > srcNode.maxC3 || c3Out > srcNode.maxC3) continue;
+          }
+
+          flybyDetail = {
+            bodyName: srcBody.name,
+            instanceId: srcNode.id,
+            flybyDate: tPrev,
+            flybyDateSampling: 86400,
+            periapsisAlt: flybyEval.periapsisAlt,
+            flybyMargin: flybyEval.flybyMargin,
+            deflectionAngle: flybyEval.deflectionAngleDeg,
+            maxDeflectionAngle: flybyEval.maxDeflectionAngleDeg,
+            stochasticDv: flybyEval.stochasticDv,
+            poweredDv: flybyEval.poweredDv,
+            vInfInMag: flybyEval.vInfInMag,
+            vInfOutMag: flybyEval.vInfOutMag
+          };
+        }
+
+        const vInfDepVec = vecSub(sol.v1, stSrc.vel);
+        const vInfArrVec = vecSub(sol.v2, stTgt.vel);
+
+        const transfer: LambertTransferResult = {
+          linkId: link.id,
+          sourceInstanceId: srcNode.id,
+          targetInstanceId: tgtNode.id,
+          depDate: tPrev,
+          arrDate: tCurr,
+          flightTime: dt,
+          vInfDep: [vInfDepVec.x, vInfDepVec.y, vInfDepVec.z],
+          vInfArr: [vInfArrVec.x, vInfArrVec.y, vInfArrVec.z],
+          c3Dep: (vecMag(vInfDepVec) ** 2) / 1e6,
+          c3Arr: (vecMag(vInfArrVec) ** 2) / 1e6,
+          depAngle: 0,
+          arrAngle: 0,
+          transferOrbitSemiMajorAxis: sol.semiMajorAxis,
+          vTransDep: [sol.v1.x, sol.v1.y, sol.v1.z],
+          vTransArr: [sol.v2.x, sol.v2.y, sol.v2.z],
+          isValid: true,
+          sol
+        };
+
+        const nextTransfers = [...currentTransfers, transfer];
+        const nextFlybys = flybyDetail ? [...currentFlybys, flybyDetail] : [...currentFlybys];
+
+        await evaluatePathBranch(legIdx + 1, tCurr, nextTransfers, nextFlybys, sol);
+      }
+    };
+
+    for (let s0 = 0; s0 < numT0Samples; s0++) {
+      if (shouldStop?.()) break;
+      const tDep0 = t0Min + s0 * stepT0;
+      if (srcInst.computedMinDate !== undefined && tDep0 < srcInst.computedMinDate) continue;
+      if (srcInst.computedMaxDate !== undefined && tDep0 > srcInst.computedMaxDate) continue;
+
+      await evaluatePathBranch(0, tDep0, [], []);
+
+      if (s0 % 10 === 0) {
+        onProgress?.(`[${pathStr}] Sampling departure date ${s0 + 1}/${numT0Samples} - Found ${candidatesForPath.length} candidates...`);
+        await yieldUI();
+      }
+    }
+
+    // Apply 100-Day Window & Minimum Fuel Cost Filter
+    if (candidatesForPath.length > 0) {
+      candidatesForPath.sort((a, b) => a.depDate - b.depDate);
+
+      let globalMinCandidate = candidatesForPath[0];
+      let minScore = Infinity;
+      candidatesForPath.forEach(c => {
+        const score = c.depC3 + c.arrC3 + (c.totalStochasticDv / 1000) ** 2;
+        if (score < minScore) {
+          minScore = score;
+          globalMinCandidate = c;
+        }
+      });
+
+      const keptForPath: FlyableSequenceResult[] = [];
+      let lastKeptDepDate = -Infinity;
+
+      for (const cand of candidatesForPath) {
+        const isGlobalMin = (cand.id === globalMinCandidate.id);
+        const is100DaysLater = (cand.depDate >= lastKeptDepDate + 100 * 86400);
+
+        if (isGlobalMin || is100DaysLater) {
+          if (!keptForPath.some(k => k.id === cand.id)) {
+            keptForPath.push(cand);
+          }
+          if (is100DaysLater) {
+            lastKeptDepDate = cand.depDate;
+          }
+        }
+      }
+
+      allKeptSequences.push(...keptForPath);
+    }
+  }
+
+  // Sort ALL kept sequence results by sum(C3d, C3a, stocDv²) ascending
+  allKeptSequences.sort((a, b) => {
+    const scoreA = a.depC3 + a.arrC3 + (a.totalStochasticDv / 1000) ** 2;
+    const scoreB = b.depC3 + b.arrC3 + (b.totalStochasticDv / 1000) ** 2;
+    return scoreA - scoreB;
+  });
+
+  onProgress?.(`Search completed! ${allKeptSequences.length} trajectory sequences evaluated and filtered.`);
+
+  return {
+    updatedInstances: currInstances,
+    updatedLinks: currLinks,
+    porkchops,
+    sequencePorkchops,
+    sequences: allKeptSequences
+  };
 }

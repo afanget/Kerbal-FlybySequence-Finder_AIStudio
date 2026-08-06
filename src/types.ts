@@ -86,7 +86,12 @@ export interface CanvasGraphConfig {
   timeFormatMode: 'ksp' | 'earth'; // KSP = 6h days / 426d years, Earth = 24h days / 365d years
 }
 
+import { LambertSolution } from './physics/lambert';
+
 export interface LambertTransferResult {
+  linkId?: string;
+  sourceInstanceId?: string;
+  targetInstanceId?: string;
   depDate: number;
   arrDate: number;
   flightTime: number;
@@ -100,6 +105,7 @@ export interface LambertTransferResult {
   vTransDep: [number, number, number];
   vTransArr: [number, number, number];
   isValid: boolean;
+  sol?: LambertSolution;
 }
 
 export interface Vector3D {
@@ -162,6 +168,7 @@ export interface FlybyDetail {
   deflectionAngle: number; // degrees
   maxDeflectionAngle: number; // degrees achievable at minFlybyRadius
   stochasticDv: number; // m/s required to correct trajectory post-flyby due to 10km alt & 1m/s speed errors
+  poweredDv?: number; // m/s required at periapsis if powered flyby
   vInfInMag: number; // m/s
   vInfOutMag: number; // m/s
 }

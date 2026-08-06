@@ -10,13 +10,22 @@ import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDv
 import { getBodyStateAtUT, getGravitationalParameter, stateToOrbitalElements, Vector3D } from '../physics/kepler';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
 import * as XLSX from 'xlsx';
-import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, RefreshCw, Terminal, CheckCircle2, XCircle, Compass, Activity } from 'lucide-react';
+import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, SlidersHorizontal, RefreshCw, Terminal, CheckCircle2, XCircle, Compass, Activity, Plus, Trash2, ArrowUp, ArrowDown, Layers, ListFilter, X, ChevronUp, ChevronDown } from 'lucide-react';
+
+export interface SortRule {
+  id: string;
+  key: ResultTableColumnKey;
+  direction: 'asc' | 'desc';
+}
 
 interface ResultsTableProps {
   results: FlyableSequenceResult[];
   timeFormatMode: 'ksp' | 'earth';
   onSearchSequences: () => void;
+  onSearchSequencesAlt?: () => void;
   onStopSearch?: () => void;
+  onRemoveResult?: (seqId: string) => void;
+  onClearResults?: () => void;
   isSearching: boolean;
   searchStatusText?: string;
   bodies?: CelestialBody[];
@@ -46,7 +55,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   results,
   timeFormatMode,
   onSearchSequences,
+  onSearchSequencesAlt,
   onStopSearch,
+  onRemoveResult,
+  onClearResults,
   isSearching,
   searchStatusText,
   bodies = [],
@@ -58,8 +70,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   instances,
 }) => {
   const [columns, setColumns] = useState<ResultTableColumn[]>(DEFAULT_COLUMNS);
-  const [sortKey, setSortKey] = useState<ResultTableColumnKey>('totalStochasticDv');
-  const [sortAsc, setSortAsc] = useState<boolean>(true);
+  const [sortRules, setSortRules] = useState<SortRule[]>([
+    { id: 'rule-1', key: 'c3PlusStochDv2', direction: 'asc' }
+  ]);
+  const [isSortPanelOpen, setIsSortPanelOpen] = useState<boolean>(false);
   const [expandedSeqId, setExpandedSeqId] = useState<string | null>(null);
   const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
 
@@ -68,6 +82,59 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     results.forEach(r => set.add(r.bodyNames.join(' ➔ ')));
     return Array.from(set);
   }, [results]);
+
+  // Multi-level sort rule management helpers
+  const handleAddSortRule = () => {
+    const usedKeys = new Set(sortRules.map(r => r.key));
+    const availableCol = DEFAULT_COLUMNS.find(c => !usedKeys.has(c.key)) || DEFAULT_COLUMNS[0];
+    setSortRules(prev => [
+      ...prev,
+      { id: `rule-${Date.now()}-${Math.random()}`, key: availableCol.key, direction: 'asc' }
+    ]);
+  };
+
+  const handleRemoveSortRule = (id: string) => {
+    if (sortRules.length <= 1) return; // Keep at least 1 rule
+    setSortRules(prev => prev.filter(r => r.id !== id));
+  };
+
+  const handleUpdateSortRule = (id: string, updates: Partial<SortRule>) => {
+    setSortRules(prev => prev.map(r => r.id === id ? { ...r, ...updates } : r));
+  };
+
+  const handleMoveSortRule = (index: number, direction: 'up' | 'down') => {
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    if (targetIdx < 0 || targetIdx >= sortRules.length) return;
+    const copy = [...sortRules];
+    const temp = copy[index];
+    copy[index] = copy[targetIdx];
+    copy[targetIdx] = temp;
+    setSortRules(copy);
+  };
+
+  const handleResetSortRules = () => {
+    setSortRules([{ id: 'rule-1', key: 'c3PlusStochDv2', direction: 'asc' }]);
+  };
+
+  const handleHeaderSortClick = (key: ResultTableColumnKey, event: React.MouseEvent) => {
+    if (event.shiftKey) {
+      // Shift-click: Append column as next sort level, or toggle if already present
+      const existingIdx = sortRules.findIndex(r => r.key === key);
+      if (existingIdx >= 0) {
+        const curr = sortRules[existingIdx];
+        handleUpdateSortRule(curr.id, { direction: curr.direction === 'asc' ? 'desc' : 'asc' });
+      } else {
+        setSortRules(prev => [...prev, { id: `rule-${Date.now()}`, key, direction: 'asc' }]);
+      }
+    } else {
+      // Normal click: Set as primary sort rule, or toggle if already primary
+      if (sortRules.length > 0 && sortRules[0].key === key) {
+        handleUpdateSortRule(sortRules[0].id, { direction: sortRules[0].direction === 'asc' ? 'desc' : 'asc' });
+      } else {
+        setSortRules([{ id: `rule-${Date.now()}`, key, direction: 'asc' }]);
+      }
+    }
+  };
 
   // Pre-flyby position & speed error parameters (default 10 km and 1.0 m/s)
   const [stochasticAltErrorKm, setStochasticAltErrorKm] = useState<number>(10);
@@ -147,78 +214,81 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     });
   }, [results, stochasticAltErrorKm, stochasticVelErrorMs, bodies]);
 
-  // Sorting
+  // Multi-Column Sorting Logic
   const sortedResults = useMemo(() => {
     return [...recomputedResults].sort((a, b) => {
-      let valA: any = 0;
-      let valB: any = 0;
+      if (sortRules.length === 0) return 0;
 
-      switch (sortKey) {
-        case 'sequence':
-          valA = a.bodyNames.join('->');
-          valB = b.bodyNames.join('->');
-          break;
-        case 'depDate':
-          valA = a.depDate;
-          valB = b.depDate;
-          break;
-        case 'arrDate':
-          valA = a.arrDate;
-          valB = b.arrDate;
-          break;
-        case 'flightTime':
-          valA = a.totalFlightTime;
-          valB = b.totalFlightTime;
-          break;
-        case 'depC3':
-          valA = a.depC3;
-          valB = b.depC3;
-          break;
-        case 'arrC3':
-          valA = a.arrC3;
-          valB = b.arrC3;
-          break;
-        case 'totalStochasticDv':
-          valA = a.totalStochasticDv;
-          valB = b.totalStochasticDv;
-          break;
-        case 'c3PlusStochDv2':
-          valA = a.depC3 + a.arrC3 + (a.totalStochasticDv / 1000) ** 2;
-          valB = b.depC3 + b.arrC3 + (b.totalStochasticDv / 1000) ** 2;
-          break;
-        case 'flybyHeight':
-          valA = a.flybys[0]?.periapsisAlt ?? -1;
-          valB = b.flybys[0]?.periapsisAlt ?? -1;
-          break;
-        case 'flybyDeflection':
-          valA = a.flybys[0]?.deflectionAngle ?? -1;
-          valB = b.flybys[0]?.deflectionAngle ?? -1;
-          break;
-        case 'flybyC3':
-          valA = a.flybys[0] ? (a.flybys[0].vInfInMag / 1000) ** 2 : -1;
-          valB = b.flybys[0] ? (b.flybys[0].vInfInMag / 1000) ** 2 : -1;
-          break;
+      for (const rule of sortRules) {
+        let valA: any = 0;
+        let valB: any = 0;
+
+        switch (rule.key) {
+          case 'sequence':
+            valA = a.bodyNames.join('->');
+            valB = b.bodyNames.join('->');
+            break;
+          case 'depDate':
+            valA = a.depDate;
+            valB = b.depDate;
+            break;
+          case 'arrDate':
+            valA = a.arrDate;
+            valB = b.arrDate;
+            break;
+          case 'flightTime':
+            valA = a.totalFlightTime;
+            valB = b.totalFlightTime;
+            break;
+          case 'depC3':
+            valA = a.depC3;
+            valB = b.depC3;
+            break;
+          case 'arrC3':
+            valA = a.arrC3;
+            valB = b.arrC3;
+            break;
+          case 'totalStochasticDv':
+            valA = a.totalStochasticDv;
+            valB = b.totalStochasticDv;
+            break;
+          case 'c3PlusStochDv2':
+            valA = a.depC3 + a.arrC3 + (a.totalStochasticDv / 1000) ** 2;
+            valB = b.depC3 + b.arrC3 + (b.totalStochasticDv / 1000) ** 2;
+            break;
+          case 'flybyHeight':
+            valA = a.flybys[0]?.periapsisAlt ?? -Infinity;
+            valB = b.flybys[0]?.periapsisAlt ?? -Infinity;
+            break;
+          case 'flybyDeflection':
+            valA = a.flybys[0]?.deflectionAngle ?? -Infinity;
+            valB = b.flybys[0]?.deflectionAngle ?? -Infinity;
+            break;
+          case 'flybyC3':
+            valA = a.flybys[0] ? (a.flybys[0].vInfInMag / 1000) ** 2 : -Infinity;
+            valB = b.flybys[0] ? (b.flybys[0].vInfInMag / 1000) ** 2 : -Infinity;
+            break;
+        }
+
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          const diff = valA - valB;
+          if (Math.abs(diff) > 1e-6) {
+            return rule.direction === 'asc' ? (diff < 0 ? -1 : 1) : (diff > 0 ? -1 : 1);
+          }
+        } else {
+          if (valA < valB) return rule.direction === 'asc' ? -1 : 1;
+          if (valA > valB) return rule.direction === 'asc' ? 1 : -1;
+        }
       }
 
-      if (valA < valB) return sortAsc ? -1 : 1;
-      if (valA > valB) return sortAsc ? 1 : -1;
       return 0;
     });
-  }, [recomputedResults, sortKey, sortAsc]);
+  }, [recomputedResults, sortRules]);
 
   const filteredResults = useMemo(() => {
     if (selectedPathFilter === 'ALL') return sortedResults;
     return sortedResults.filter(r => r.bodyNames.join(' ➔ ') === selectedPathFilter);
   }, [sortedResults, selectedPathFilter]);
-
-  const handleSort = (key: ResultTableColumnKey) => {
-    if (sortKey === key) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortKey(key);
-      setSortAsc(true);
-    }
-  };
 
   // Export Results to ODS format
   const exportToODS = () => {
@@ -270,7 +340,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   };
 
   return (
-    <div id="results-section" className="bg-[#1A1B1E] border border-[#2D2E33] rounded-lg p-5 shadow-2xl flex flex-col gap-4 text-[#E2E8F0]">
+    <div id="results-section" className="bg-[#1A1B1E] border border-[#2D2E33] rounded-lg p-5 shadow-2xl flex flex-col gap-4 text-[#E2E8F0] w-full min-w-full">
       {/* Toast Notification for Debug Trigger */}
       {toastMessage && (
         <div className="bg-amber-500/20 border border-amber-500/50 text-amber-200 px-4 py-2.5 rounded text-xs font-mono flex items-center gap-2 animate-fade-in shadow-md">
@@ -303,13 +373,26 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
               <span>Stop Search</span>
             </button>
           ) : (
-            <button
-              id="btn-search-sequences"
-              onClick={onSearchSequences}
-              className="search-btn flex items-center gap-2 px-6 py-2.5 rounded font-serif text-xs uppercase tracking-widest text-white bg-[#334155] hover:bg-[#475569] border border-[#475569] shadow-lg transition active:scale-95 cursor-pointer"
-            >
-              <span>Search Possible Sequences</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                id="btn-search-sequences"
+                onClick={onSearchSequences}
+                className="search-btn flex items-center gap-2 px-5 py-2.5 rounded font-serif text-xs uppercase tracking-widest text-white bg-[#334155] hover:bg-[#475569] border border-[#475569] shadow-lg transition active:scale-95 cursor-pointer"
+              >
+                <span>Search Possible Sequences</span>
+              </button>
+              {onSearchSequencesAlt && (
+                <button
+                  id="btn-search-sequences-alt"
+                  onClick={onSearchSequencesAlt}
+                  className="search-btn-alt flex items-center gap-2 px-5 py-2.5 rounded font-serif text-xs uppercase tracking-widest text-white bg-sky-700 hover:bg-sky-600 border border-sky-500 shadow-lg transition active:scale-95 cursor-pointer font-semibold"
+                  title="Direct trajectory search & optimization without grid pruning. Sorted by sum(C3d, C3a, stocDv²)"
+                >
+                  <Compass className="w-4 h-4 text-sky-200" />
+                  <span>Search possible sequences (another way)</span>
+                </button>
+              )}
+            </div>
           )}
 
           {/* ODS Export Button */}
@@ -323,6 +406,18 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
             <Download className="w-3.5 h-3.5 text-[#60A5FA]" />
             <span>Export ODS</span>
           </button>
+
+          {onClearResults && results.length > 0 && (
+            <button
+              id="btn-clear-all-results"
+              onClick={onClearResults}
+              className="flex items-center gap-1.5 px-3.5 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/30 rounded text-xs font-mono uppercase tracking-wider shadow transition cursor-pointer"
+              title="Clear all search results"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Clear All</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -456,55 +551,224 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         </div>
       )}
 
-      {/* Column Reordering & Column Visibility Controls */}
+      {/* Column Reordering, Visibility Controls, & Multi-Level Sort Rules */}
       <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">
-        <span className="font-medium text-[#94A3B8] uppercase text-[11px] tracking-wider">Customize Columns:</span>
-        <div className="flex flex-wrap gap-1.5">
-          {columns.map((col, idx) => (
-            <div key={col.key} className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded px-2 py-1 text-[11px]">
-              <button
-                onClick={() => moveColumn(idx, 'left')}
-                disabled={idx === 0}
-                className="p-0.5 hover:text-[#60A5FA] disabled:opacity-30"
-              >
-                <ChevronLeft className="w-3 h-3" />
-              </button>
-              <button
-                onClick={() => toggleColumnVisible(col.key)}
-                className={`mx-1 font-mono ${col.visible ? 'text-[#60A5FA]' : 'text-[#64748B] line-through'}`}
-              >
-                {col.label}
-              </button>
-              <button
-                onClick={() => moveColumn(idx, 'right')}
-                disabled={idx === columns.length - 1}
-                className="p-0.5 hover:text-[#60A5FA] disabled:opacity-30"
-              >
-                <ChevronRight className="w-3 h-3" />
-              </button>
-            </div>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-medium text-[#94A3B8] uppercase text-[11px] tracking-wider">Customize Columns:</span>
+          <div className="flex flex-wrap gap-1.5">
+            {columns.map((col, idx) => (
+              <div key={col.key} className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded px-2 py-1 text-[11px]">
+                <button
+                  onClick={() => moveColumn(idx, 'left')}
+                  disabled={idx === 0}
+                  className="p-0.5 hover:text-[#60A5FA] disabled:opacity-30"
+                >
+                  <ChevronLeft className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => toggleColumnVisible(col.key)}
+                  className={`mx-1 font-mono ${col.visible ? 'text-[#60A5FA]' : 'text-[#64748B] line-through'}`}
+                >
+                  {col.label}
+                </button>
+                <button
+                  onClick={() => moveColumn(idx, 'right')}
+                  disabled={idx === columns.length - 1}
+                  className="p-0.5 hover:text-[#60A5FA] disabled:opacity-30"
+                >
+                  <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
+
+        {/* Multi-Column Sort Toggle Button */}
+        <button
+          id="btn-toggle-sort-rules"
+          onClick={() => setIsSortPanelOpen(!isSortPanelOpen)}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded font-mono text-xs border transition cursor-pointer shadow-sm ${
+            isSortPanelOpen || sortRules.length > 1
+              ? 'bg-[#1E293B] border-[#38BDF8] text-[#38BDF8] font-bold'
+              : 'bg-[#1A1B1E] border-[#2D2E33] text-[#94A3B8] hover:text-white hover:border-[#475569]'
+          }`}
+          title="Configure multi-column sorting rules"
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5 text-[#38BDF8]" />
+          <span>Multi-Column Sort Rules</span>
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-[#38BDF8]/20 text-[#38BDF8] font-bold border border-[#38BDF8]/30">
+            {sortRules.length} level{sortRules.length === 1 ? '' : 's'}
+          </span>
+        </button>
       </div>
 
+      {/* Multi-Level Sort Rules Management Panel */}
+      {isSortPanelOpen && (
+        <div className="bg-[#1A1B1E] p-4 rounded border-2 border-[#38BDF8]/60 flex flex-col gap-3 shadow-xl text-xs animate-fadeIn">
+          <div className="flex items-center justify-between border-b border-[#2D2E33] pb-2.5">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-[#38BDF8]" />
+              <span className="font-bold text-white text-sm tracking-wide">
+                Multi-Level Sorting Rules
+              </span>
+              <span className="text-[11px] text-[#94A3B8] font-sans">
+                (Sorts by Rule 1, then if equal sorts by Rule 2, and so on)
+              </span>
+            </div>
+            <button
+              onClick={() => setIsSortPanelOpen(false)}
+              className="p-1 rounded text-[#94A3B8] hover:text-white hover:bg-[#25262B]"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {sortRules.map((rule, index) => {
+              const ruleCol = DEFAULT_COLUMNS.find(c => c.key === rule.key);
+              return (
+                <div
+                  key={rule.id}
+                  className="flex flex-wrap items-center justify-between gap-2 bg-[#25262B] p-2.5 rounded border border-[#2D2E33]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold text-[11px] px-2 py-1 rounded bg-[#1A1B1E] text-[#38BDF8] border border-[#38BDF8]/30 w-28 text-center">
+                      {index === 0 ? '1st (Primary)' : `${index + 1}nd (Then by)`}
+                    </span>
+
+                    {/* Column Selection Dropdown */}
+                    <select
+                      value={rule.key}
+                      onChange={(e) => handleUpdateSortRule(rule.id, { key: e.target.value as ResultTableColumnKey })}
+                      className="bg-[#1A1B1E] border border-[#2D2E33] text-white rounded px-3 py-1.5 text-xs font-medium focus:outline-none focus:border-[#38BDF8] min-w-[200px]"
+                    >
+                      {DEFAULT_COLUMNS.map(col => (
+                        <option key={col.key} value={col.key}>
+                          {col.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Order Direction Select */}
+                    <div className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded overflow-hidden">
+                      <button
+                        onClick={() => handleUpdateSortRule(rule.id, { direction: 'asc' })}
+                        className={`flex items-center gap-1 px-3 py-1 text-xs font-medium transition ${
+                          rule.direction === 'asc'
+                            ? 'bg-[#38BDF8] text-[#0F172A] font-bold'
+                            : 'text-[#94A3B8] hover:text-white'
+                        }`}
+                      >
+                        <ArrowUp className="w-3 h-3" />
+                        <span>Ascending (Low ➔ High)</span>
+                      </button>
+                      <button
+                        onClick={() => handleUpdateSortRule(rule.id, { direction: 'desc' })}
+                        className={`flex items-center gap-1 px-3 py-1 text-xs font-medium transition ${
+                          rule.direction === 'desc'
+                            ? 'bg-[#38BDF8] text-[#0F172A] font-bold'
+                            : 'text-[#94A3B8] hover:text-white'
+                        }`}
+                      >
+                        <ArrowDown className="w-3 h-3" />
+                        <span>Descending (High ➔ Low)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    {/* Move Up / Down */}
+                    <button
+                      onClick={() => handleMoveSortRule(index, 'up')}
+                      disabled={index === 0}
+                      className="p-1.5 rounded bg-[#1A1B1E] border border-[#2D2E33] text-[#94A3B8] hover:text-white disabled:opacity-30 cursor-pointer"
+                      title="Move rule priority up"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleMoveSortRule(index, 'down')}
+                      disabled={index === sortRules.length - 1}
+                      className="p-1.5 rounded bg-[#1A1B1E] border border-[#2D2E33] text-[#94A3B8] hover:text-white disabled:opacity-30 cursor-pointer"
+                      title="Move rule priority down"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* Remove Rule */}
+                    <button
+                      onClick={() => handleRemoveSortRule(rule.id)}
+                      disabled={sortRules.length <= 1}
+                      className="p-1.5 rounded bg-[#1A1B1E] border border-[#2D2E33] text-rose-400 hover:text-rose-300 hover:bg-rose-950/40 disabled:opacity-30 cursor-pointer ml-2"
+                      title="Remove this sort level"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#2D2E33]">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleAddSortRule}
+                disabled={sortRules.length >= DEFAULT_COLUMNS.length}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#38BDF8]/10 hover:bg-[#38BDF8]/20 text-[#38BDF8] border border-[#38BDF8]/30 text-xs font-bold transition cursor-pointer disabled:opacity-40"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Sort Level</span>
+              </button>
+
+              <button
+                onClick={handleResetSortRules}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#25262B] hover:bg-[#334155] text-[#94A3B8] border border-[#2D2E33] text-xs font-medium transition cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset Rules</span>
+              </button>
+            </div>
+
+            <span className="text-[11px] text-[#64748B] font-mono italic">
+              Tip: Hold Shift and click column headers in table to append new sort levels directly!
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Results Table */}
-      <div className="overflow-x-auto rounded border border-[#2D2E33]">
-        <table id="results-table" className="w-full text-left text-xs border-collapse">
+      <div className="w-full min-w-full rounded border border-[#2D2E33]">
+        <table id="results-table" className="w-full min-w-full text-left text-xs border-collapse">
           <thead>
             <tr className="bg-[#1A1B1E] text-[#94A3B8] font-semibold uppercase text-[10px] tracking-wider border-b-2 border-[#2D2E33]">
               <th className="p-3 text-center w-12">#</th>
-              {columns.filter(c => c.visible).map(col => (
-                <th
-                  key={col.key}
-                  onClick={() => handleSort(col.key)}
-                  className="p-3 cursor-pointer hover:bg-[#25262B] transition select-none"
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span>{col.label}</span>
-                    <ArrowUpDown className="w-3 h-3 text-[#64748B]" />
-                  </div>
-                </th>
-              ))}
+              {columns.filter(c => c.visible).map(col => {
+                const sortRuleIndex = sortRules.findIndex(r => r.key === col.key);
+                const activeRule = sortRuleIndex >= 0 ? sortRules[sortRuleIndex] : null;
+
+                return (
+                  <th
+                    key={col.key}
+                    onClick={(e) => handleHeaderSortClick(col.key, e)}
+                    className={`p-3 cursor-pointer transition select-none ${
+                      activeRule ? 'bg-[#1E293B] text-[#38BDF8]' : 'hover:bg-[#25262B]'
+                    }`}
+                    title="Click to set primary sort, Shift-Click to add secondary sort rule"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span>{col.label}</span>
+                      {activeRule ? (
+                        <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-[#38BDF8]/20 text-[#38BDF8] border border-[#38BDF8]/40 shadow-sm">
+                          #{sortRuleIndex + 1} {activeRule.direction === 'asc' ? '▲' : '▼'}
+                        </span>
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 text-[#64748B]" />
+                      )}
+                    </div>
+                  </th>
+                );
+              })}
               <th className="p-3 text-right">Details</th>
             </tr>
           </thead>
@@ -632,7 +896,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                           <button
                             id={`btn-recompute-flybys-${seq.id}`}
                             onClick={() => handleRecomputeFlybys(seq)}
-                            className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 rounded text-[11px] font-sans flex items-center gap-1 border border-amber-500/30 transition shadow-sm"
+                            className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 rounded text-[11px] font-sans flex items-center gap-1 border border-amber-500/30 transition shadow-sm cursor-pointer"
                             title="Sequentially recall computeUnpoweredflyby for each flyby body in this sequence"
                           >
                             <RefreshCw className="w-3 h-3" />
@@ -640,11 +904,22 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                           </button>
                           <button
                             onClick={() => setExpandedSeqId(isExpanded ? null : seq.id)}
-                            className="px-2.5 py-1 bg-[#25262B] hover:bg-[#2D2E33] text-[#60A5FA] rounded text-[11px] font-sans flex items-center gap-1 border border-[#2D2E33]"
+                            className="px-2.5 py-1 bg-[#25262B] hover:bg-[#2D2E33] text-[#60A5FA] rounded text-[11px] font-sans flex items-center gap-1 border border-[#2D2E33] cursor-pointer"
                           >
                             <Eye className="w-3 h-3" />
                             <span>{isExpanded ? 'Hide' : 'Expand'}</span>
                           </button>
+                          {onRemoveResult && (
+                            <button
+                              id={`btn-remove-solution-${seq.id}`}
+                              onClick={() => onRemoveResult(seq.id)}
+                              className="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 rounded text-[11px] font-sans flex items-center gap-1 border border-rose-500/30 transition shadow-sm cursor-pointer"
+                              title="Manually remove this trajectory solution"
+                            >
+                              <Trash2 className="w-3 h-3 text-rose-400" />
+                              <span>Remove</span>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

@@ -90,8 +90,8 @@ export const HeaderSelector: React.FC<HeaderSelectorProps> = ({
   };
 
   return (
-    <header id="app-header" className="bg-[#1A1B1E] border-b border-[#2D2E33] text-[#E2E8F0] px-6 py-3.5 shadow-lg">
-      <div className="max-w-7xl mx-auto flex flex-col gap-3">
+    <header id="app-header" className="bg-[#1A1B1E] border-b border-[#2D2E33] text-[#E2E8F0] px-4 md:px-6 py-3.5 shadow-lg w-full">
+      <div className="w-full flex flex-col gap-3">
         {/* Top Title & Primary Actions Bar */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">

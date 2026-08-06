@@ -135,7 +135,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
   const linkSourceNode = instances.find(i => i.id === linkSourceId);
 
   return (
-    <div id="canvas-container" className="flex flex-col bg-[#1A1B1E] border border-[#2D2E33] rounded-lg overflow-hidden shadow-2xl">
+    <div id="canvas-container" className="flex flex-col bg-[#1A1B1E] border border-[#2D2E33] rounded-lg overflow-hidden shadow-2xl w-full min-w-full">
       {/* Canvas Toolbar Header */}
       <div className="bg-[#1A1B1E] border-b border-[#2D2E33] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">

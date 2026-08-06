@@ -25,6 +25,7 @@ import { ResultsTable } from './components/ResultsTable';
 import { AutotestModal } from './components/AutotestModal';
 import {
   runSequenceSearch,
+  runSequenceSearchAlt,
   propagateDateBounds,
   generateLinkEndDates,
   countPossibleTransfers,
@@ -343,6 +344,55 @@ export default function App() {
     }
   };
 
+  // Execute Alternative Search Algorithm ("another way")
+  const handleSearchSequencesAlt = async () => {
+    if (instances.length === 0) {
+      alert('Please add body instances to the canvas before searching.');
+      return;
+    }
+
+    stopSearchRef.current = false;
+    setIsSearching(true);
+    setSearchStatusText('Initializing alternative trajectory search (direct optimizer)...');
+
+    try {
+      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const res = await runSequenceSearchAlt(
+        instances,
+        links,
+        currentSystem.bodies,
+        mainBody,
+        (msg) => setSearchStatusText(msg),
+        (partial) => {
+          if (partial.instances) setInstances(partial.instances);
+          if (partial.links) setLinks(partial.links);
+          if (partial.porkchops) setPorkchops(prev => ({ ...prev, ...partial.porkchops }));
+          if (partial.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...partial.sequencePorkchops }));
+        },
+        () => stopSearchRef.current
+      );
+
+      setInstances(res.updatedInstances);
+      setLinks(res.updatedLinks);
+      if (res.porkchops) setPorkchops(res.porkchops);
+      if (res.sequencePorkchops) setSequencePorkchops(res.sequencePorkchops);
+      setResults(res.sequences);
+    } catch (err) {
+      console.error('Alt search error:', err);
+      alert('Error computing flyby sequence: ' + err);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleRemoveResult = (seqId: string) => {
+    setResults(prev => prev.filter(r => r.id !== seqId));
+  };
+
+  const handleClearResults = () => {
+    setResults([]);
+  };
+
   const activeInstance = instances.find(i => i.id === selectedInstanceId);
   const activeInstanceBody = activeInstance ? currentSystem.bodies.find(b => b.name === activeInstance.bodyName) : undefined;
 
@@ -389,9 +439,9 @@ export default function App() {
       />
 
       {/* Main Working Stage */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 flex flex-col gap-6">
+      <main className="flex-1 w-full min-w-full px-4 md:px-6 py-4 flex flex-col gap-6">
         {/* Interactive Canvas Graph Editor */}
-        <section id="canvas-section">
+        <section id="canvas-section" className="w-full min-w-full">
           <CanvasGraph
             instances={instances}
             links={links}
@@ -417,12 +467,15 @@ export default function App() {
         </section>
 
         {/* Results & Sequence Search Section */}
-        <section id="results-container">
+        <section id="results-container" className="w-full min-w-full">
           <ResultsTable
             results={results}
             timeFormatMode={timeFormatMode}
             onSearchSequences={handleSearchSequences}
+            onSearchSequencesAlt={handleSearchSequencesAlt}
             onStopSearch={handleStopSearch}
+            onRemoveResult={handleRemoveResult}
+            onClearResults={handleClearResults}
             isSearching={isSearching}
             searchStatusText={searchStatusText}
             bodies={currentSystem.bodies}
