@@ -22,6 +22,7 @@ import { LinkModal } from './components/LinkModal';
 import { PorkchopViewer } from './components/PorkchopViewer';
 import { SequencePorkchopViewer } from './components/SequencePorkchopViewer';
 import { ResultsTable } from './components/ResultsTable';
+import { TisserandPlot } from './components/TisserandPlot';
 import { AutotestModal } from './components/AutotestModal';
 import {
   runSequenceSearch,
@@ -463,6 +464,16 @@ export default function App() {
               }
               setPorkchopModalLinkId(linkId);
             }}
+          />
+        </section>
+
+        {/* Foldable Tisserand Plot Section */}
+        <section id="tisserand-section" className="w-full min-w-full">
+          <TisserandPlot
+            instances={instances}
+            bodies={currentSystem.bodies}
+            mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
+            results={results}
           />
         </section>
 
