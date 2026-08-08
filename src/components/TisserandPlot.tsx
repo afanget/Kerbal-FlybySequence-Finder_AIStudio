@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { CelestialBody, InstanceNode, FlyableSequenceResult } from '../types';
+import { CelestialBody, InstanceNode, DirectionalLink, FlyableSequenceResult } from '../types';
 import { ChevronDown, ChevronUp, Layers, Info, Eye, EyeOff, Sparkles, Activity, ZoomIn, ZoomOut, RotateCcw, Move } from 'lucide-react';
 
 interface TisserandPlotProps {
   instances: InstanceNode[];
+  links?: DirectionalLink[];
   bodies: CelestialBody[];
   mainBody: CelestialBody;
   results?: FlyableSequenceResult[];
@@ -71,8 +72,146 @@ const DEFAULT_BODY_COLORS: Record<string, string> = {
   Pluto: '#A8A29E',
 };
 
+/**
+ * Bisection helper to find pump angle theta1 in [0, thetaMax] such that periapsis rp(theta1) = a1.
+ * - If a1 >= a_p: returns 0 (since max achievable rp at body p is a_p, occurring at theta = 0).
+ * - If a1 < rp(thetaMax): returns null (a1 is below the minimum periapsis reachable on this vInf curve).
+ */
+function getThetaForRp(
+  a1: number,
+  a_p: number,
+  v_p: number,
+  vInfMs: number,
+  mu_main: number,
+  thetaMax: number
+): number | null {
+  if (a1 >= a_p) return 0;
+
+  const getRp = (theta: number) => {
+    const h = a_p * (v_p + vInfMs * Math.cos(theta));
+    if (h <= 0) return 0;
+    const v_sc2 = v_p * v_p + vInfMs * vInfMs + 2 * v_p * vInfMs * Math.cos(theta);
+    const E = 0.5 * v_sc2 - mu_main / a_p;
+    if (E >= 0) {
+      const a_sc = mu_main / (2 * Math.max(E, 1e-9));
+      const disc = Math.max(0, 1 + (2 * E * h * h) / (mu_main * mu_main));
+      return a_sc * (Math.sqrt(disc) - 1);
+    } else {
+      const a_sc = -mu_main / (2 * E);
+      const disc = Math.max(0, 1 + (2 * E * h * h) / (mu_main * mu_main));
+      return a_sc * (1 - Math.sqrt(disc));
+    }
+  };
+
+  const minRp = getRp(thetaMax);
+  if (a1 < minRp - 1e-3) {
+    return null;
+  }
+
+  let low = 0;
+  let high = thetaMax;
+  for (let i = 0; i < 30; i++) {
+    const mid = (low + high) / 2;
+    if (getRp(mid) > a1) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return (low + high) / 2;
+}
+
+/**
+ * Finds pump angle theta2 in [0, thetaMax] such that spacecraft orbital energy E(theta2) = -mu_main / (2 * a2).
+ * This corresponds to spacecraft semi-major axis a_sc = a2.
+ */
+function getThetaForEnergy(
+  a2: number,
+  a_p: number,
+  v_p: number,
+  vInfMs: number,
+  mu_main: number,
+  thetaMax: number
+): number | null {
+  const num = (mu_main / (2 * a_p)) - (mu_main / (2 * a2)) - (0.5 * vInfMs * vInfMs);
+  const den = v_p * vInfMs;
+  if (den === 0) return null;
+  const cosVal = num / den;
+  if (cosVal < -1 || cosVal > 1) return null;
+  const theta = Math.acos(cosVal);
+  if (theta > thetaMax + 1e-4) return null;
+  return theta;
+}
+
+/**
+ * Bisection helper to find pump angle theta on a Tisserand curve corresponding to a target body semi-major axis.
+ * - If targetSma <= a_p (inner body or same body), we match periapsis r_p(theta) = targetSma.
+ * - If targetSma > a_p (outer body), we match apoapsis r_a(theta) = targetSma.
+ */
+function getThetaForBody(
+  targetSma: number,
+  a_p: number,
+  v_p: number,
+  vInfMs: number,
+  mu_main: number,
+  thetaMax: number
+): number | null {
+  const calcOrbitParams = (theta: number) => {
+    const h = a_p * (v_p + vInfMs * Math.cos(theta));
+    if (h <= 0) return { rp: 0, ra: 0 };
+    const v_sc2 = v_p * v_p + vInfMs * vInfMs + 2 * v_p * vInfMs * Math.cos(theta);
+    const E = 0.5 * v_sc2 - mu_main / a_p;
+    let rp = 0;
+    let ra = 0;
+    if (Math.abs(E) < 1e-9) {
+      rp = (h * h) / (2 * mu_main);
+      ra = Infinity;
+    } else if (E < 0) {
+      const a_sc = -mu_main / (2 * E);
+      const disc = Math.max(0, 1 + (2 * E * h * h) / (mu_main * mu_main));
+      rp = a_sc * (1 - Math.sqrt(disc));
+      ra = a_sc * (1 + Math.sqrt(disc));
+    } else {
+      // Hyperbolic orbit relative to Sun (E > 0)
+      const a_sc = mu_main / (2 * E);
+      const disc = 1 + (2 * E * h * h) / (mu_main * mu_main);
+      rp = a_sc * (Math.sqrt(disc) - 1);
+      ra = Infinity;
+    }
+    return { rp, ra };
+  };
+
+  const isInner = targetSma <= a_p;
+
+  const val0 = isInner ? calcOrbitParams(0).rp : calcOrbitParams(0).ra;
+  const valMax = isInner ? calcOrbitParams(thetaMax).rp : calcOrbitParams(thetaMax).ra;
+
+  const maxVal = Math.max(val0, valMax);
+  const minVal = Math.min(val0, valMax);
+
+  if (targetSma > maxVal + 1e-3 || targetSma < minVal - 1e-3) {
+    return null; // targetSma is not reachable on this vInf curve
+  }
+
+  let low = 0;
+  let high = thetaMax;
+  for (let i = 0; i < 30; i++) {
+    const mid = (low + high) / 2;
+    const valMid = isInner ? calcOrbitParams(mid).rp : calcOrbitParams(mid).ra;
+    if (valMid > targetSma) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return (low + high) / 2;
+}
+
 export const TisserandPlot: React.FC<TisserandPlotProps> = ({
   instances,
+  links = [],
   bodies,
   mainBody,
   results = [],
@@ -110,6 +249,91 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
     const names = Array.from(new Set(instances.map(i => i.bodyName)));
     return bodies.filter(b => names.includes(b.name) && b.name !== mainBody.name);
   }, [instances, bodies, mainBody]);
+
+  // Map each flyby body name to pairs of connected bodies (body1, body2) based on graph links
+  const flybyConnectedPairsMap = useMemo(() => {
+    const map: Record<string, { body1: CelestialBody; body2: CelestialBody }[]> = {};
+
+    if (!links || links.length === 0) return map;
+
+    const instMap = new Map<string, InstanceNode>();
+    instances.forEach(i => instMap.set(i.id, i));
+
+    const bodyMap = new Map<string, CelestialBody>();
+    bodies.forEach(b => bodyMap.set(b.name, b));
+
+    instances.forEach(inst => {
+      const incomingLinks = links.filter(l => l.targetInstanceId === inst.id);
+      const outgoingLinks = links.filter(l => l.sourceInstanceId === inst.id);
+
+      if (incomingLinks.length > 0 && outgoingLinks.length > 0) {
+        const flybyBodyName = inst.bodyName;
+        if (!map[flybyBodyName]) {
+          map[flybyBodyName] = [];
+        }
+
+        incomingLinks.forEach(inLink => {
+          const srcInst = instMap.get(inLink.sourceInstanceId);
+          if (!srcInst) return;
+          const body1 = bodyMap.get(srcInst.bodyName);
+          if (!body1) return;
+
+          outgoingLinks.forEach(outLink => {
+            const tgtInst = instMap.get(outLink.targetInstanceId);
+            if (!tgtInst) return;
+            const body2 = bodyMap.get(tgtInst.bodyName);
+            if (!body2) return;
+
+            const pairExists = map[flybyBodyName].some(
+              p => (p.body1.name === body1.name && p.body2.name === body2.name) ||
+                   (p.body1.name === body2.name && p.body2.name === body1.name)
+            );
+            if (!pairExists) {
+              map[flybyBodyName].push({ body1, body2 });
+            }
+          });
+        });
+      }
+    });
+
+    return map;
+  }, [instances, links, bodies]);
+
+  // Map each body name to its connected neighbor bodies from graph links
+  const neighborBodiesMap = useMemo(() => {
+    const map: Record<string, CelestialBody[]> = {};
+    if (!links || links.length === 0) return map;
+
+    const instMap = new Map<string, InstanceNode>();
+    instances.forEach(i => instMap.set(i.id, i));
+
+    const bodyMap = new Map<string, CelestialBody>();
+    bodies.forEach(b => bodyMap.set(b.name, b));
+
+    links.forEach(l => {
+      const srcInst = instMap.get(l.sourceInstanceId);
+      const tgtInst = instMap.get(l.targetInstanceId);
+      if (!srcInst || !tgtInst) return;
+
+      const srcBody = bodyMap.get(srcInst.bodyName);
+      const tgtBody = bodyMap.get(tgtInst.bodyName);
+      if (!srcBody || !tgtBody) return;
+
+      if (srcBody.name !== tgtBody.name) {
+        if (!map[srcBody.name]) map[srcBody.name] = [];
+        if (!map[srcBody.name].some(b => b.name === tgtBody.name)) {
+          map[srcBody.name].push(tgtBody);
+        }
+
+        if (!map[tgtBody.name]) map[tgtBody.name] = [];
+        if (!map[tgtBody.name].some(b => b.name === srcBody.name)) {
+          map[tgtBody.name].push(srcBody);
+        }
+      }
+    });
+
+    return map;
+  }, [instances, links, bodies]);
 
   // Main body gravitational parameter
   const mu_main = mainBody.stdGravParam;
@@ -239,19 +463,87 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
       };
 
       // Generate integer vInf curves from 1 km/s to vInfMax (step 1 km/s)
-      const curves: VInfCurveData[] = [];
+      const allCurves: VInfCurveData[] = [];
       const stepMs = 1000;
       for (let v = 1000; v <= vInfMaxMs; v += stepMs) {
-        curves.push(buildCurve(v));
+        allCurves.push(buildCurve(v));
       }
-      // Add final curve if vInfMax is not an exact multiple of 1000 m/s
-      if (vInfMaxMs % 1000 > 100) {
-        curves.push(buildCurve(vInfMaxMs));
+
+      // Filter curves for bodies based on graph links:
+      // - For flyby bodies with connected pairs: only display vinf lines for which abs(theta1 - theta2) <= deflexion_max
+      // - For non-flyby connected bodies (e.g. origin or target): display vinf lines that can reach connected neighbors
+      // - For unconnected bodies: display all integer vinf lines
+      const connectedPairs = flybyConnectedPairsMap[body.name] || [];
+      const neighbors = neighborBodiesMap[body.name] || [];
+
+      let curves: VInfCurveData[] = [];
+
+      if (connectedPairs.length > 0) {
+        curves = allCurves.filter(curve => {
+          const thetaMax = curve.vInfMs >= v_p ? Math.acos(-v_p / curve.vInfMs) : Math.PI;
+          const deltaMaxRad = (curve.deltaMaxDeg * Math.PI) / 180;
+
+          return connectedPairs.some(pair => {
+            const b1 = pair.body1.semiMajorAxis <= pair.body2.semiMajorAxis ? pair.body1 : pair.body2;
+            const b2 = pair.body1.semiMajorAxis <= pair.body2.semiMajorAxis ? pair.body2 : pair.body1;
+
+            const a1 = b1.semiMajorAxis;
+            const a2 = b2.semiMajorAxis;
+
+            const theta1 = getThetaForRp(a1, a_p, v_p, curve.vInfMs, mu_main, thetaMax);
+
+            const num = (mu_main / (2 * a_p)) - (mu_main / (2 * a2)) - (0.5 * curve.vInfMs * curve.vInfMs);
+            const den = v_p * curve.vInfMs;
+            if (den === 0) return false;
+
+            const cosVal = num / den;
+
+            // Inner angle condition: E > body 2 orbital energy everywhere on this vInf curve
+            if (cosVal < -1) {
+              return theta1 !== null;
+            }
+
+            if (cosVal > 1) {
+              return false;
+            }
+
+            const t2 = Math.acos(cosVal);
+            if (t2 > thetaMax + 1e-4) {
+              return theta1 !== null;
+            }
+
+            const theta2 = Math.min(t2, thetaMax);
+
+            if (theta1 === null) {
+              return false;
+            }
+
+            if (theta1 <= theta2) {
+              return true;
+            }
+
+            const deltaTheta = theta1 - theta2;
+            return deltaTheta <= deltaMaxRad + 1e-4;
+          });
+        });
+      } else if (neighbors.length > 0) {
+        curves = allCurves.filter(curve => {
+          const thetaMax = curve.vInfMs >= v_p ? Math.acos(-v_p / curve.vInfMs) : Math.PI;
+
+          return neighbors.some(nb => {
+            const theta = getThetaForBody(nb.semiMajorAxis, a_p, v_p, curve.vInfMs, mu_main, thetaMax);
+            return theta !== null;
+          });
+        });
+      } else {
+        curves = allCurves;
       }
 
       let maxC3Curve: VInfCurveData | undefined = undefined;
       if (maxC3Val !== undefined && maxC3Val > 0) {
-        maxC3Curve = buildCurve(Math.sqrt(maxC3Val) * 1000);
+        const vInfC3Ms = Math.sqrt(maxC3Val) * 1000;
+        curves = curves.filter(c => c.vInfMs <= vInfC3Ms + 1e-3);
+        maxC3Curve = buildCurve(vInfC3Ms);
       }
 
       const color = body.color || DEFAULT_BODY_COLORS[body.name] || `hsl(${(idx * 137.5) % 360}, 80%, 65%)`;
@@ -269,7 +561,7 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
         color,
       };
     });
-  }, [canvasBodies, instances, mu_main]);
+  }, [canvasBodies, instances, links, bodies, mu_main, flybyConnectedPairsMap, neighborBodiesMap]);
 
   // Overall Plot Bounding Box (Min/Max log10rp and Min/Max E)
   const plotBounds = useMemo(() => {

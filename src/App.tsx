@@ -126,7 +126,8 @@ export default function App() {
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
-        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 100},
+        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25},
+        {id: 'inst-Du', bodyName: 'Duna' , x: 120, y: 120, minFlybyRadius: 100000},
         {id: 'inst-E1', bodyName: 'Eve'    , x: 320, y: 120, minFlybyRadius: 100000},
         {id: 'inst-J', bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000},
         {id: 'inst-U', bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000},
@@ -134,6 +135,8 @@ export default function App() {
       ];
 
       newLinks = [
+        {id: 'link-K1-Du', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-Du'},
+        {id: 'link-Du-E1', sourceInstanceId: 'inst-Du', targetInstanceId: 'inst-E1'},
         {id: 'link-K1-E1', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-E1'},
         {id: 'link-K1-J', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-J'},
         {id: 'link-E1-J', sourceInstanceId: 'inst-E1', targetInstanceId: 'inst-J'},
@@ -471,6 +474,7 @@ export default function App() {
         <section id="tisserand-section" className="w-full min-w-full">
           <TisserandPlot
             instances={instances}
+            links={links}
             bodies={currentSystem.bodies}
             mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
             results={results}
