@@ -46,6 +46,8 @@ interface BodyTisserandData {
   color: string;
 }
 
+const K_GRADUATION_STEP = 5;
+
 const DEFAULT_BODY_COLORS: Record<string, string> = {
   Kerbin: '#38BDF8',
   Earth: '#60A5FA',
@@ -71,6 +73,154 @@ const DEFAULT_BODY_COLORS: Record<string, string> = {
   Neptune: '#6366F1',
   Pluto: '#A8A29E',
 };
+
+export interface VInfDebugEvaluation {
+  prevBodyName?: string;
+  prevVInfKms?: number;
+  prevRpAU?: number;
+  prevRpKm?: number;
+  prevRpLog10M?: number; // log10(rp [m]) for comparison with chart X-axis
+  prevE_MJ?: number;
+  prevThetaDeg?: number;
+
+  nextBodyName?: string;
+  nextVInfKms?: number;
+  nextRpAU?: number;
+  nextRpKm?: number;
+  nextRpLog10M?: number; // log10(rp [m]) for comparison with chart X-axis
+  nextE_MJ?: number;
+  nextThetaDeg?: number;
+
+  deflectionDeg?: number;
+  maxDeflectionDeg?: number;
+  isValid: boolean;
+  notes: string;
+}
+
+export interface VInfExtremity {
+  thetaDeg: number;
+  rpM: number;
+  rpAU: number;
+  rpKm: number;
+  log10rp: number; // log10(rp [m])
+  E: number;       // Energy J/kg
+  E_MJ: number;    // Energy MJ/kg
+}
+
+export interface VInfExtremities {
+  start: VInfExtremity; // At theta = 0 (periapsis pump angle = 0°)
+  end: VInfExtremity;   // At theta = thetaMax (max pump angle)
+}
+
+export interface VInfDebugEntry {
+  bodyName: string;
+  vInfKms: number;
+  vInfMs: number;
+  isDisplayed: boolean;
+  reason: string;
+  maxDeflectionDeg: number;
+  extremities?: VInfExtremities;
+  evaluations: VInfDebugEvaluation[];
+  explanationText: string;
+}
+
+/**
+ * Calculates periapsis rp and energy E for a given body, vInf, and pump angle theta.
+ */
+function getRpEFromTheta(
+  body: CelestialBody,
+  vInfMs: number,
+  thetaRad: number,
+  mu_main: number
+): { rpM: number; rpAU: number; rpKm: number; log10rp: number; E: number; E_MJ: number } {
+  const a_p = body.semiMajorAxis;
+  const v_p = Math.sqrt(mu_main / a_p);
+  const h = a_p * (v_p + vInfMs * Math.cos(thetaRad));
+  const v_sc2 = v_p * v_p + vInfMs * vInfMs + 2 * v_p * vInfMs * Math.cos(thetaRad);
+  const E = 0.5 * v_sc2 - mu_main / a_p;
+
+  let rpM = 0;
+  if (Math.abs(E) < 1e-9) {
+    rpM = (h * h) / (2 * mu_main);
+  } else if (E < 0) {
+    const sma = -mu_main / (2 * E);
+    const ecc2 = 1 + (2 * E * h * h) / (mu_main * mu_main);
+    const ecc = Math.sqrt(Math.max(0, ecc2));
+    rpM = sma * (1 - ecc);
+  } else {
+    const sma = mu_main / (2 * E);
+    const ecc2 = 1 + (2 * E * h * h) / (mu_main * mu_main);
+    const ecc = Math.sqrt(Math.max(0, ecc2));
+    rpM = sma * (ecc - 1);
+  }
+
+  const AU = 1.495978707e11;
+  return {
+    rpM,
+    rpAU: rpM / AU,
+    rpKm: rpM / 1000,
+    log10rp: rpM > 0 ? Math.log10(rpM) : 0,
+    E,
+    E_MJ: E / 1e6,
+  };
+}
+
+/**
+ * Calculates the exact pump angles thetaA and thetaB where the vInfA curve of bodyA
+ * intersects the vInfB curve of bodyB in the Tisserand (r_p, E) space.
+ * Returns { thetaA, thetaB } if they intersect within physical bounds, or null if they don't.
+ */
+function getIntersectionTheta(
+  bodyA: CelestialBody,
+  vInfA: number,
+  bodyB: CelestialBody,
+  vInfB: number,
+  mu_main: number
+): { thetaA: number; thetaB: number } | null {
+  const aA = bodyA.semiMajorAxis;
+  const aB = bodyB.semiMajorAxis;
+
+  if (Math.abs(aA - aB) < 1e-3) {
+    if (Math.abs(vInfA - vInfB) < 1e-3) {
+      return { thetaA: 0, thetaB: 0 };
+    }
+    return null;
+  }
+
+  const v_pA = Math.sqrt(mu_main / aA);
+  const v_pB = Math.sqrt(mu_main / aB);
+
+  const A1 = v_pA * vInfA;
+  const B1 = -v_pB * vInfB;
+  const C1 = (mu_main / (2 * aA)) - (mu_main / (2 * aB)) + 0.5 * vInfB * vInfB - 0.5 * vInfA * vInfA;
+
+  const A2 = aA * vInfA;
+  const B2 = -aB * vInfB;
+  const C2 = Math.sqrt(mu_main * aB) - Math.sqrt(mu_main * aA);
+
+  const D = A1 * B2 - A2 * B1;
+  if (Math.abs(D) < 1e-9) return null;
+
+  const xA = (C1 * B2 - C2 * B1) / D;
+  const xB = (A1 * C2 - A2 * C1) / D;
+
+  if (xA < -1 - 1e-5 || xA > 1 + 1e-5) return null;
+  if (xB < -1 - 1e-5 || xB > 1 + 1e-5) return null;
+
+  const clampedXA = Math.max(-1, Math.min(1, xA));
+  const clampedXB = Math.max(-1, Math.min(1, xB));
+
+  const thetaA = Math.acos(clampedXA);
+  const thetaB = Math.acos(clampedXB);
+
+  const thetaAMax = vInfA >= v_pA ? Math.acos(-v_pA / vInfA) : Math.PI;
+  const thetaBMax = vInfB >= v_pB ? Math.acos(-v_pB / vInfB) : Math.PI;
+
+  if (thetaA > thetaAMax + 1e-4) return null;
+  if (thetaB > thetaBMax + 1e-4) return null;
+
+  return { thetaA, thetaB };
+}
 
 /**
  * Bisection helper to find pump angle theta1 in [0, thetaMax] such that periapsis rp(theta1) = a1.
@@ -241,6 +391,10 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
     rpKm: number;
   } | null>(null);
 
+  const [showDebugPanel, setShowDebugPanel] = useState<boolean>(false);
+  const [debugBodyFilter, setDebugBodyFilter] = useState<string>('ALL');
+  const [debugStatusFilter, setDebugStatusFilter] = useState<'ALL' | 'DISPLAYED' | 'FILTERED'>('ALL');
+
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -338,9 +492,29 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
   // Main body gravitational parameter
   const mu_main = mainBody.stdGravParam;
 
-  // Process Tisserand data for each canvas body
-  const bodyDataList = useMemo<BodyTisserandData[]>(() => {
-    return canvasBodies.map((body, idx) => {
+  // Process Tisserand data for each canvas body and build debug explanations
+  const { bodyDataList, debugEntries } = useMemo<{
+    bodyDataList: BodyTisserandData[];
+    debugEntries: VInfDebugEntry[];
+  }>(() => {
+    // 1. Build initial candidate curves for all bodies, enforcing maxC3 as a hard upper bound
+    const bodyPrepMap: Record<string, {
+      body: CelestialBody;
+      a_p: number;
+      v_p: number;
+      r_p_min: number;
+      vInf5DegMs: number;
+      maxC3Val?: number;
+      vInfMaxMs: number;
+      initialCurves: VInfCurveData[];
+      maxC3Curve?: VInfCurveData;
+      color: string;
+      idx: number;
+    }> = {};
+
+    const initialKeptMap: Record<string, Set<number>> = {};
+
+    canvasBodies.forEach((body, idx) => {
       const a_p = body.semiMajorAxis;
       const v_p = Math.sqrt(mu_main / a_p);
       const mu_b = body.stdGravParam;
@@ -367,22 +541,19 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
       }
       const r_p_min = R_b + minAlt;
 
-      // Calculate vInf allowing 5 deg deflection:
-      // delta_max = 2 * asin( 1 / (1 + r_p_min * vInf^2 / mu_b) ) = 5 deg
       const targetDeltaRad = (5 * Math.PI) / 180;
       const sinHalfDelta = Math.sin(targetDeltaRad / 2);
       const vInf5DegMs = Math.sqrt(((1 / sinHalfDelta) - 1) * mu_b / r_p_min);
 
       let vInfMaxMs = vInf5DegMs;
+      let vInfC3Ms: number | undefined = undefined;
       if (maxC3Val !== undefined && maxC3Val > 0) {
-        const vInfC3 = Math.sqrt(maxC3Val) * 1000; // maxC3 is in km^2/s^2
-        vInfMaxMs = Math.min(vInfMaxMs, vInfC3);
+        vInfC3Ms = Math.sqrt(maxC3Val) * 1000;
+        vInfMaxMs = Math.min(vInfMaxMs, vInfC3Ms);
       }
 
-      // Ensure vInfMax is at least 1000 m/s for display
       vInfMaxMs = Math.max(1000, vInfMaxMs);
 
-      // Helper to generate a single vInf curve
       const buildCurve = (vInfMs: number): VInfCurveData => {
         const numPoints = 80;
         const points: VInfCurvePoint[] = [];
@@ -395,7 +566,7 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
           if (h <= 0) continue;
 
           const v_sc2 = v_p * v_p + vInfMs * vInfMs + 2 * v_p * vInfMs * Math.cos(theta);
-          const E = 0.5 * v_sc2 - mu_main / a_p; // J/kg
+          const E = 0.5 * v_sc2 - mu_main / a_p;
 
           let rp = 0;
           if (Math.abs(E) < 1e-9) {
@@ -419,14 +590,12 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
           }
         }
 
-        // Deflection delta_max
         const sinHalfDeltaMax = Math.min(1, Math.max(0, 1 / (1 + (r_p_min * vInfMs * vInfMs) / mu_b)));
         const deltaMaxRad = 2 * Math.asin(sinHalfDeltaMax);
         const deltaMaxDeg = (deltaMaxRad * 180) / Math.PI;
 
-        // Graduations corresponding to step deltaMaxRad / 10
         const graduations: VInfGraduation[] = [];
-        for (let thetaKRad = 0; thetaKRad <= thetaMax; thetaKRad += deltaMaxRad / 10) {
+        for (let thetaKRad = 0; thetaKRad <= thetaMax; thetaKRad += deltaMaxRad / K_GRADUATION_STEP) {
           const hk = a_p * (v_p + vInfMs * Math.cos(thetaKRad));
           if (hk <= 0) continue;
 
@@ -462,105 +631,382 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
         };
       };
 
-      // Generate integer vInf curves from 1 km/s to vInfMax (step 1 km/s)
-      const allCurves: VInfCurveData[] = [];
+      const initialCurves: VInfCurveData[] = [];
       const stepMs = 1000;
       for (let v = 1000; v <= vInfMaxMs; v += stepMs) {
-        allCurves.push(buildCurve(v));
+        initialCurves.push(buildCurve(v));
       }
 
-      // Filter curves for bodies based on graph links:
-      // - For flyby bodies with connected pairs: only display vinf lines for which abs(theta1 - theta2) <= deflexion_max
-      // - For non-flyby connected bodies (e.g. origin or target): display vinf lines that can reach connected neighbors
-      // - For unconnected bodies: display all integer vinf lines
-      const connectedPairs = flybyConnectedPairsMap[body.name] || [];
-      const neighbors = neighborBodiesMap[body.name] || [];
-
-      let curves: VInfCurveData[] = [];
-
-      if (connectedPairs.length > 0) {
-        curves = allCurves.filter(curve => {
-          const thetaMax = curve.vInfMs >= v_p ? Math.acos(-v_p / curve.vInfMs) : Math.PI;
-          const deltaMaxRad = (curve.deltaMaxDeg * Math.PI) / 180;
-
-          return connectedPairs.some(pair => {
-            const b1 = pair.body1.semiMajorAxis <= pair.body2.semiMajorAxis ? pair.body1 : pair.body2;
-            const b2 = pair.body1.semiMajorAxis <= pair.body2.semiMajorAxis ? pair.body2 : pair.body1;
-
-            const a1 = b1.semiMajorAxis;
-            const a2 = b2.semiMajorAxis;
-
-            const theta1 = getThetaForRp(a1, a_p, v_p, curve.vInfMs, mu_main, thetaMax);
-
-            const num = (mu_main / (2 * a_p)) - (mu_main / (2 * a2)) - (0.5 * curve.vInfMs * curve.vInfMs);
-            const den = v_p * curve.vInfMs;
-            if (den === 0) return false;
-
-            const cosVal = num / den;
-
-            // Inner angle condition: E > body 2 orbital energy everywhere on this vInf curve
-            if (cosVal < -1) {
-              return theta1 !== null;
-            }
-
-            if (cosVal > 1) {
-              return false;
-            }
-
-            const t2 = Math.acos(cosVal);
-            if (t2 > thetaMax + 1e-4) {
-              return theta1 !== null;
-            }
-
-            const theta2 = Math.min(t2, thetaMax);
-
-            if (theta1 === null) {
-              return false;
-            }
-
-            if (theta1 <= theta2) {
-              return true;
-            }
-
-            const deltaTheta = theta1 - theta2;
-            return deltaTheta <= deltaMaxRad + 1e-4;
-          });
-        });
-      } else if (neighbors.length > 0) {
-        curves = allCurves.filter(curve => {
-          const thetaMax = curve.vInfMs >= v_p ? Math.acos(-v_p / curve.vInfMs) : Math.PI;
-
-          return neighbors.some(nb => {
-            const theta = getThetaForBody(nb.semiMajorAxis, a_p, v_p, curve.vInfMs, mu_main, thetaMax);
-            return theta !== null;
-          });
-        });
-      } else {
-        curves = allCurves;
-      }
-
+      // Hard limit Rule 1: filter curves > maxC3
+      let filteredCurves = initialCurves;
       let maxC3Curve: VInfCurveData | undefined = undefined;
-      if (maxC3Val !== undefined && maxC3Val > 0) {
-        const vInfC3Ms = Math.sqrt(maxC3Val) * 1000;
-        curves = curves.filter(c => c.vInfMs <= vInfC3Ms + 1e-3);
+      if (vInfC3Ms !== undefined) {
+        filteredCurves = initialCurves.filter(c => c.vInfMs <= vInfC3Ms! + 1e-3);
         maxC3Curve = buildCurve(vInfC3Ms);
       }
 
       const color = body.color || DEFAULT_BODY_COLORS[body.name] || `hsl(${(idx * 137.5) % 360}, 80%, 65%)`;
 
-      return {
+      bodyPrepMap[body.name] = {
         body,
         a_p,
         v_p,
         r_p_min,
         vInf5DegMs,
-        maxC3Ms2: maxC3Val,
+        maxC3Val,
         vInfMaxMs,
-        curves,
+        initialCurves: filteredCurves,
         maxC3Curve,
         color,
+        idx,
+      };
+
+      initialKeptMap[body.name] = new Set(filteredCurves.map(c => c.vInfMs));
+    });
+
+    // 2. Iterative "back and forth" removal pass until fixpoint
+    const keptMap: Record<string, Set<number>> = {};
+    Object.keys(initialKeptMap).forEach(key => {
+      keptMap[key] = new Set(initialKeptMap[key]);
+    });
+
+    let changed = true;
+    let passCount = 0;
+
+    while (changed && passCount < 20) {
+      changed = false;
+      passCount++;
+
+      for (const body of canvasBodies) {
+        const prep = bodyPrepMap[body.name];
+        if (!prep) continue;
+
+        const connectedPairs = flybyConnectedPairsMap[body.name] || [];
+        const neighbors = neighborBodiesMap[body.name] || [];
+
+        const currentKept = keptMap[body.name] || new Set();
+        const nextKept = new Set<number>();
+
+        for (const vInfMs of currentKept) {
+          if (connectedPairs.length > 0) {
+            // Flyby body: must touch a displayed line of B1 and a displayed line of B2
+            // with deflection angle deltaTheta <= deltaMaxRad
+            const sinHalfDeltaMax = Math.min(1, Math.max(0, 1 / (1 + (prep.r_p_min * vInfMs * vInfMs) / body.stdGravParam)));
+            const deltaMaxRad = 2 * Math.asin(sinHalfDeltaMax);
+
+            const isValid = connectedPairs.some(pair => {
+              const b1 = pair.body1;
+              const b2 = pair.body2;
+              const b1Kept = Array.from(keptMap[b1.name] || []);
+              const b2Kept = Array.from(keptMap[b2.name] || []);
+
+              for (const v1 of b1Kept) {
+                const res1 = getIntersectionTheta(body, vInfMs, b1, v1, mu_main);
+                if (!res1) continue;
+
+                for (const v2 of b2Kept) {
+                  const res2 = getIntersectionTheta(body, vInfMs, b2, v2, mu_main);
+                  if (!res2) continue;
+
+                  const thetaIn = res1.thetaA;
+                  const thetaOut = res2.thetaA;
+                  const deltaTheta = Math.abs(thetaIn - thetaOut);
+
+                  if (deltaTheta <= deltaMaxRad + 1e-4) {
+                    return true;
+                  }
+                }
+              }
+              return false;
+            });
+
+            if (isValid) {
+              nextKept.add(vInfMs);
+            }
+          } else if (neighbors.length > 0) {
+            // Pure source / pure target body (connected to neighbors)
+            const isValid = neighbors.some(nb => {
+              const nbKept = Array.from(keptMap[nb.name] || []);
+              return nbKept.some(vNb => {
+                return getIntersectionTheta(body, vInfMs, nb, vNb, mu_main) !== null;
+              });
+            });
+
+            if (isValid) {
+              nextKept.add(vInfMs);
+            }
+          } else {
+            // Unconnected body
+            nextKept.add(vInfMs);
+          }
+        }
+
+        if (nextKept.size !== currentKept.size) {
+          keptMap[body.name] = nextKept;
+          changed = true;
+        }
+      }
+    }
+
+    // 3. Construct final BodyTisserandData objects
+    const finalBodyDataList = canvasBodies.map(body => {
+      const prep = bodyPrepMap[body.name];
+      const keptSet = keptMap[body.name] || new Set();
+      const finalCurves = prep.initialCurves.filter(c => keptSet.has(c.vInfMs));
+
+      return {
+        body: prep.body,
+        a_p: prep.a_p,
+        v_p: prep.v_p,
+        r_p_min: prep.r_p_min,
+        vInf5DegMs: prep.vInf5DegMs,
+        maxC3Ms2: prep.maxC3Val,
+        vInfMaxMs: prep.vInfMaxMs,
+        curves: finalCurves,
+        maxC3Curve: prep.maxC3Curve,
+        color: prep.color,
       };
     });
+
+    // 4. Construct comprehensive Debug Entries explaining why each candidate vInf line is displayed or not
+    const debugEntries: VInfDebugEntry[] = [];
+
+    canvasBodies.forEach(body => {
+      const prep = bodyPrepMap[body.name];
+      if (!prep) return;
+
+      const keptSet = keptMap[body.name] || new Set();
+      const connectedPairs = flybyConnectedPairsMap[body.name] || [];
+      const neighbors = neighborBodiesMap[body.name] || [];
+
+      // Candidate integer vInf lines up to max of vInf5DegMs or sqrt(maxC3)
+      const maxCandidateMs = Math.max(prep.vInfMaxMs, prep.maxC3Val ? Math.sqrt(prep.maxC3Val) * 1000 : 0);
+
+      for (let v = 1000; v <= maxCandidateMs; v += 1000) {
+        const vInfKms = v / 1000;
+        const isDisplayed = keptSet.has(v);
+
+        let exceedsC3 = false;
+        if (prep.maxC3Val !== undefined && prep.maxC3Val > 0) {
+          const vC3Ms = Math.sqrt(prep.maxC3Val) * 1000;
+          if (v > vC3Ms + 1e-3) {
+            exceedsC3 = true;
+          }
+        }
+
+        const sinHalfDeltaMax = Math.min(1, Math.max(0, 1 / (1 + (prep.r_p_min * v * v) / body.stdGravParam)));
+        const deltaMaxRad = 2 * Math.asin(sinHalfDeltaMax);
+        const deltaMaxDeg = (deltaMaxRad * 180) / Math.PI;
+
+        // Calculate extremities for this candidate vInf curve
+        const candidateCurve = prep.initialCurves.find(c => c.vInfMs === v) || buildCurve(v);
+        const candidatePts = candidateCurve ? candidateCurve.points : [];
+        const AU_VAL = 1.495978707e11;
+
+        const extremities: VInfExtremities | undefined = candidatePts && candidatePts.length > 0 ? {
+          start: {
+            thetaDeg: (candidatePts[0].theta * 180) / Math.PI,
+            rpM: candidatePts[0].rp,
+            rpAU: candidatePts[0].rp / AU_VAL,
+            rpKm: candidatePts[0].rp / 1000,
+            log10rp: candidatePts[0].log10rp,
+            E: candidatePts[0].E,
+            E_MJ: candidatePts[0].E / 1e6,
+          },
+          end: {
+            thetaDeg: (candidatePts[candidatePts.length - 1].theta * 180) / Math.PI,
+            rpM: candidatePts[candidatePts.length - 1].rp,
+            rpAU: candidatePts[candidatePts.length - 1].rp / AU_VAL,
+            rpKm: candidatePts[candidatePts.length - 1].rp / 1000,
+            log10rp: candidatePts[candidatePts.length - 1].log10rp,
+            E: candidatePts[candidatePts.length - 1].E,
+            E_MJ: candidatePts[candidatePts.length - 1].E / 1e6,
+          },
+        } : undefined;
+
+        const evaluations: VInfDebugEvaluation[] = [];
+
+        if (exceedsC3) {
+          debugEntries.push({
+            bodyName: body.name,
+            vInfKms,
+            vInfMs: v,
+            isDisplayed: false,
+            reason: `Exceeds maxC3 hard limit (${prep.maxC3Val?.toFixed(2)} km²/s²)`,
+            maxDeflectionDeg: deltaMaxDeg,
+            extremities,
+            evaluations: [],
+            explanationText: `FILTERED OUT: v_inf = ${vInfKms.toFixed(1)} km/s exceeds maxC3 limit (${prep.maxC3Val?.toFixed(2)} km²/s²). Max allowed v_inf = ${(Math.sqrt(prep.maxC3Val!)).toFixed(2)} km/s.`,
+          });
+          continue;
+        }
+
+        if (connectedPairs.length > 0) {
+          connectedPairs.forEach(pair => {
+            const b1 = pair.body1;
+            const b2 = pair.body2;
+            const b1Kept = Array.from(keptMap[b1.name] || []).sort((a, b) => a - b);
+            const b2Kept = Array.from(keptMap[b2.name] || []).sort((a, b) => a - b);
+
+            for (const v1 of b1Kept) {
+              const res1 = getIntersectionTheta(body, v, b1, v1, mu_main);
+
+              for (const v2 of b2Kept) {
+                const res2 = getIntersectionTheta(body, v, b2, v2, mu_main);
+
+                if (res1 && res2) {
+                  const pt1 = getRpEFromTheta(body, v, res1.thetaA, mu_main);
+                  const pt2 = getRpEFromTheta(body, v, res2.thetaA, mu_main);
+                  const theta1Deg = (res1.thetaA * 180) / Math.PI;
+                  const theta2Deg = (res2.thetaA * 180) / Math.PI;
+                  const deflectionDeg = Math.abs(theta1Deg - theta2Deg);
+                  const isValid = deflectionDeg <= deltaMaxDeg + 1e-4;
+
+                  evaluations.push({
+                    prevBodyName: b1.name,
+                    prevVInfKms: v1 / 1000,
+                    prevRpAU: pt1.rpAU,
+                    prevRpKm: pt1.rpM / 1000,
+                    prevRpLog10M: pt1.log10rp,
+                    prevE_MJ: pt1.E_MJ,
+                    prevThetaDeg: theta1Deg,
+
+                    nextBodyName: b2.name,
+                    nextVInfKms: v2 / 1000,
+                    nextRpAU: pt2.rpAU,
+                    nextRpKm: pt2.rpM / 1000,
+                    nextRpLog10M: pt2.log10rp,
+                    nextE_MJ: pt2.E_MJ,
+                    nextThetaDeg: theta2Deg,
+
+                    deflectionDeg,
+                    maxDeflectionDeg: deltaMaxDeg,
+                    isValid,
+                    notes: isValid
+                      ? `Valid flyby transition (required deflection ${deflectionDeg.toFixed(2)}° <= max ${deltaMaxDeg.toFixed(2)}°)`
+                      : `Deflection required (${deflectionDeg.toFixed(2)}°) exceeds max allowed (${deltaMaxDeg.toFixed(2)}°)`,
+                  });
+                } else {
+                  let noteMsg = '';
+                  if (!res1 && !res2) {
+                    noteMsg = `No geometric crossing with ${b1.name} (vInf=${v1/1000}km/s) or ${b2.name} (vInf=${v2/1000}km/s)`;
+                  } else if (!res1) {
+                    noteMsg = `Crosses ${b2.name} (vInf=${v2/1000}km/s) but no crossing with ${b1.name} (vInf=${v1/1000}km/s)`;
+                  } else {
+                    noteMsg = `Crosses ${b1.name} (vInf=${v1/1000}km/s) but no crossing with ${b2.name} (vInf=${v2/1000}km/s)`;
+                  }
+
+                  evaluations.push({
+                    prevBodyName: b1.name,
+                    prevVInfKms: v1 / 1000,
+                    nextBodyName: b2.name,
+                    nextVInfKms: v2 / 1000,
+                    deflectionDeg: undefined,
+                    maxDeflectionDeg: deltaMaxDeg,
+                    isValid: false,
+                    notes: noteMsg,
+                  });
+                }
+              }
+            }
+          });
+
+          let explanationText = '';
+          if (isDisplayed) {
+            const validEval = evaluations.find(e => e.isValid);
+            if (validEval) {
+              explanationText = `DISPLAYED: v_inf = ${vInfKms.toFixed(1)} km/s connects displayed line of ${validEval.prevBodyName} (vInf=${validEval.prevVInfKms} km/s at rp=${validEval.prevRpAU?.toFixed(3)} AU, log10(rp[m])=${validEval.prevRpLog10M?.toFixed(3)}, E=${validEval.prevE_MJ?.toFixed(2)} MJ/kg) to displayed line of ${validEval.nextBodyName} (vInf=${validEval.nextVInfKms} km/s at rp=${validEval.nextRpAU?.toFixed(3)} AU, log10(rp[m])=${validEval.nextRpLog10M?.toFixed(3)}, E=${validEval.nextE_MJ?.toFixed(2)} MJ/kg). Deflection = ${validEval.deflectionDeg?.toFixed(2)}° <= max ${deltaMaxDeg.toFixed(2)}°.`;
+            } else {
+              explanationText = `DISPLAYED: v_inf = ${vInfKms.toFixed(1)} km/s is active (max deflection = ${deltaMaxDeg.toFixed(2)}°).`;
+            }
+          } else {
+            if (evaluations.length === 0) {
+              explanationText = `FILTERED OUT: No candidate v_inf line combinations exist on connected bodies (${connectedPairs.map(p => `${p.body1.name} & ${p.body2.name}`).join(', ')}) to allow a flyby.`;
+            } else {
+              explanationText = `FILTERED OUT: Evaluated ${evaluations.length} pair combination(s). None satisfied the max deflection limit (${deltaMaxDeg.toFixed(2)}°) between crossing points.`;
+            }
+          }
+
+          debugEntries.push({
+            bodyName: body.name,
+            vInfKms,
+            vInfMs: v,
+            isDisplayed,
+            reason: isDisplayed ? 'Valid flyby transition' : 'Deflection exceeds max or no line crossing',
+            maxDeflectionDeg: deltaMaxDeg,
+            extremities,
+            evaluations,
+            explanationText,
+          });
+        } else if (neighbors.length > 0) {
+          neighbors.forEach(nb => {
+            const nbKept = Array.from(keptMap[nb.name] || []).sort((a, b) => a - b);
+            nbKept.forEach(vNb => {
+              const res = getIntersectionTheta(body, v, nb, vNb, mu_main);
+              if (res) {
+                const pt = getRpEFromTheta(body, v, res.thetaA, mu_main);
+                const thetaDeg = (res.thetaA * 180) / Math.PI;
+
+                evaluations.push({
+                  nextBodyName: nb.name,
+                  nextVInfKms: vNb / 1000,
+                  nextRpAU: pt.rpAU,
+                  nextRpKm: pt.rpM / 1000,
+                  nextRpLog10M: pt.log10rp,
+                  nextE_MJ: pt.E_MJ,
+                  nextThetaDeg: thetaDeg,
+                  isValid: true,
+                  notes: `Crosses ${nb.name} (vInf=${vNb/1000}km/s) at rp=${pt.rpAU.toFixed(3)} AU (log10(rp[m])=${pt.log10rp.toFixed(3)}), E=${pt.E_MJ.toFixed(2)} MJ/kg`,
+                });
+              } else {
+                evaluations.push({
+                  nextBodyName: nb.name,
+                  nextVInfKms: vNb / 1000,
+                  isValid: false,
+                  notes: `No geometric intersection with ${nb.name} (vInf=${vNb/1000}km/s)`,
+                });
+              }
+            });
+          });
+
+          let explanationText = '';
+          if (isDisplayed) {
+            const validEval = evaluations.find(e => e.isValid);
+            explanationText = `DISPLAYED: v_inf = ${vInfKms.toFixed(1)} km/s crosses displayed v_inf line of ${validEval?.nextBodyName} (vInf=${validEval?.nextVInfKms} km/s) at rp=${validEval?.nextRpAU?.toFixed(3)} AU (log10(rp[m])=${validEval?.nextRpLog10M?.toFixed(3)}), E=${validEval?.nextE_MJ?.toFixed(2)} MJ/kg.`;
+          } else {
+            explanationText = `FILTERED OUT: v_inf = ${vInfKms.toFixed(1)} km/s does not cross any displayed v_inf line of connected neighbor (${neighbors.map(n => n.name).join(', ')}).`;
+          }
+
+          debugEntries.push({
+            bodyName: body.name,
+            vInfKms,
+            vInfMs: v,
+            isDisplayed,
+            reason: isDisplayed ? 'Crosses connected neighbor vInf line' : 'No crossing with connected neighbor vInf lines',
+            maxDeflectionDeg: deltaMaxDeg,
+            extremities,
+            evaluations,
+            explanationText,
+          });
+        } else {
+          debugEntries.push({
+            bodyName: body.name,
+            vInfKms,
+            vInfMs: v,
+            isDisplayed: true,
+            reason: 'Unconnected body',
+            maxDeflectionDeg: deltaMaxDeg,
+            extremities,
+            evaluations: [],
+            explanationText: `DISPLAYED: Unconnected body ${body.name} displays v_inf = ${vInfKms.toFixed(1)} km/s.`,
+          });
+        }
+      }
+    });
+
+    console.log('[Tisserand vInf Line Filter Debug Array]', debugEntries);
+
+    return { bodyDataList: finalBodyDataList, debugEntries };
   }, [canvasBodies, instances, links, bodies, mu_main, flybyConnectedPairsMap, neighborBodiesMap]);
 
   // Overall Plot Bounding Box (Min/Max log10rp and Min/Max E)
@@ -1107,6 +1553,8 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
                     maxC3ShadingPath = pathD;
                   }
 
+                  const isFlybyBody = (flybyConnectedPairsMap[data.body.name] || []).length > 0;
+
                   return (
                     <g key={`body-group-${data.body.name}`}>
                       {/* Light Gray Area for C3 > maxC3 */}
@@ -1155,8 +1603,8 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
                               </text>
                             )}
 
-                            {/* Deflection graduations along vInf line */}
-                            {curve.graduations.map((grad, gIdx) => {
+                            {/* Deflection graduations along vInf line (only displayed for flyby bodies) */}
+                            {isFlybyBody && curve.graduations.map((grad, gIdx) => {
                               const gx = projectX(grad.log10rp);
                               const gy = projectY(grad.E);
 
@@ -1277,6 +1725,189 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
               </div>
             )}
           </div>
+
+          {/* Debug Panel Toggle Button */}
+          <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between">
+            <button
+              onClick={() => setShowDebugPanel(!showDebugPanel)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors border border-slate-700"
+            >
+              <Activity className="w-3.5 h-3.5 text-sky-400" />
+              <span>{showDebugPanel ? 'Hide' : 'Show'} V_inf Line Filter Debug Explanations ({debugEntries.length} evaluated)</span>
+              {showDebugPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+
+            <div className="text-[11px] text-slate-400 flex items-center gap-3 font-mono">
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+                Displayed: {debugEntries.filter(e => e.isDisplayed).length}
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-rose-500 inline-block"></span>
+                Filtered Out: {debugEntries.filter(e => !e.isDisplayed).length}
+              </span>
+            </div>
+          </div>
+
+          {/* Debug Panel Details */}
+          {showDebugPanel && (
+            <div className="mt-3 p-4 rounded-lg bg-slate-950 border border-slate-800 flex flex-col gap-3 text-xs">
+              {/* Filter Controls */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 text-[11px] font-medium">Filter Body:</span>
+                  <select
+                    value={debugBodyFilter}
+                    onChange={e => setDebugBodyFilter(e.target.value)}
+                    className="bg-slate-900 text-slate-200 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="ALL">All Bodies</option>
+                    {Array.from(new Set(debugEntries.map(e => e.bodyName))).map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 text-[11px] font-medium">Status:</span>
+                  <div className="flex rounded bg-slate-900 p-0.5 border border-slate-800">
+                    <button
+                      onClick={() => setDebugStatusFilter('ALL')}
+                      className={`px-2 py-0.5 rounded text-[11px] ${debugStatusFilter === 'ALL' ? 'bg-sky-600 text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      All
+                    </button>
+                    <button
+                      onClick={() => setDebugStatusFilter('DISPLAYED')}
+                      className={`px-2 py-0.5 rounded text-[11px] ${debugStatusFilter === 'DISPLAYED' ? 'bg-emerald-600 text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Displayed
+                    </button>
+                    <button
+                      onClick={() => setDebugStatusFilter('FILTERED')}
+                      className={`px-2 py-0.5 rounded text-[11px] ${debugStatusFilter === 'FILTERED' ? 'bg-rose-600 text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Filtered
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* List of Debug Entries */}
+              <div className="flex flex-col gap-2.5 max-h-[380px] overflow-y-auto pr-1">
+                {debugEntries
+                  .filter(entry => {
+                    if (debugBodyFilter !== 'ALL' && entry.bodyName !== debugBodyFilter) return false;
+                    if (debugStatusFilter === 'DISPLAYED' && !entry.isDisplayed) return false;
+                    if (debugStatusFilter === 'FILTERED' && entry.isDisplayed) return false;
+                    return true;
+                  })
+                  .map((entry, idx) => (
+                    <div
+                      key={`debug-entry-${entry.bodyName}-${entry.vInfKms}-${idx}`}
+                      className={`p-3 rounded border font-mono ${
+                        entry.isDisplayed
+                          ? 'bg-emerald-950/20 border-emerald-800/40'
+                          : 'bg-rose-950/15 border-rose-900/30'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-slate-100">{entry.bodyName}</span>
+                          <span className="text-sky-400 font-semibold">v_inf = {entry.vInfKms.toFixed(1)} km/s</span>
+                          <span className="text-amber-300/80 text-[11px]">(max δ = {entry.maxDeflectionDeg.toFixed(1)}°)</span>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${
+                            entry.isDisplayed
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                          }`}
+                        >
+                          {entry.isDisplayed ? 'Displayed' : 'Filtered Out'}
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-300 leading-relaxed mb-2 font-sans">
+                        {entry.explanationText}
+                      </p>
+
+                      {/* Line Extremities */}
+                      {entry.extremities && (
+                        <div className="mt-1.5 mb-2 p-1.5 rounded bg-slate-900/90 border border-slate-800 text-[10px] flex flex-col gap-1">
+                          <div className="text-slate-400 font-sans font-medium flex items-center justify-between">
+                            <span>v_inf Line Extremities (rp / E coordinates):</span>
+                            <span className="text-[9px] text-slate-500 font-mono">Chart X-axis: log10(rp [m])</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 font-mono text-[10px]">
+                            <div className="p-1 rounded bg-slate-950/60 border border-slate-800/60">
+                              <span className="text-sky-400 font-bold">Start (θ = {entry.extremities.start.thetaDeg.toFixed(1)}°):</span>{' '}
+                              <span>log10(rp[m]) = <strong className="text-amber-300">{entry.extremities.start.log10rp.toFixed(3)}</strong></span>{' '}
+                              <span className="text-slate-400">({entry.extremities.start.rpAU.toFixed(3)} AU)</span>,{' '}
+                              <span>E = {entry.extremities.start.E_MJ.toFixed(2)} MJ/kg</span>
+                            </div>
+                            <div className="p-1 rounded bg-slate-950/60 border border-slate-800/60">
+                              <span className="text-sky-400 font-bold">End (θ = {entry.extremities.end.thetaDeg.toFixed(1)}°):</span>{' '}
+                              <span>log10(rp[m]) = <strong className="text-amber-300">{entry.extremities.end.log10rp.toFixed(3)}</strong></span>{' '}
+                              <span className="text-slate-400">({entry.extremities.end.rpAU.toFixed(3)} AU)</span>,{' '}
+                              <span>E = {entry.extremities.end.E_MJ.toFixed(2)} MJ/kg</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Evaluation breakdown table */}
+                      {entry.evaluations.length > 0 && (
+                        <div className="mt-2 border-t border-slate-800/80 pt-2 text-[10px]">
+                          <div className="text-slate-400 font-sans font-medium mb-1">Evaluated Crossings & Deflections:</div>
+                          <div className="flex flex-col gap-1">
+                            {entry.evaluations.map((ev, evIdx) => (
+                              <div
+                                key={`ev-${evIdx}`}
+                                className={`p-1.5 rounded flex flex-wrap items-center justify-between gap-2 ${
+                                  ev.isValid ? 'bg-emerald-900/30 text-emerald-200' : 'bg-slate-900/80 text-slate-400'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {ev.prevBodyName && (
+                                    <span>
+                                      {ev.prevBodyName} ({ev.prevVInfKms}km/s):{' '}
+                                      log10(rp)={<strong className="text-amber-300">{ev.prevRpLog10M !== undefined ? ev.prevRpLog10M.toFixed(3) : 'N/A'}</strong>}{' '}
+                                      <span className="text-slate-400">({ev.prevRpAU ? `${ev.prevRpAU.toFixed(3)}AU` : 'N/A'})</span>,{' '}
+                                      {ev.prevE_MJ !== undefined ? `${ev.prevE_MJ.toFixed(1)}MJ/kg` : 'N/A'},{' '}
+                                      {ev.prevThetaDeg !== undefined ? `θ₁=${ev.prevThetaDeg.toFixed(1)}°` : ''}
+                                    </span>
+                                  )}
+                                  {ev.prevBodyName && ev.nextBodyName && <span className="text-slate-500">→</span>}
+                                  {ev.nextBodyName && (
+                                    <span>
+                                      {ev.nextBodyName} ({ev.nextVInfKms}km/s):{' '}
+                                      log10(rp)={<strong className="text-amber-300">{ev.nextRpLog10M !== undefined ? ev.nextRpLog10M.toFixed(3) : 'N/A'}</strong>}{' '}
+                                      <span className="text-slate-400">({ev.nextRpAU ? `${ev.nextRpAU.toFixed(3)}AU` : 'N/A'})</span>,{' '}
+                                      {ev.nextE_MJ !== undefined ? `${ev.nextE_MJ.toFixed(1)}MJ/kg` : 'N/A'},{' '}
+                                      {ev.nextThetaDeg !== undefined ? `θ₂=${ev.nextThetaDeg.toFixed(1)}°` : ''}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  {ev.deflectionDeg !== undefined && (
+                                    <span className={ev.isValid ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                                      Δθ = {ev.deflectionDeg.toFixed(1)}° (max {ev.maxDeflectionDeg?.toFixed(1)}°)
+                                    </span>
+                                  )}
+                                  <span className="italic opacity-80 font-sans">{ev.notes}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
