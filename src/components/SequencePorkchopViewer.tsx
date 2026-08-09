@@ -22,6 +22,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   onClose,
 }) => {
   const is4Body = !!seqPorkchop.is4Body;
+  const bodyParts = seqPorkchop.sequenceLabel.split(/➔|->|→/).map(s => s.trim()).filter(Boolean);
+  const instanceCount = bodyParts.length > 0 ? bodyParts.length : (is4Body ? 4 : 3);
   const [activeTab, setActiveTab] = useState<SeqViewTab>(is4Body ? 'totalPoweredDv' : 'poweredDvB');
   const [hoverData, setHoverData] = useState<{
     depDate: number;
@@ -272,7 +274,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                {is4Body ? '4-Instance Sequence Porkchop Plot' : '3-Instance Sequence Porkchop Plot'}
+                {instanceCount}-Instance Sequence Porkchop Plot
               </h2>
               <p className="text-[11px] text-[#A1A1AA]">
                 <span className="text-[#60A5FA] font-semibold">{seqPorkchop.sequenceLabel}</span>

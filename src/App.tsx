@@ -28,6 +28,7 @@ import {
   runSequenceSearch,
   runSequenceSearchAlt,
   propagateDateBounds,
+  propagateC3Bounds,
   generateLinkEndDates,
   countPossibleTransfers,
   intersectInstanceDates
@@ -87,13 +88,19 @@ export default function App() {
       const { totalPossible } = countPossibleTransfers(link, src, tgt);
       return { ...link, possibleTransfersCount: link.possibleTransfersCount ?? totalPossible };
     });
-    updatedInsts = intersectInstanceDates(updatedInsts, updatedLnks);
+    updatedInsts = intersectInstanceDates(updatedInsts, updatedLnks, currentSystem.bodies, mainBody);
+    updatedInsts = propagateC3Bounds(updatedInsts, updatedLnks, currentSystem.bodies, mainBody);
 
     // Update if computed bounds or sample counts changed
     setInstances(prev => {
       const changed = prev.some((inst, idx) => {
         const u = updatedInsts[idx];
-        return u && (inst.computedMinDate !== u.computedMinDate || inst.computedMaxDate !== u.computedMaxDate);
+        return u && (
+          inst.computedMinDate !== u.computedMinDate ||
+          inst.computedMaxDate !== u.computedMaxDate ||
+          inst.computedMinC3 !== u.computedMinC3 ||
+          inst.computedMaxC3 !== u.computedMaxC3
+        );
       });
       return changed ? updatedInsts : prev;
     });
@@ -117,7 +124,7 @@ export default function App() {
     let newLinks: DirectionalLink[] = [];
 
     if (presetKey === 'kerbin_grannus') {
-      // Kerbin -> Eve -> Kerbin -> Jool -> Grannus
+      // Kerbin -> Duna -> Kerbin -> Eve -> Jool -> Urlum -> Grannus
       const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
       setCurrentSystem(grannusSys);
       setMainBodyName('Sun');
@@ -126,23 +133,26 @@ export default function App() {
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
-        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25},
-        {id: 'inst-Du', bodyName: 'Duna' , x: 120, y: 120, minFlybyRadius: 100000},
-        {id: 'inst-E1', bodyName: 'Eve'    , x: 320, y: 120, minFlybyRadius: 100000},
-        {id: 'inst-J', bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000},
-        {id: 'inst-U', bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000},
-        {id: 'inst-G', bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25, dateSampleCount: 1},
+        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 9, isSourceOverride: true},
+        {id: 'inst-Du', bodyName: 'Duna'   , x: 220, y: 120, minFlybyRadius: 70000},
+        {id: 'inst-K2', bodyName: 'Kerbin' , x: 320, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 16, isSourceOverride: true},
+        {id: 'inst-E1', bodyName: 'Eve'    , x: 420, y: 120, minFlybyRadius: 100000},
+        {id: 'inst-K3', bodyName: 'Kerbin' , x: 520, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25, isSourceOverride: true},
+        {id: 'inst-J',  bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000},
+        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000},
+        {id: 'inst-G',  bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25, dateSampleCount: 1},
       ];
 
       newLinks = [
         {id: 'link-K1-Du', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-Du'},
-        {id: 'link-Du-E1', sourceInstanceId: 'inst-Du', targetInstanceId: 'inst-E1'},
-        {id: 'link-K1-E1', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-E1'},
-        {id: 'link-K1-J', sourceInstanceId: 'inst-K1', targetInstanceId: 'inst-J'},
-        {id: 'link-E1-J', sourceInstanceId: 'inst-E1', targetInstanceId: 'inst-J'},
-        {id: 'link-J-U', sourceInstanceId: 'inst-J', targetInstanceId: 'inst-U'},
-        {id: 'link-U-G', sourceInstanceId: 'inst-U', targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(7500, 'ksp')},
-        {id: 'link-J-G', sourceInstanceId: 'inst-J', targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(9500, 'ksp')},
+        {id: 'link-Du-K2', sourceInstanceId: 'inst-Du', targetInstanceId: 'inst-K2'},
+        {id: 'link-K2-E1', sourceInstanceId: 'inst-K2', targetInstanceId: 'inst-E1'},
+        {id: 'link-E1-K3', sourceInstanceId: 'inst-E1', targetInstanceId: 'inst-K3'},
+        {id: 'link-K3-J',  sourceInstanceId: 'inst-K3', targetInstanceId: 'inst-J'},
+        {id: 'link-E1-J',  sourceInstanceId: 'inst-E1', targetInstanceId: 'inst-J'},
+        {id: 'link-J-U',   sourceInstanceId: 'inst-J',  targetInstanceId: 'inst-U'},
+        {id: 'link-U-G',   sourceInstanceId: 'inst-U',  targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(7500, 'ksp')},
+        {id: 'link-J-G',   sourceInstanceId: 'inst-J',  targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(9500, 'ksp')},
       ];
     } else if (presetKey === 'kej') {
       // Kerbin -> Eve -> Jool
@@ -537,7 +547,7 @@ export default function App() {
         />
       )}
 
-      {/* 3-Instance Sequence Porkchop Plot Modal */}
+      {/* Sequence Porkchop Plot Modal */}
       {selectedSeqPorkchopId && sequencePorkchops[selectedSeqPorkchopId] && (
         <SequencePorkchopViewer
           seqPorkchop={sequencePorkchops[selectedSeqPorkchopId]}

@@ -128,8 +128,382 @@ export function propagateDateBounds(
 }
 
 /**
+ * Calculates pump angle intersection theta for two bodies in Tisserand (r_p, E) space
+ */
+function getTisserandIntersectionTheta(
+  bodyA: CelestialBody,
+  vInfA: number,
+  bodyB: CelestialBody,
+  vInfB: number,
+  mu_main: number
+): { thetaA: number; thetaB: number } | null {
+  const aA = bodyA.semiMajorAxis;
+  const aB = bodyB.semiMajorAxis;
+
+  if (Math.abs(aA - aB) < 1e-3) {
+    if (Math.abs(vInfA - vInfB) < 1e-3) {
+      return { thetaA: 0, thetaB: 0 };
+    }
+    return null;
+  }
+
+  const v_pA = Math.sqrt(mu_main / aA);
+  const v_pB = Math.sqrt(mu_main / aB);
+
+  const A1 = v_pA * vInfA;
+  const B1 = -v_pB * vInfB;
+  const C1 = (mu_main / (2 * aA)) - (mu_main / (2 * aB)) + 0.5 * vInfB * vInfB - 0.5 * vInfA * vInfA;
+
+  const A2 = aA * vInfA;
+  const B2 = -aB * vInfB;
+  const C2 = Math.sqrt(mu_main * aB) - Math.sqrt(mu_main * aA);
+
+  const D = A1 * B2 - A2 * B1;
+  if (Math.abs(D) < 1e-9) return null;
+
+  const xA = (C1 * B2 - C2 * B1) / D;
+  const xB = (A1 * C2 - A2 * C1) / D;
+
+  if (xA < -1 - 1e-5 || xA > 1 + 1e-5) return null;
+  if (xB < -1 - 1e-5 || xB > 1 + 1e-5) return null;
+
+  const clampedXA = Math.max(-1, Math.min(1, xA));
+  const clampedXB = Math.max(-1, Math.min(1, xB));
+
+  const thetaA = Math.acos(clampedXA);
+  const thetaB = Math.acos(clampedXB);
+
+  const thetaAMax = vInfA >= v_pA ? Math.acos(-v_pA / vInfA) : Math.PI;
+  const thetaBMax = vInfB >= v_pB ? Math.acos(-v_pB / vInfB) : Math.PI;
+
+  if (thetaA > thetaAMax + 1e-4) return null;
+  if (thetaB > thetaBMax + 1e-4) return null;
+
+  return { thetaA, thetaB };
+}
+
+/**
+ * Computes Tisserand v_inf envelopes (in m/s) for each instance using iterative 3-body deflection/crossing propagation.
+ */
+export function computeTisserandEnvelopes(
+  instances: InstanceNode[],
+  links: DirectionalLink[],
+  bodies: CelestialBody[],
+  mainBody: CelestialBody
+): Record<string, { minMs: number; maxMs: number }> {
+  const instMap = new Map<string, InstanceNode>();
+  instances.forEach(i => instMap.set(i.id, i));
+
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  const mu_main = mainBody.stdGravParam || 1.32712440018e20;
+
+  const bodyPrepMap: Record<string, {
+    body: CelestialBody;
+    r_p_min: number;
+    vInf5DegMs: number;
+  }> = {};
+
+  const activeInstanceEnvelopes: Record<string, { minMs: number; maxMs: number }> = {};
+
+  bodies.forEach(body => {
+    if (body.name === mainBody.name) return;
+    const mu_b = body.stdGravParam;
+    const R_b = body.radius;
+
+    const bodyInstances = instances.filter(i => i.bodyName === body.name);
+    let minAlt = Infinity;
+    bodyInstances.forEach(inst => {
+      if (inst.minFlybyRadius !== undefined && inst.minFlybyRadius < minAlt) {
+        minAlt = inst.minFlybyRadius;
+      }
+    });
+    if (minAlt === Infinity) {
+      minAlt = body.atmosphereHeight;
+    }
+    const r_p_min = R_b + minAlt;
+
+    const targetDeltaRad = (5 * Math.PI) / 180;
+    const sinHalfDelta = Math.sin(targetDeltaRad / 2);
+    const vInf5DegMs = Math.sqrt(((1 / sinHalfDelta) - 1) * mu_b / r_p_min);
+
+    bodyPrepMap[body.name] = {
+      body,
+      r_p_min,
+      vInf5DegMs,
+    };
+  });
+
+  instances.forEach(inst => {
+    const prep = bodyPrepMap[inst.bodyName];
+    if (!prep) return;
+    let maxMs = prep.vInf5DegMs;
+    if (inst.maxC3 !== undefined && inst.maxC3 > 0) {
+      maxMs = Math.min(maxMs, Math.sqrt(inst.maxC3) * 1000);
+    }
+    maxMs = Math.max(1000, maxMs);
+    activeInstanceEnvelopes[inst.id] = { minMs: 0, maxMs };
+  });
+
+  const testInstanceVInfMsValid = (inst: InstanceNode, vInfMs: number): boolean => {
+    const body = bodyMap.get(inst.bodyName);
+    const prep = bodyPrepMap[inst.bodyName];
+    if (!body || !prep) return true;
+
+    const inLinks = links.filter(l => l.targetInstanceId === inst.id);
+    const outLinks = links.filter(l => l.sourceInstanceId === inst.id);
+
+    if (inLinks.length > 0 && outLinks.length > 0) {
+      const sinHalfDeltaMax = Math.min(1, Math.max(0, 1 / (1 + (prep.r_p_min * vInfMs * vInfMs) / body.stdGravParam)));
+      const deltaMaxRad = 2 * Math.asin(sinHalfDeltaMax);
+
+      let satisfiesPair = false;
+      for (const inLink of inLinks) {
+        const srcInst = instMap.get(inLink.sourceInstanceId);
+        if (!srcInst) continue;
+        const b1 = bodyMap.get(srcInst.bodyName);
+        const env1 = activeInstanceEnvelopes[srcInst.id];
+        if (!b1 || !env1 || (env1.minMs === 0 && env1.maxMs === 0)) continue;
+
+        for (const outLink of outLinks) {
+          const tgtInst = instMap.get(outLink.targetInstanceId);
+          if (!tgtInst) continue;
+          const b2 = bodyMap.get(tgtInst.bodyName);
+          const env2 = activeInstanceEnvelopes[tgtInst.id];
+          if (!b2 || !env2 || (env2.minMs === 0 && env2.maxMs === 0)) continue;
+
+          const numSamples: number = 30;
+          const theta1List: number[] = [];
+          const theta2List: number[] = [];
+
+          for (let i = 0; i < numSamples; i++) {
+            const frac = numSamples === 1 ? 0 : i / (numSamples - 1);
+            const v1 = env1.minMs + frac * (env1.maxMs - env1.minMs);
+            const res1 = getTisserandIntersectionTheta(body, vInfMs, b1, v1, mu_main);
+            if (res1) theta1List.push(res1.thetaA);
+          }
+
+          for (let i = 0; i < numSamples; i++) {
+            const frac = numSamples === 1 ? 0 : i / (numSamples - 1);
+            const v2 = env2.minMs + frac * (env2.maxMs - env2.minMs);
+            const res2 = getTisserandIntersectionTheta(body, vInfMs, b2, v2, mu_main);
+            if (res2) theta2List.push(res2.thetaA);
+          }
+
+          if (theta1List.length === 0 || theta2List.length === 0) continue;
+
+          const minT1 = Math.min(...theta1List);
+          const maxT1 = Math.max(...theta1List);
+          const minT2 = Math.min(...theta2List);
+          const maxT2 = Math.max(...theta2List);
+
+          const minDeflectionRad = Math.max(0, minT2 - maxT1, minT1 - maxT2);
+
+          if (minDeflectionRad <= deltaMaxRad + 1e-4) {
+            satisfiesPair = true;
+            break;
+          }
+        }
+        if (satisfiesPair) break;
+      }
+      return satisfiesPair;
+    } else if (inLinks.length > 0) {
+      let satisfiesNeigh = false;
+      for (const inLink of inLinks) {
+        const srcInst = instMap.get(inLink.sourceInstanceId);
+        if (!srcInst) continue;
+        const nb = bodyMap.get(srcInst.bodyName);
+        const envNb = activeInstanceEnvelopes[srcInst.id];
+        if (!nb || !envNb || (envNb.minMs === 0 && envNb.maxMs === 0)) continue;
+
+        const numSamplesIn: number = 30;
+        for (let i = 0; i < numSamplesIn; i++) {
+          const frac = numSamplesIn === 1 ? 0 : i / (numSamplesIn - 1);
+          const vNb = envNb.minMs + frac * (envNb.maxMs - envNb.minMs);
+          if (getTisserandIntersectionTheta(body, vInfMs, nb, vNb, mu_main) !== null) {
+            satisfiesNeigh = true;
+            break;
+          }
+        }
+        if (satisfiesNeigh) break;
+      }
+      return satisfiesNeigh;
+    } else if (outLinks.length > 0) {
+      let satisfiesNeigh = false;
+      for (const outLink of outLinks) {
+        const tgtInst = instMap.get(outLink.targetInstanceId);
+        if (!tgtInst) continue;
+        const nb = bodyMap.get(tgtInst.bodyName);
+        const envNb = activeInstanceEnvelopes[tgtInst.id];
+        if (!nb || !envNb || (envNb.minMs === 0 && envNb.maxMs === 0)) continue;
+
+        const numSamplesOut: number = 30;
+        for (let i = 0; i < numSamplesOut; i++) {
+          const frac = numSamplesOut === 1 ? 0 : i / (numSamplesOut - 1);
+          const vNb = envNb.minMs + frac * (envNb.maxMs - envNb.minMs);
+          if (getTisserandIntersectionTheta(body, vInfMs, nb, vNb, mu_main) !== null) {
+            satisfiesNeigh = true;
+            break;
+          }
+        }
+        if (satisfiesNeigh) break;
+      }
+      return satisfiesNeigh;
+    }
+
+    return true;
+  };
+
+  let changed = true;
+  let passCount = 0;
+  const maxPasses = 100;
+
+  while (changed && passCount < maxPasses) {
+    changed = false;
+    passCount++;
+
+    const sweepOrder = passCount % 2 === 1
+      ? [...instances]
+      : [...instances].reverse();
+
+    for (const inst of sweepOrder) {
+      const prep = bodyPrepMap[inst.bodyName];
+      if (!prep) continue;
+
+      const curInstEnv = activeInstanceEnvelopes[inst.id];
+      if (!curInstEnv || (curInstEnv.minMs === 0 && curInstEnv.maxMs === 0)) continue;
+
+      const instPrevMinMs = curInstEnv.minMs;
+      const instPrevMaxMs = curInstEnv.maxMs;
+
+      const stepMs = 50;
+      const coarseSamples: number[] = [];
+      for (let v = curInstEnv.minMs; v < curInstEnv.maxMs; v += stepMs) {
+        coarseSamples.push(v);
+      }
+      if (coarseSamples.length === 0 || coarseSamples[coarseSamples.length - 1] !== curInstEnv.maxMs) {
+        coarseSamples.push(curInstEnv.maxMs);
+      }
+
+      const validCoarseIndices: number[] = [];
+      for (let i = 0; i < coarseSamples.length; i++) {
+        if (testInstanceVInfMsValid(inst, coarseSamples[i])) {
+          validCoarseIndices.push(i);
+        }
+      }
+
+      if (validCoarseIndices.length === 0) {
+        for (let v = curInstEnv.minMs; v <= curInstEnv.maxMs; v += 10) {
+          if (testInstanceVInfMsValid(inst, v)) {
+            validCoarseIndices.push(0);
+            break;
+          }
+        }
+      }
+
+      let newMinMs = 0;
+      let newMaxMs = 0;
+
+      if (validCoarseIndices.length > 0) {
+        const firstValidIdx = validCoarseIndices[0];
+        if (firstValidIdx === 0 && testInstanceVInfMsValid(inst, curInstEnv.minMs)) {
+          newMinMs = curInstEnv.minMs;
+        } else {
+          let low = firstValidIdx > 0 ? coarseSamples[firstValidIdx - 1] : curInstEnv.minMs;
+          let high = coarseSamples[firstValidIdx];
+          while (high - low > 1) {
+            const mid = Math.floor((low + high) / 2);
+            if (testInstanceVInfMsValid(inst, mid)) {
+              high = mid;
+            } else {
+              low = mid;
+            }
+          }
+          newMinMs = high;
+        }
+
+        const lastValidIdx = validCoarseIndices[validCoarseIndices.length - 1];
+        if (lastValidIdx === coarseSamples.length - 1 && testInstanceVInfMsValid(inst, curInstEnv.maxMs)) {
+          newMaxMs = curInstEnv.maxMs;
+        } else {
+          let low = coarseSamples[lastValidIdx];
+          let high = lastValidIdx < coarseSamples.length - 1 ? coarseSamples[lastValidIdx + 1] : curInstEnv.maxMs;
+          while (high - low > 1) {
+            const mid = Math.floor((low + high) / 2);
+            if (testInstanceVInfMsValid(inst, mid)) {
+              low = mid;
+            } else {
+              high = mid;
+            }
+          }
+          newMaxMs = low;
+        }
+      }
+
+      if (newMinMs > newMaxMs) {
+        newMinMs = 0;
+        newMaxMs = 0;
+      }
+
+      if (Math.abs(newMinMs - instPrevMinMs) >= 1 || Math.abs(newMaxMs - instPrevMaxMs) >= 1) {
+        activeInstanceEnvelopes[inst.id] = { minMs: newMinMs, maxMs: newMaxMs };
+        changed = true;
+      }
+    }
+  }
+
+  return activeInstanceEnvelopes;
+}
+
+/**
+ * Computes and updates gray C3 range indication (computedMinC3, computedMaxC3) for each instance node
+ * using the exact Tisserand 3-body envelope propagation algorithm.
+ */
+export function propagateC3Bounds(
+  instances: InstanceNode[],
+  links: DirectionalLink[],
+  bodies: CelestialBody[],
+  mainBody: CelestialBody
+): InstanceNode[] {
+  const envs = computeTisserandEnvelopes(instances, links, bodies, mainBody);
+
+  return instances.map(inst => {
+    const env = envs[inst.id];
+    if (!env || (env.minMs === 0 && env.maxMs === 0)) {
+      return {
+        ...inst,
+        computedMinC3: 0,
+        computedMaxC3: inst.maxC3 ?? 0,
+      };
+    }
+
+    const minKms = env.minMs / 1000;
+    const maxKms = env.maxMs / 1000;
+
+    let minC3 = minKms * minKms;
+    let maxC3 = maxKms * maxKms;
+
+    if (inst.maxC3 !== undefined) {
+      maxC3 = Math.min(maxC3, inst.maxC3);
+      if (minC3 > maxC3) minC3 = 0;
+    }
+
+    const finalMinC3 = Math.round(Math.max(0, minC3) * 10) / 10;
+    const finalMaxC3 = Math.round(Math.max(finalMinC3, maxC3) * 10) / 10;
+
+    return {
+      ...inst,
+      computedMinC3: finalMinC3,
+      computedMaxC3: finalMaxC3,
+    };
+  });
+}
+
+
+/**
  * STEP 2: Determine list of candidate flyby dates for each link end
- * Length N >= max(3, ceil((max_date - min_date) / orbital_period * 16))
+ * Length N >= max(3, ceil((max_date - min_date) / orbital_period * SAMPLE_PER_PERIOD))
  */
 export function generateLinkEndDates(
   instances: InstanceNode[],
@@ -300,10 +674,6 @@ export function intersectInstanceDates(
       };
     }
 
-    if (inst.validFlybyDates && inst.validFlybyDates.length > 0) {
-      return inst;
-    }
-
     const incoming = links.filter(l => l.targetInstanceId === inst.id);
     const outgoing = links.filter(l => l.sourceInstanceId === inst.id);
 
@@ -315,7 +685,7 @@ export function intersectInstanceDates(
     const maxD = inst.maxDate ?? inst.computedMaxDate ?? minD + 31536000;
 
     const body = bodyMap.get(inst.bodyName);
-    const period = (body && mainBody) ? getOrbitalPeriod(body, mainBody) : 31536000;
+    const period = (body && mainBody) ? getOrbitalPeriod(body, mainBody) : 9203545;
     const range = Math.max(0, maxD - minD);
     const rawN = Math.ceil((range / Math.max(1, period)) * SAMPLE_PER_PERIOD);
     const samples = Math.min(MAX_SAMPLE_COUNT, Math.max(MIN_SAMPLE_COUNT, rawN));
@@ -427,9 +797,16 @@ export async function computePorkchopPlot(
         c3ArrMatrix[i][j] = c3Arr;
         dvMatrix[i][j] = vInfDepMag + vInfArrMag;
 
-        // Check C3 constraints
-        const passC3 = (srcInstance.maxC3 === undefined || c3Dep <= srcInstance.maxC3) &&
-                       (tgtInstance.maxC3 === undefined || c3Arr <= tgtInstance.maxC3);
+        // Check C3 constraints including gray C3 range
+        const passSrcC3 = (srcInstance.maxC3 === undefined || c3Dep <= srcInstance.maxC3) &&
+                          (srcInstance.computedMinC3 === undefined || c3Dep >= srcInstance.computedMinC3 - 0.05) &&
+                          (srcInstance.computedMaxC3 === undefined || c3Dep <= srcInstance.computedMaxC3 + 0.05);
+
+        const passTgtC3 = (tgtInstance.maxC3 === undefined || c3Arr <= tgtInstance.maxC3) &&
+                          (tgtInstance.computedMinC3 === undefined || c3Arr >= tgtInstance.computedMinC3 - 0.05) &&
+                          (tgtInstance.computedMaxC3 === undefined || c3Arr <= tgtInstance.computedMaxC3 + 0.05);
+
+        const passC3 = passSrcC3 && passTgtC3;
 
         validMatrix[i][j] = passC3;
         if (passC3) validCount++;
@@ -616,8 +993,16 @@ export async function computeSequencePorkchopPlot(
         const c3ArrC = (vecMag(vInfArrC) ** 2) / 1e6;
 
         if (srcInst.maxC3 !== undefined && c3DepA > srcInst.maxC3) continue;
+        if (srcInst.computedMinC3 !== undefined && c3DepA < srcInst.computedMinC3 - 0.05) continue;
+        if (srcInst.computedMaxC3 !== undefined && c3DepA > srcInst.computedMaxC3 + 0.05) continue;
+
         if (flybyInst.maxC3 !== undefined && (c3ArrB > flybyInst.maxC3 || c3DepB > flybyInst.maxC3)) continue;
+        if (flybyInst.computedMinC3 !== undefined && (c3ArrB < flybyInst.computedMinC3 - 0.05 || c3DepB < flybyInst.computedMinC3 - 0.05)) continue;
+        if (flybyInst.computedMaxC3 !== undefined && (c3ArrB > flybyInst.computedMaxC3 + 0.05 || c3DepB > flybyInst.computedMaxC3 + 0.05)) continue;
+
         if (tgtInst.maxC3 !== undefined && c3ArrC > tgtInst.maxC3) continue;
+        if (tgtInst.computedMinC3 !== undefined && c3ArrC < tgtInst.computedMinC3 - 0.05) continue;
+        if (tgtInst.computedMaxC3 !== undefined && c3ArrC > tgtInst.computedMaxC3 + 0.05) continue;
 
         if (evalRes.poweredDv < minDv) {
           minDv = evalRes.poweredDv;
@@ -849,9 +1234,20 @@ export async function compute4BodySequencePorkchopPlot(
           const c3ArrD = (vecMag(vInfArrD) ** 2) / 1e6;
 
           if (srcInst.maxC3 !== undefined && c3DepA > srcInst.maxC3) continue;
+          if (srcInst.computedMinC3 !== undefined && c3DepA < srcInst.computedMinC3 - 0.05) continue;
+          if (srcInst.computedMaxC3 !== undefined && c3DepA > srcInst.computedMaxC3 + 0.05) continue;
+
           if (flyby1Inst.maxC3 !== undefined && (c3ArrB > flyby1Inst.maxC3 || c3DepB > flyby1Inst.maxC3)) continue;
+          if (flyby1Inst.computedMinC3 !== undefined && (c3ArrB < flyby1Inst.computedMinC3 - 0.05 || c3DepB < flyby1Inst.computedMinC3 - 0.05)) continue;
+          if (flyby1Inst.computedMaxC3 !== undefined && (c3ArrB > flyby1Inst.computedMaxC3 + 0.05 || c3DepB > flyby1Inst.computedMaxC3 + 0.05)) continue;
+
           if (flyby2Inst.maxC3 !== undefined && (c3ArrC > flyby2Inst.maxC3 || c3DepC > flyby2Inst.maxC3)) continue;
+          if (flyby2Inst.computedMinC3 !== undefined && (c3ArrC < flyby2Inst.computedMinC3 - 0.05 || c3DepC < flyby2Inst.computedMinC3 - 0.05)) continue;
+          if (flyby2Inst.computedMaxC3 !== undefined && (c3ArrC > flyby2Inst.computedMaxC3 + 0.05 || c3DepC > flyby2Inst.computedMaxC3 + 0.05)) continue;
+
           if (tgtInst.maxC3 !== undefined && c3ArrD > tgtInst.maxC3) continue;
+          if (tgtInst.computedMinC3 !== undefined && c3ArrD < tgtInst.computedMinC3 - 0.05) continue;
+          if (tgtInst.computedMaxC3 !== undefined && c3ArrD > tgtInst.computedMaxC3 + 0.05) continue;
 
           const totDv = evalB.poweredDv + evalC.poweredDv;
           if (totDv < minTotalDv) {
@@ -1842,11 +2238,11 @@ export async function runSequenceSearchAlt(
 
           if (!flybyEval.isValid) continue;
 
-          if (srcNode.maxC3 !== undefined) {
-            const c3In = (flybyEval.vInfInMag / 1000) ** 2;
-            const c3Out = (flybyEval.vInfOutMag / 1000) ** 2;
-            if (c3In > srcNode.maxC3 || c3Out > srcNode.maxC3) continue;
-          }
+          const c3In = (flybyEval.vInfInMag / 1000) ** 2;
+          const c3Out = (flybyEval.vInfOutMag / 1000) ** 2;
+          if (srcNode.maxC3 !== undefined && (c3In > srcNode.maxC3 || c3Out > srcNode.maxC3)) continue;
+          if (srcNode.computedMinC3 !== undefined && (c3In < srcNode.computedMinC3 - 0.05 || c3Out < srcNode.computedMinC3 - 0.05)) continue;
+          if (srcNode.computedMaxC3 !== undefined && (c3In > srcNode.computedMaxC3 + 0.05 || c3Out > srcNode.computedMaxC3 + 0.05)) continue;
 
           flybyDetail = {
             bodyName: srcBody.name,
@@ -1866,6 +2262,17 @@ export async function runSequenceSearchAlt(
 
         const vInfDepVec = vecSub(sol.v1, stSrc.vel);
         const vInfArrVec = vecSub(sol.v2, stTgt.vel);
+
+        const c3Dep = (vecMag(vInfDepVec) ** 2) / 1e6;
+        const c3Arr = (vecMag(vInfArrVec) ** 2) / 1e6;
+
+        if (srcNode.maxC3 !== undefined && c3Dep > srcNode.maxC3) continue;
+        if (srcNode.computedMinC3 !== undefined && c3Dep < srcNode.computedMinC3 - 0.05) continue;
+        if (srcNode.computedMaxC3 !== undefined && c3Dep > srcNode.computedMaxC3 + 0.05) continue;
+
+        if (tgtNode.maxC3 !== undefined && c3Arr > tgtNode.maxC3) continue;
+        if (tgtNode.computedMinC3 !== undefined && c3Arr < tgtNode.computedMinC3 - 0.05) continue;
+        if (tgtNode.computedMaxC3 !== undefined && c3Arr > tgtNode.computedMaxC3 + 0.05) continue;
 
         const transfer: LambertTransferResult = {
           linkId: link.id,

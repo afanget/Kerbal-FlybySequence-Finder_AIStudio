@@ -57,6 +57,10 @@ export interface InstanceNode {
 
   // Step 4 computed valid dates
   validFlybyDates?: number[];
+
+  // Computed C3 range bounds (gray indication)
+  computedMinC3?: number;
+  computedMaxC3?: number;
 }
 
 export interface DirectionalLink {

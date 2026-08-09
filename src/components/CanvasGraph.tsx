@@ -489,15 +489,30 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                 {/* Flyby Alt & Max C3 inside Node */}
                 {(inst.minFlybyRadius !== undefined || inst.maxC3 !== undefined) && (
                   <text
-                    y="22"
+                    y="21"
                     fill="#34D399"
-                    fontSize="8"
+                    fontSize="7.5"
                     fontFamily="monospace"
                     textAnchor="middle"
                     className="pointer-events-none select-none"
                   >
                     {inst.minFlybyRadius !== undefined ? `r:${(inst.minFlybyRadius / 1000).toFixed(0)}k ` : ""}
-                    {inst.maxC3 !== undefined ? `C3:${inst.maxC3}` : ""}
+                    {inst.maxC3 !== undefined ? `limit:${inst.maxC3}` : ""}
+                  </text>
+                )}
+
+                {/* Gray C3 Range Indication */}
+                {(inst.computedMinC3 !== undefined || inst.computedMaxC3 !== undefined || inst.maxC3 !== undefined) && (
+                  <text
+                    y="31"
+                    fill="#94A3B8"
+                    fontSize="7.5"
+                    fontFamily="monospace"
+                    textAnchor="middle"
+                    className="pointer-events-none select-none opacity-90"
+                  >
+                    C3: {inst.computedMinC3 !== undefined ? inst.computedMinC3.toFixed(1) : "0"}-
+                    {inst.computedMaxC3 !== undefined ? inst.computedMaxC3.toFixed(1) : inst.maxC3 !== undefined ? inst.maxC3.toFixed(1) : "∞"}
                   </text>
                 )}
 

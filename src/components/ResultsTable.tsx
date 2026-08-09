@@ -76,6 +76,25 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [isSortPanelOpen, setIsSortPanelOpen] = useState<boolean>(false);
   const [expandedSeqId, setExpandedSeqId] = useState<string | null>(null);
   const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
+  const [selectedInstanceFilter, setSelectedInstanceFilter] = useState<string>('ALL');
+
+  const groupedSequencePorkchops = useMemo(() => {
+    if (!sequencePorkchops) return {};
+    const groups: Record<number, SequencePorkchopData[]> = {};
+    (Object.values(sequencePorkchops) as SequencePorkchopData[]).forEach(seqPc => {
+      const parts = seqPc.sequenceLabel.split(/➔|->|→/).map(s => s.trim()).filter(Boolean);
+      const count = parts.length > 0 ? parts.length : (seqPc.is4Body ? 4 : 3);
+      if (!groups[count]) {
+        groups[count] = [];
+      }
+      groups[count].push(seqPc);
+    });
+    return groups;
+  }, [sequencePorkchops]);
+
+  const instanceCounts = useMemo(() => {
+    return Object.keys(groupedSequencePorkchops).map(Number).sort((a, b) => a - b);
+  }, [groupedSequencePorkchops]);
 
   const uniqueSequencePaths = useMemo(() => {
     const set = new Set<string>();
@@ -494,31 +513,75 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         </div>
       </div>
 
-      {/* 3-Instance Sequence Porkchops Banner */}
-      {sequencePorkchops && Object.keys(sequencePorkchops).length > 0 && (
-        <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
-              <Compass className="w-4 h-4 text-[#38BDF8]" />
-              <span>Multi-Instance Sequence Porkchops</span>
+      {/* Separated Sequence Porkchops Banners by Instance Count */}
+      {instanceCounts.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {/* Instance Count Filter Bar when multiple counts exist */}
+          {instanceCounts.length > 1 && (
+            <div className="bg-[#25262B] px-3 py-2 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+                <Compass className="w-4 h-4 text-[#38BDF8]" />
+                <span>Sequence Porkchops by Length</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => setSelectedInstanceFilter('ALL')}
+                  className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+                    selectedInstanceFilter === 'ALL'
+                      ? 'bg-[#38BDF8] text-black font-bold'
+                      : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
+                  }`}
+                >
+                  All ({Object.keys(sequencePorkchops!).length})
+                </button>
+                {instanceCounts.map(count => (
+                  <button
+                    key={count}
+                    onClick={() => setSelectedInstanceFilter(String(count))}
+                    className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+                      selectedInstanceFilter === String(count)
+                        ? 'bg-[#38BDF8] text-black font-bold'
+                        : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
+                    }`}
+                  >
+                    {count}-Instance ({groupedSequencePorkchops[count].length})
+                  </button>
+                ))}
+              </div>
             </div>
-            <span className="text-[11px] font-mono text-[#94A3B8]">
-              {Object.keys(sequencePorkchops).length} plot(s) available
-            </span>
-          </div>
+          )}
 
-          <div className="flex flex-wrap gap-2">
-            {(Object.values(sequencePorkchops) as SequencePorkchopData[]).map(seqPc => (
-              <button
-                key={seqPc.id}
-                onClick={() => onOpenSequencePorkchop?.(seqPc.id)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] border border-[#38BDF8]/40 text-[#38BDF8] transition text-xs font-mono font-medium shadow-sm cursor-pointer"
-              >
-                <Activity className="w-3.5 h-3.5" />
-                <span>{seqPc.sequenceLabel} Porkchop Plot</span>
-              </button>
-            ))}
-          </div>
+          {instanceCounts
+            .filter(count => selectedInstanceFilter === 'ALL' || selectedInstanceFilter === String(count))
+            .map(count => {
+              const plots = groupedSequencePorkchops[count];
+              return (
+                <div key={count} className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+                      <Compass className="w-4 h-4 text-[#38BDF8]" />
+                      <span>{count}-Instance Sequence Porkchops</span>
+                    </div>
+                    <span className="text-[11px] font-mono text-[#94A3B8]">
+                      {plots.length} plot(s) available
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {plots.map(seqPc => (
+                      <button
+                        key={seqPc.id}
+                        onClick={() => onOpenSequencePorkchop?.(seqPc.id)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] border border-[#38BDF8]/40 text-[#38BDF8] transition text-xs font-mono font-medium shadow-sm cursor-pointer"
+                      >
+                        <Activity className="w-3.5 h-3.5" />
+                        <span>{seqPc.sequenceLabel} Porkchop Plot</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
         </div>
       )}
 
