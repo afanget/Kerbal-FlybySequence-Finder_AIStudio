@@ -112,6 +112,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
       bodies,
       mainBody,
       timeFormatMode,
+      porkchops,
       (progress, status) => {
         if (isMounted) {
           setTisserandProgress(progress);
@@ -134,7 +135,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [instances, links, bodies, mainBody, timeFormatMode]);
+  }, [instances, links, bodies, mainBody, timeFormatMode, porkchops]);
 
   const linkEndRangesList = useMemo(() => {
     return Object.values(linkEndRangesMap);

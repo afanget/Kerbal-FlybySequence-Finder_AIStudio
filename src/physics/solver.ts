@@ -1386,8 +1386,248 @@ function evaluateSequenceTransferForDates(
 }
 
 /**
+ * Evaluates sequence transfer for a pair of departure/arrival dates using precomputed direct transfer porkchops.
+ * NO Lambert calculations — parses direct transfer porkchop matrices and evaluates flybys.
+ */
+export function evaluateSequenceTransferFromDirectPorkchops(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = []
+): {
+  c3DepA: number;
+  c3ArrB?: number;
+  c3DepB?: number;
+  c3ArrC?: number;
+  c3DepC?: number;
+  c3ArrFinal: number;
+  totalDv: number;
+  flybyDvs: number[];
+  flybyDates: number[];
+} | null {
+  const N = pathInsts.length;
+  if (N < 3) return null;
+
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  // Find direct link porkchops for each leg
+  const legPorkchops: PorkchopPlotData[] = [];
+  for (let k = 0; k < N - 1; k++) {
+    const srcInst = pathInsts[k];
+    const tgtInst = pathInsts[k + 1];
+    const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
+    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`;
+    const pc = porkchops[linkId];
+    if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) return null;
+    legPorkchops.push(pc);
+  }
+
+  const P0 = legPorkchops[0];
+  const P_last = legPorkchops[legPorkchops.length - 1];
+
+  // Nearest departure row in P0
+  let i0 = 0;
+  let minDiffDep = Infinity;
+  for (let i = 0; i < P0.depDates.length; i++) {
+    const diff = Math.abs(P0.depDates[i] - tDep);
+    if (diff < minDiffDep) {
+      minDiffDep = diff;
+      i0 = i;
+    }
+  }
+
+  // Nearest arrival col in P_last
+  let j_last = 0;
+  let minDiffArr = Infinity;
+  for (let j = 0; j < P_last.arrDates.length; j++) {
+    const diff = Math.abs(P_last.arrDates[j] - tArr);
+    if (diff < minDiffArr) {
+      minDiffArr = diff;
+      j_last = j;
+    }
+  }
+
+  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
+
+  if (N === 3) {
+    const P1 = legPorkchops[1];
+    const flybyInst = pathInsts[1];
+    const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+    const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+
+    let bestDv = Infinity;
+    let bestResult: {
+      c3DepA: number;
+      c3ArrB: number;
+      c3DepB: number;
+      c3ArrFinal: number;
+      totalDv: number;
+      flybyDvs: number[];
+      flybyDates: number[];
+    } | null = null;
+
+    // Search across arrival dates at body B in P0
+    for (let j0 = 0; j0 < P0.arrDates.length; j0++) {
+      if (!P0.validMatrix[i0]?.[j0]) continue;
+
+      const tFlyby = P0.arrDates[j0];
+
+      // Find row in P1 closest to tFlyby
+      let i1 = -1;
+      let minDiffFlyby = 86400 * 5; // Within 5-day window
+      for (let i = 0; i < P1.depDates.length; i++) {
+        const diff = Math.abs(P1.depDates[i] - tFlyby);
+        if (diff < minDiffFlyby) {
+          minDiffFlyby = diff;
+          i1 = i;
+        }
+      }
+      if (i1 < 0) continue;
+      if (!P1.validMatrix[i1]?.[j_last]) continue;
+
+      const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
+      const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j_last];
+      if (!vTransArr0 || !vTransDep1) continue;
+
+      const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
+      const vInfIn = vecSub(vTransArr0, stBody.vel);
+      const vInfOut = vecSub(vTransDep1, stBody.vel);
+
+      const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+      if (flybyEval.flybyMargin < -100000) continue;
+
+      const c3DepA = P0.c3DepMatrix[i0][j0];
+      const c3ArrB = P0.c3ArrMatrix[i0][j0];
+      const c3DepB = P1.c3DepMatrix[i1][j_last];
+      const c3ArrFinal = P1.c3ArrMatrix[i1][j_last];
+      const totDv = flybyEval.poweredDv;
+
+      if (totDv < bestDv) {
+        bestDv = totDv;
+        bestResult = {
+          c3DepA,
+          c3ArrB,
+          c3DepB,
+          c3ArrFinal,
+          totalDv: totDv,
+          flybyDvs: [flybyEval.poweredDv],
+          flybyDates: [tFlyby],
+        };
+      }
+    }
+
+    return bestResult;
+  }
+
+  if (N === 4) {
+    const P1 = legPorkchops[1];
+    const P2 = legPorkchops[2];
+
+    const fb1Inst = pathInsts[1];
+    const fb2Inst = pathInsts[2];
+
+    const fb1Body = bodyMap.get(fb1Inst.bodyName) || mainBody;
+    const fb2Body = bodyMap.get(fb2Inst.bodyName) || mainBody;
+
+    const minFb1Rad = fb1Inst.minFlybyRadius ?? (1.1 * (fb1Body.radius + (fb1Body.atmosphereHeight || 0)));
+    const minFb2Rad = fb2Inst.minFlybyRadius ?? (1.1 * (fb2Body.radius + (fb2Body.atmosphereHeight || 0)));
+
+    let bestDv = Infinity;
+    let bestResult: {
+      c3DepA: number;
+      c3ArrB: number;
+      c3DepB: number;
+      c3ArrC: number;
+      c3DepC: number;
+      c3ArrFinal: number;
+      totalDv: number;
+      flybyDvs: number[];
+      flybyDates: number[];
+    } | null = null;
+
+    for (let j0 = 0; j0 < P0.arrDates.length; j0++) {
+      if (!P0.validMatrix[i0]?.[j0]) continue;
+      const tFb1 = P0.arrDates[j0];
+
+      let i1 = -1;
+      let minDiff1 = 86400 * 5;
+      for (let i = 0; i < P1.depDates.length; i++) {
+        const diff = Math.abs(P1.depDates[i] - tFb1);
+        if (diff < minDiff1) {
+          minDiff1 = diff;
+          i1 = i;
+        }
+      }
+      if (i1 < 0) continue;
+
+      for (let j1 = 0; j1 < P1.arrDates.length; j1++) {
+        if (!P1.validMatrix[i1]?.[j1]) continue;
+        const tFb2 = P1.arrDates[j1];
+
+        let i2 = -1;
+        let minDiff2 = 86400 * 5;
+        for (let i = 0; i < P2.depDates.length; i++) {
+          const diff = Math.abs(P2.depDates[i] - tFb2);
+          if (diff < minDiff2) {
+            minDiff2 = diff;
+            i2 = i;
+          }
+        }
+        if (i2 < 0) continue;
+        if (!P2.validMatrix[i2]?.[j_last]) continue;
+
+        const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
+        const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j1];
+        const vTransArr1 = P1.vTransArrMatrix?.[i1]?.[j1];
+        const vTransDep2 = P2.vTransDepMatrix?.[i2]?.[j_last];
+
+        if (!vTransArr0 || !vTransDep1 || !vTransArr1 || !vTransDep2) continue;
+
+        const stFb1 = getBodyStateAtUT(fb1Body, mainBody, tFb1);
+        const stFb2 = getBodyStateAtUT(fb2Body, mainBody, tFb2);
+
+        const vInfIn1 = vecSub(vTransArr0, stFb1.vel);
+        const vInfOut1 = vecSub(vTransDep1, stFb1.vel);
+        const eval1 = evaluateFlybyAtDate(fb1Body, vInfIn1, vInfOut1, tFb1, minFb1Rad);
+        if (eval1.flybyMargin < -100000) continue;
+
+        const vInfIn2 = vecSub(vTransArr1, stFb2.vel);
+        const vInfOut2 = vecSub(vTransDep2, stFb2.vel);
+        const eval2 = evaluateFlybyAtDate(fb2Body, vInfIn2, vInfOut2, tFb2, minFb2Rad);
+        if (eval2.flybyMargin < -100000) continue;
+
+        const totDv = eval1.poweredDv + eval2.poweredDv;
+
+        if (totDv < bestDv) {
+          bestDv = totDv;
+          bestResult = {
+            c3DepA: P0.c3DepMatrix[i0][j0],
+            c3ArrB: P0.c3ArrMatrix[i0][j0],
+            c3DepB: P1.c3DepMatrix[i1][j1],
+            c3ArrC: P1.c3ArrMatrix[i1][j1],
+            c3DepC: P2.c3DepMatrix[i2][j_last],
+            c3ArrFinal: P2.c3ArrMatrix[i2][j_last],
+            totalDv: totDv,
+            flybyDvs: [eval1.poweredDv, eval2.poweredDv],
+            flybyDates: [tFb1, tFb2],
+          };
+        }
+      }
+    }
+
+    return bestResult;
+  }
+
+  return null;
+}
+
+/**
  * Unified Sequence Porkchop Plot solver for N-instance sequences (N >= 3).
- * Progressive interlaced evaluation (16, 8, 4, 2, 1) with instant window opening.
+ * Direct evaluation using precomputed direct transfer porkchops — NO Lambert calculations.
  */
 export async function computeSequencePorkchopPlot(
   arg1: InstanceNode[] | InstanceNode,
@@ -1414,7 +1654,6 @@ export async function computeSequencePorkchopPlot(
   if (Array.isArray(arg1)) {
     pathInsts = arg1;
     if (Array.isArray(arg3)) {
-      // Signature: (pathInsts, links, bodies, mainBody, onProgress, onPartialUpdate, shouldStop, isFullPath, porkchops)
       links = Array.isArray(arg2) ? (arg2 as DirectionalLink[]) : [];
       bodies = arg3 as CelestialBody[];
       mainBody = arg4 as CelestialBody;
@@ -1424,7 +1663,6 @@ export async function computeSequencePorkchopPlot(
       isFullPath = typeof arg8 === 'boolean' ? arg8 : false;
       porkchops = (arg9 && typeof arg9 === 'object') ? (arg9 as Record<string, PorkchopPlotData>) : undefined;
     } else {
-      // Signature: (pathInsts, bodies, mainBody, onProgress, onPartialUpdate, shouldStop, isFullPath, links, porkchops)
       links = Array.isArray(arg8) ? (arg8 as DirectionalLink[]) : [];
       bodies = Array.isArray(arg2) ? (arg2 as CelestialBody[]) : [];
       mainBody = arg3 as CelestialBody;
@@ -1451,44 +1689,48 @@ export async function computeSequencePorkchopPlot(
   if (typeof shouldStop !== 'function') shouldStop = undefined;
 
   const N = pathInsts.length;
-  const bodyMap = new Map<string, CelestialBody>();
-  bodies.forEach(b => bodyMap.set(b.name, b));
+  const porkchopsMap: Record<string, PorkchopPlotData> = { ...(porkchops || {}) };
+
+  // Step 1: Ensure all direct transfer porkchops exist for each link in pathInsts
+  for (let k = 0; k < N - 1; k++) {
+    const srcInst = pathInsts[k];
+    const tgtInst = pathInsts[k + 1];
+    const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
+    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`;
+
+    let pc = porkchopsMap[linkId];
+    if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) {
+      onProgress?.(`Computing Direct Transfer Porkchop for ${srcInst.bodyName} ➔ ${tgtInst.bodyName}...`);
+      await yieldUI();
+      if (shouldStop?.()) break;
+
+      const dummyLink: DirectionalLink = link || {
+        id: linkId,
+        sourceInstanceId: srcInst.id,
+        targetInstanceId: tgtInst.id,
+      };
+
+      pc = await computePorkchopPlot(dummyLink, srcInst, tgtInst, bodies, mainBody);
+      porkchopsMap[linkId] = pc;
+    }
+  }
 
   const srcInst = pathInsts[0];
   const tgtInst = pathInsts[N - 1];
   const flybyInsts = pathInsts.slice(1, N - 1);
 
-  const srcBody = bodyMap.get(srcInst.bodyName) || mainBody;
-  const tgtBody = bodyMap.get(tgtInst.bodyName) || mainBody;
+  // Use departure dates from P0 and arrival dates from P_last
+  const P0_link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === pathInsts[1].id);
+  const P0 = porkchopsMap[P0_link?.id || `link-${srcInst.id}-${pathInsts[1].id}`];
 
-  const minDep = srcInst.computedMinDate ?? srcInst.minDate ?? 0;
-  const maxDep = srcInst.computedMaxDate ?? srcInst.maxDate ?? (minDep + 31536000);
+  const Plast_link = links.find(l => l.sourceInstanceId === pathInsts[N - 2].id && l.targetInstanceId === tgtInst.id);
+  const Plast = porkchopsMap[Plast_link?.id || `link-${pathInsts[N - 2].id}-${tgtInst.id}`];
 
-  const minArr = tgtInst.computedMinDate ?? tgtInst.minDate ?? (minDep + 86400 * 30 * (N - 1));
-  const maxArr = tgtInst.computedMaxDate ?? tgtInst.maxDate ?? (minArr + 31536000 * (N - 1));
+  const depDates: number[] = P0?.depDates || [];
+  const arrDates: number[] = Plast?.arrDates || [];
 
-  const srcPeriod = srcBody ? getOrbitalPeriod(srcBody, mainBody) : 31536000;
-  const tgtPeriod = tgtBody ? getOrbitalPeriod(tgtBody, mainBody) : 31536000;
-
-  const rangeDep = Math.max(0, maxDep - minDep);
-  const rawNDep = Math.ceil((rangeDep / Math.max(1, srcPeriod)) * SAMPLE_PER_PERIOD);
-  const N_DEP = srcInst.dateSampleCount !== undefined
-    ? Math.max(1, srcInst.dateSampleCount)
-    : Math.min(200, Math.max(50, rawNDep));
-
-  const rangeArr = Math.max(0, maxArr - minArr);
-  const rawNArr = Math.ceil((rangeArr / Math.max(1, tgtPeriod)) * SAMPLE_PER_PERIOD);
-  const N_ARR = tgtInst.dateSampleCount !== undefined
-    ? Math.max(1, tgtInst.dateSampleCount)
-    : Math.min(200, Math.max(50, rawNArr));
-
-  const depDates: number[] = [];
-  const stepDep = N_DEP > 1 ? (maxDep - minDep) / (N_DEP - 1) : 0;
-  for (let i = 0; i < N_DEP; i++) depDates.push(N_DEP === 1 ? (minDep + maxDep) / 2 : minDep + i * stepDep);
-
-  const arrDates: number[] = [];
-  const stepArr = N_ARR > 1 ? (maxArr - minArr) / (N_ARR - 1) : 0;
-  for (let j = 0; j < N_ARR; j++) arrDates.push(N_ARR === 1 ? (minArr + maxArr) / 2 : minArr + j * stepArr);
+  const N_DEP = depDates.length;
+  const N_ARR = arrDates.length;
 
   const c3DepAMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const c3ArrBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
@@ -1558,7 +1800,7 @@ export async function computeSequencePorkchopPlot(
     flybyDates,
   };
 
-  // Immediate partial update to open sequence porkchop window instantly
+  // Emit immediate state so sequence viewer opens instantly
   onPartialUpdate?.({ ...seqData });
 
   const passes = getHierarchicalGridIndices(N_DEP, N_ARR);
@@ -1583,11 +1825,9 @@ export async function computeSequencePorkchopPlot(
       const totalDt = tArr - tDep;
       flightTimeMatrix[i][j] = totalDt;
 
-      let bestRes: ReturnType<typeof evaluateSequenceTransferForDates> = null;
-
-      if (totalDt >= 86400 * (N - 1)) {
-        bestRes = evaluateSequenceTransferForDates(pathInsts, tDep, tArr, bodies, mainBody, porkchops);
-      }
+      const bestRes = totalDt >= 86400 * (N - 1)
+        ? evaluateSequenceTransferFromDirectPorkchops(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links)
+        : null;
 
       if (bestRes) {
         validMatrix[i][j] = true;
@@ -1621,14 +1861,14 @@ export async function computeSequencePorkchopPlot(
         validCount++;
       }
 
-      // Preview block fill for unvisited neighbor cells
+      // Preview block fill for unvisited neighbor cells in current pass
       for (let di = 0; di < S && i + di < N_DEP; di++) {
         const r = i + di;
         for (let dj = 0; dj < S && j + dj < N_ARR; dj++) {
           const c = j + dj;
           if (evaluated[r][c] === 0) {
             flightTimeMatrix[r][c] = arrDates[c] - depDates[r];
-            validMatrix[r][c] = bestRes ? true : false;
+            validMatrix[r][c] = !!bestRes;
             c3DepAMatrix[r][c] = bestRes?.c3DepA || 0;
             c3ArrFinalMatrix[r][c] = bestRes?.c3ArrFinal || 0;
             totalPoweredDvMatrix[r][c] = bestRes?.totalDv || 0;
@@ -1660,7 +1900,7 @@ export async function computeSequencePorkchopPlot(
       }
 
       const now = performance.now();
-      if (now - lastYieldTime > 30) {
+      if (now - lastYieldTime > 100) { // ~0.1Hz update frequency
         lastYieldTime = now;
         const totalPoints = N_DEP * N_ARR;
         const pct = Math.floor((computedPointsCount / totalPoints) * 100);

@@ -370,7 +370,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
-      <div className="bg-[#18181B] border border-[#27272A] rounded-xl shadow-2xl max-w-3xl w-full flex flex-col max-h-[96vh] overflow-hidden">
+      <div className="bg-[#18181B] border border-[#27272A] rounded-xl shadow-2xl max-w-4xl w-full flex flex-col max-h-[96vh] overflow-hidden">
         
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#27272A] bg-[#09090B]">
@@ -444,42 +444,48 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         </div>
 
         {/* Heatmap & Plot Container with Y-Axis and X-Axis Legends */}
-        <div className="p-3 flex flex-col gap-2 overflow-y-auto">
-          <div className="bg-[#09090B] p-2.5 rounded-lg border border-[#27272A] flex flex-col items-center">
+        <div className="p-2.5 sm:p-3 flex flex-col gap-2 overflow-y-auto">
+          <div className="bg-[#09090B] p-2.5 sm:p-3 rounded-lg border border-[#27272A] flex flex-col items-center w-full">
             
             {/* Top Title */}
-            <div className="text-[11px] text-[#A1A1AA] mb-2 font-mono flex items-center gap-1.5">
+            <div className="text-[11px] text-[#A1A1AA] mb-1.5 font-mono flex items-center gap-1.5">
               <Calendar className="w-3.5 h-3.5 text-[#38BDF8]" />
               Arrival at <span className="text-white font-semibold">{tgtBodyName}</span> vs Departure at <span className="text-white font-semibold">{srcBodyName}</span>
             </div>
 
             {/* Canvas Row with Left Y-Axis Legend */}
-            <div className="flex items-center gap-3 w-full justify-center">
+            <div className="flex items-stretch gap-2 sm:gap-3 w-full max-w-[680px] justify-center">
               
-              {/* Left Y-Axis Legend Column */}
-              <div className="flex flex-col justify-between items-end h-[280px] sm:h-[310px] text-[10px] text-[#A1A1AA] font-mono py-1 select-none pr-1 border-r border-[#27272A]">
-                <span className="text-[#38BDF8] font-semibold text-right">
-                  Arr Max:<br />{nArr > 0 ? formatShortUT(seqPorkchop.arrDates[nArr - 1], timeFormatMode) : '--'}
-                </span>
+              {/* Compact Left Y-Axis Legend Column */}
+              <div className="w-20 sm:w-24 shrink-0 flex flex-col justify-between items-end text-[10px] text-[#A1A1AA] font-mono py-1 select-none pr-2 border-r border-[#27272A]">
+                <div className="text-right leading-tight">
+                  <span className="text-[9px] text-[#71717A] uppercase font-bold block">Arr Max</span>
+                  <span className="text-[#38BDF8] font-semibold text-[10px] block truncate">
+                    {nArr > 0 ? formatShortUT(seqPorkchop.arrDates[nArr - 1], timeFormatMode) : '--'}
+                  </span>
+                </div>
                 
-                <div className="rotate-[-90deg] whitespace-nowrap text-[10px] tracking-wider text-slate-300 font-bold uppercase my-auto transform origin-center">
-                  Arrival at {tgtBodyName} (Y-Axis)
+                <div className="rotate-[-90deg] whitespace-nowrap text-[9px] tracking-wider text-slate-300 font-bold uppercase my-auto transform origin-center">
+                  Arrival at {tgtBodyName}
                 </div>
 
-                <span className="text-[#38BDF8] font-semibold text-right">
-                  Arr Min:<br />{nArr > 0 ? formatShortUT(seqPorkchop.arrDates[0], timeFormatMode) : '--'}
-                </span>
+                <div className="text-right leading-tight">
+                  <span className="text-[9px] text-[#71717A] uppercase font-bold block">Arr Min</span>
+                  <span className="text-[#38BDF8] font-semibold text-[10px] block truncate">
+                    {nArr > 0 ? formatShortUT(seqPorkchop.arrDates[0], timeFormatMode) : '--'}
+                  </span>
+                </div>
               </div>
 
-              {/* Heatmap Canvas Box */}
-              <div className="relative w-[280px] sm:w-[310px] aspect-square flex-shrink-0">
+              {/* Heatmap Canvas Box - Wide rectangular aspect ratio (2:1) */}
+              <div className="relative flex-1 h-[210px] sm:h-[240px] max-w-[560px]">
                 <canvas
                   ref={canvasRef}
-                  width={400}
+                  width={800}
                   height={400}
                   onMouseMove={handleCanvasMouseMove}
                   onMouseLeave={() => setHoverData(null)}
-                  className="w-full h-full rounded border border-[#27272A] cursor-crosshair"
+                  className="w-full h-full rounded border border-[#27272A] cursor-crosshair object-fill"
                 />
 
                 {/* Computing Live Indicator Overlay */}
@@ -516,7 +522,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
             </div>
 
             {/* Bottom X-Axis Legend Row */}
-            <div className="w-full max-w-[380px] sm:max-w-[420px] flex items-center justify-between text-[10px] text-[#A1A1AA] font-mono mt-2 pt-1 border-t border-[#27272A]">
+            <div className="w-full max-w-[680px] pl-20 sm:pl-24 flex items-center justify-between text-[10px] text-[#A1A1AA] font-mono mt-1.5 pt-1 border-t border-[#27272A]">
               <span>Dep Min: <strong className="text-[#38BDF8]">{nDep > 0 ? formatShortUT(seqPorkchop.depDates[0], timeFormatMode) : '--'}</strong></span>
               <span className="text-slate-300 font-bold uppercase tracking-wider text-[10px]">
                 Departure at {srcBodyName} (X-Axis)
@@ -526,7 +532,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
           </div>
 
           {/* Color Scale Bar */}
-          <div className="flex items-center justify-between text-[10px] text-[#A1A1AA] bg-[#09090B] p-2 rounded-lg border border-[#27272A]">
+          <div className="flex items-center justify-between text-[10px] text-[#A1A1AA] bg-[#09090B] px-2.5 py-1.5 rounded-lg border border-[#27272A]">
             <span className="font-semibold text-blue-400">Min: {effectiveMin.toFixed(1)} {tabs.find(t => t.key === activeTab)?.unit}</span>
             <div className="flex-1 mx-3 h-2 rounded bg-gradient-to-r from-blue-600 via-cyan-400 via-green-500 via-yellow-400 to-red-600 border border-[#27272A]" />
             <span className="font-semibold text-red-400">Red Cap: &ge;{redCap.toFixed(1)} {tabs.find(t => t.key === activeTab)?.unit}</span>
