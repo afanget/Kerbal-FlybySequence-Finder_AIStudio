@@ -8,6 +8,7 @@ import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, Celesti
 import { formatUT, formatShortUT, formatDuration, daysToSeconds } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
 import { getBodyStateAtUT, getGravitationalParameter, stateToOrbitalElements, Vector3D } from '../physics/kepler';
+import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath } from '../physics/solver';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
 import * as XLSX from 'xlsx';
 import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, SlidersHorizontal, RefreshCw, Terminal, CheckCircle2, XCircle, Compass, Activity, Plus, Trash2, ArrowUp, ArrowDown, Layers, ListFilter, X, ChevronUp, ChevronDown } from 'lucide-react';
@@ -33,6 +34,8 @@ interface ResultsTableProps {
   porkchops?: Record<string, PorkchopPlotData>;
   sequencePorkchops?: Record<string, SequencePorkchopData>;
   onOpenSequencePorkchop?: (seqPcId: string) => void;
+  onComputeSequencePorkchop?: (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => void;
+  computingSeqId?: string | null;
   links?: DirectionalLink[];
   instances?: InstanceNode[];
 }
@@ -66,6 +69,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   porkchops,
   sequencePorkchops,
   onOpenSequencePorkchop,
+  onComputeSequencePorkchop,
+  computingSeqId,
   links,
   instances,
 }) => {
@@ -78,23 +83,27 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
   const [selectedInstanceFilter, setSelectedInstanceFilter] = useState<string>('ALL');
 
-  const groupedSequencePorkchops = useMemo(() => {
-    if (!sequencePorkchops) return {};
-    const groups: Record<number, SequencePorkchopData[]> = {};
-    (Object.values(sequencePorkchops) as SequencePorkchopData[]).forEach(seqPc => {
-      const parts = seqPc.sequenceLabel.split(/➔|->|→/).map(s => s.trim()).filter(Boolean);
-      const count = parts.length > 0 ? parts.length : (seqPc.is4Body ? 4 : 3);
-      if (!groups[count]) {
-        groups[count] = [];
+  // Compute all candidate sequence paths (N >= 3, full paths and subsequences) directly from input graph
+  const candidateSequencePaths = useMemo(() => {
+    if (!instances || instances.length === 0 || !links || links.length === 0) return [];
+    return findAllSubPathsInGraph(links, instances);
+  }, [instances, links]);
+
+  // Group candidate sequence paths by instance count N (3, 4, 5...)
+  const groupedCandidatePaths = useMemo(() => {
+    const groups: Record<number, CandidateSequencePath[]> = {};
+    candidateSequencePaths.forEach(cand => {
+      if (!groups[cand.count]) {
+        groups[cand.count] = [];
       }
-      groups[count].push(seqPc);
+      groups[cand.count].push(cand);
     });
     return groups;
-  }, [sequencePorkchops]);
+  }, [candidateSequencePaths]);
 
-  const instanceCounts = useMemo(() => {
-    return Object.keys(groupedSequencePorkchops).map(Number).sort((a, b) => a - b);
-  }, [groupedSequencePorkchops]);
+  const candidateInstanceCounts = useMemo(() => {
+    return Object.keys(groupedCandidatePaths).map(Number).sort((a, b) => a - b);
+  }, [groupedCandidatePaths]);
 
   const uniqueSequencePaths = useMemo(() => {
     const set = new Set<string>();
@@ -513,15 +522,15 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         </div>
       </div>
 
-      {/* Separated Sequence Porkchops Banners by Instance Count */}
-      {instanceCounts.length > 0 && (
+      {/* Sequence Porkchops Banners by Instance Count (Available directly from input graph) */}
+      {candidateInstanceCounts.length > 0 && (
         <div className="flex flex-col gap-3">
           {/* Instance Count Filter Bar when multiple counts exist */}
-          {instanceCounts.length > 1 && (
+          {candidateInstanceCounts.length > 1 && (
             <div className="bg-[#25262B] px-3 py-2 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
                 <Compass className="w-4 h-4 text-[#38BDF8]" />
-                <span>Sequence Porkchops by Length</span>
+                <span>Multi-Instance Sequence Porkchops</span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
@@ -532,9 +541,9 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                       : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
                   }`}
                 >
-                  All ({Object.keys(sequencePorkchops!).length})
+                  All ({candidateSequencePaths.length})
                 </button>
-                {instanceCounts.map(count => (
+                {candidateInstanceCounts.map(count => (
                   <button
                     key={count}
                     onClick={() => setSelectedInstanceFilter(String(count))}
@@ -544,17 +553,17 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                         : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
                     }`}
                   >
-                    {count}-Instance ({groupedSequencePorkchops[count].length})
+                    {count}-Instance ({groupedCandidatePaths[count]?.length || 0})
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {instanceCounts
+          {candidateInstanceCounts
             .filter(count => selectedInstanceFilter === 'ALL' || selectedInstanceFilter === String(count))
             .map(count => {
-              const plots = groupedSequencePorkchops[count];
+              const cands = groupedCandidatePaths[count] || [];
               return (
                 <div key={count} className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
                   <div className="flex items-center justify-between">
@@ -563,21 +572,75 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                       <span>{count}-Instance Sequence Porkchops</span>
                     </div>
                     <span className="text-[11px] font-mono text-[#94A3B8]">
-                      {plots.length} plot(s) available
+                      {cands.length} sequence path(s)
                     </span>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {plots.map(seqPc => (
-                      <button
-                        key={seqPc.id}
-                        onClick={() => onOpenSequencePorkchop?.(seqPc.id)}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] border border-[#38BDF8]/40 text-[#38BDF8] transition text-xs font-mono font-medium shadow-sm cursor-pointer"
-                      >
-                        <Activity className="w-3.5 h-3.5" />
-                        <span>{seqPc.sequenceLabel} Porkchop Plot</span>
-                      </button>
-                    ))}
+                    {cands.map(cand => {
+                      const isComputed = !!sequencePorkchops?.[cand.id];
+                      const isThisComputing = computingSeqId === cand.id;
+                      const isFull = cand.isFullPath;
+
+                      return (
+                        <button
+                          key={cand.id}
+                          onClick={() => {
+                            if (isComputed) {
+                              onOpenSequencePorkchop?.(cand.id);
+                            } else {
+                              onComputeSequencePorkchop?.(cand.id, cand.pathInsts, cand.isFullPath);
+                            }
+                          }}
+                          disabled={isThisComputing}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded transition text-xs font-mono font-medium shadow-sm cursor-pointer border ${
+                            isFull
+                              ? isComputed
+                                ? 'bg-cyan-950/40 hover:bg-cyan-900/50 border-cyan-500/50 text-cyan-300'
+                                : 'bg-[#18181B] hover:bg-[#27272A] border-cyan-600/40 text-cyan-400'
+                              : isComputed
+                                ? 'bg-purple-950/40 hover:bg-purple-900/50 border-purple-500/50 text-purple-300'
+                                : 'bg-[#18181B] hover:bg-[#27272A] border-purple-600/40 text-purple-400'
+                          }`}
+                          title={isComputed ? `View computed ${isFull ? 'full-path' : 'subsequence'} porkchop plot` : `Compute this ${isFull ? 'full-path' : 'subsequence'} porkchop plot`}
+                        >
+                          {isThisComputing ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#60A5FA]" />
+                          ) : isComputed ? (
+                            <Activity className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
+                          ) : (
+                            <Compass className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
+                          )}
+                          <span>{cand.sequenceLabel} Porkchop Plot</span>
+
+                          {/* Full Path vs Subsequence badge */}
+                          {isFull ? (
+                            <span className="bg-[#38BDF8]/20 text-[#38BDF8] text-[9px] px-1.5 py-0.5 rounded border border-[#38BDF8]/40 font-bold uppercase tracking-wider">
+                              Full Path
+                            </span>
+                          ) : (
+                            <span className="bg-purple-500/20 text-purple-300 text-[9px] px-1.5 py-0.5 rounded border border-purple-500/40 font-bold uppercase tracking-wider">
+                              Subsequence
+                            </span>
+                          )}
+
+                          {/* Status Badge */}
+                          {isComputed ? (
+                            <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.2 rounded border border-emerald-500/30 font-semibold">
+                              Ready
+                            </span>
+                          ) : (
+                            <span className={`text-[9px] px-1.5 py-0.2 rounded border font-semibold flex items-center gap-1 ${
+                              isFull
+                                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                                : 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                            }`}>
+                              {isThisComputing ? 'Computing...' : 'Compute'}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               );

@@ -136,13 +136,17 @@ export interface PorkchopPlotData {
 export interface SequencePorkchopData {
   id: string;
   sequenceLabel: string;
+  isFullPath?: boolean;
+  instanceCount?: number;
+  instanceIds?: string[];
+  bodyNames?: string[];
   is4Body?: boolean;
-  sourceInstanceId: string;
-  flybyInstanceId: string;
+  sourceInstanceId?: string;
+  flybyInstanceId?: string;
   flyby2InstanceId?: string;
-  targetInstanceId: string;
+  targetInstanceId?: string;
   sourceBody: string;
-  flybyBody: string;
+  flybyBody?: string;
   flyby2Body?: string;
   targetBody: string;
   depDates: number[];
@@ -153,6 +157,17 @@ export interface SequencePorkchopData {
   c3ArrCMatrix: number[][];
   c3DepCMatrix?: number[][];
   c3ArrDMatrix?: number[][];
+  c3ArrFinalMatrix?: number[][];
+  flybyPoweredDvs?: {
+    flybyBody: string;
+    instanceId: string;
+    poweredDvMatrix: number[][];
+  }[];
+  flybyDates?: {
+    flybyBody: string;
+    instanceId: string;
+    dateMatrix: number[][];
+  }[];
   poweredDvBMatrix: number[][];
   poweredDvCMatrix?: number[][];
   totalPoweredDvMatrix?: number[][];

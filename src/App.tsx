@@ -27,6 +27,8 @@ import { AutotestModal } from './components/AutotestModal';
 import {
   runSequenceSearch,
   runSequenceSearchAlt,
+  computeNBodySequencePorkchopPlot,
+  findAllSubPathsInGraph,
   propagateDateBounds,
   propagateC3Bounds,
   generateLinkEndDates,
@@ -59,9 +61,84 @@ export default function App() {
   const [searchStatusText, setSearchStatusText] = useState<string>('Computing transfers...');
   const stopSearchRef = useRef<boolean>(false);
 
+  const [computingSeqId, setComputingSeqId] = useState<string | null>(null);
+
   const handleStopSearch = () => {
     stopSearchRef.current = true;
     setSearchStatusText('Stopping search...');
+  };
+
+  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => {
+    setComputingSeqId(seqId);
+    setSelectedSeqPorkchopId(seqId);
+
+    // Initialize state immediately so the sequence porkchop modal window opens instantly
+    if (!sequencePorkchops[seqId]) {
+      const srcBody = pathInsts[0]?.bodyName || 'Source';
+      const tgtBody = pathInsts[pathInsts.length - 1]?.bodyName || 'Target';
+      const seqLabel = pathInsts.map(inst => inst.bodyName).join(' ➔ ');
+
+      const initialSeqData: SequencePorkchopData = {
+        id: seqId,
+        sequenceLabel: seqLabel,
+        instanceCount: pathInsts.length,
+        is4Body: pathInsts.length >= 4,
+        isFullPath: !!isFullPath,
+        sourceBody: srcBody,
+        targetBody: tgtBody,
+        depDates: [],
+        arrDates: [],
+        c3DepAMatrix: [],
+        c3ArrBMatrix: [],
+        c3DepBMatrix: [],
+        c3ArrCMatrix: [],
+        c3DepCMatrix: [],
+        c3ArrDMatrix: [],
+        c3ArrFinalMatrix: [],
+        poweredDvBMatrix: [],
+        poweredDvCMatrix: [],
+        totalPoweredDvMatrix: [],
+        flybyDateMatrix: [],
+        flyby2DateMatrix: [],
+        flightTimeMatrix: [],
+        validMatrix: [],
+        flybyPoweredDvs: [],
+        flybyDates: [],
+      };
+      setSequencePorkchops(prev => ({
+        ...prev,
+        [seqId]: initialSeqData
+      }));
+    }
+
+    try {
+      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const seqPcData = await computeNBodySequencePorkchopPlot(
+        pathInsts,
+        currentSystem.bodies,
+        mainBody,
+        (msg) => setSearchStatusText(msg),
+        (partialSeq) => {
+          setSequencePorkchops(prev => ({
+            ...prev,
+            [seqId]: partialSeq
+          }));
+        },
+        () => stopSearchRef.current,
+        isFullPath,
+        links,
+        porkchops
+      );
+      setSequencePorkchops(prev => ({
+        ...prev,
+        [seqId]: seqPcData
+      }));
+    } catch (err) {
+      console.error('Error computing sequence porkchop:', err);
+      alert('Error computing sequence porkchop: ' + err);
+    } finally {
+      setComputingSeqId(null);
+    }
   };
 
   // Available bodies orbiting selected main body (filter out any body that is not a direct child of the primary central body)
@@ -508,6 +585,8 @@ export default function App() {
             porkchops={porkchops}
             sequencePorkchops={sequencePorkchops}
             onOpenSequencePorkchop={(seqPcId) => setSelectedSeqPorkchopId(seqPcId)}
+            onComputeSequencePorkchop={handleComputeSingleSequencePorkchop}
+            computingSeqId={computingSeqId}
             links={links}
             instances={instances}
           />
@@ -553,6 +632,16 @@ export default function App() {
           seqPorkchop={sequencePorkchops[selectedSeqPorkchopId]}
           timeFormatMode={timeFormatMode}
           onClose={() => setSelectedSeqPorkchopId(null)}
+          isComputing={computingSeqId === selectedSeqPorkchopId}
+          onRecomputePorkchop={() => {
+            const seqData = sequencePorkchops[selectedSeqPorkchopId];
+            if (!seqData) return;
+            const candPaths = findAllSubPathsInGraph(links, instances);
+            const cand = candPaths.find(c => c.id === selectedSeqPorkchopId);
+            if (cand) {
+              handleComputeSingleSequencePorkchop(cand.id, cand.pathInsts, cand.isFullPath);
+            }
+          }}
         />
       )}
 

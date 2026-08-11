@@ -14,7 +14,7 @@ import {
   FlybyDetail
 } from '../types';
 import { getBodyStateAtUT, getOrbitalPeriod, vecMag, vecDot, vecSub, Vector3D } from './kepler';
-import { solveLambert, LambertSolution } from './lambert';
+import { solveLambert, solveLambertBest, solveLambertAllRevolutions, LambertSolution } from './lambert';
 import { matchUnpoweredFlyby, evaluateFlybyAtDate, FlybyFeasibility } from './flyby';
 
 const MIN_SAMPLE_COUNT = 20;
@@ -239,7 +239,10 @@ export function computeTisserandEnvelopes(
     const prep = bodyPrepMap[inst.bodyName];
     if (!prep) return;
     let maxMs = prep.vInf5DegMs;
-    if (inst.maxC3 !== undefined && inst.maxC3 > 0) {
+    const hasIncoming = links.some(l => l.targetInstanceId === inst.id);
+    const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id);
+    const isPureFlyby = hasIncoming && hasOutgoing && !inst.isSourceOverride;
+    if (!isPureFlyby && inst.maxC3 !== undefined && inst.maxC3 > 0) {
       maxMs = Math.min(maxMs, Math.sqrt(inst.maxC3) * 1000);
     }
     maxMs = Math.max(1000, maxMs);
@@ -470,11 +473,15 @@ export function propagateC3Bounds(
 
   return instances.map(inst => {
     const env = envs[inst.id];
+    const hasIncoming = links.some(l => l.targetInstanceId === inst.id);
+    const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id);
+    const isPureFlyby = hasIncoming && hasOutgoing && !inst.isSourceOverride;
+
     if (!env || (env.minMs === 0 && env.maxMs === 0)) {
       return {
         ...inst,
         computedMinC3: 0,
-        computedMaxC3: inst.maxC3 ?? 0,
+        computedMaxC3: !isPureFlyby ? (inst.maxC3 ?? 0) : 0,
       };
     }
 
@@ -484,7 +491,7 @@ export function propagateC3Bounds(
     let minC3 = minKms * minKms;
     let maxC3 = maxKms * maxKms;
 
-    if (inst.maxC3 !== undefined) {
+    if (!isPureFlyby && inst.maxC3 !== undefined) {
       maxC3 = Math.min(maxC3, inst.maxC3);
       if (minC3 > maxC3) minC3 = 0;
     }
@@ -704,7 +711,44 @@ export function intersectInstanceDates(
 }
 
 /**
- * STEP 5: Compute Porkchop Plot for a given link
+ * Generates hierarchical interlaced pass steps (16, 8, 4, 2, 1)
+ * to evaluate grid points in progressive refinement order.
+ */
+export function getHierarchicalGridIndices(nRows: number, nCols: number): { pass: number; step: number; points: [number, number][] }[] {
+  const evaluated = Array.from({ length: nRows }, () => new Uint8Array(nCols));
+  const passes: { pass: number; step: number; points: [number, number][] }[] = [];
+
+  const steps = [16, 8, 4, 2, 1];
+
+  for (let p = 0; p < steps.length; p++) {
+    const step = steps[p];
+    const points: [number, number][] = [];
+
+    for (let i = 0; i < nRows; i++) {
+      const isIKey = (i % step === 0) || (i === nRows - 1);
+      if (!isIKey) continue;
+
+      for (let j = 0; j < nCols; j++) {
+        const isJKey = (j % step === 0) || (j === nCols - 1);
+        if (!isJKey) continue;
+
+        if (evaluated[i][j] === 0) {
+          evaluated[i][j] = 1;
+          points.push([i, j]);
+        }
+      }
+    }
+
+    if (points.length > 0) {
+      passes.push({ pass: p, step, points });
+    }
+  }
+
+  return passes;
+}
+
+/**
+ * STEP 5: Compute Porkchop Plot for a given link using progressive interlaced passes.
  */
 export async function computePorkchopPlot(
   link: DirectionalLink,
@@ -736,6 +780,7 @@ export async function computePorkchopPlot(
   const vTransArrMatrix: Vector3D[][] = Array.from({ length: nDep }, () => Array(nArr).fill({ x: 0, y: 0, z: 0 }));
 
   const muCentral = mainBody.stdGravParam || 1e12;
+  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
 
   const pcData: PorkchopPlotData = {
     linkId: link.id,
@@ -752,16 +797,27 @@ export async function computePorkchopPlot(
     vTransArrMatrix
   };
 
+  // Immediate update to open window instantly
+  onPartialUpdatePorkchop?.({ ...pcData }, 0);
+
   let validCount = 0;
+  let computedPointsCount = 0;
   let lastYieldTime = performance.now();
 
-  for (let i = 0; i < nDep; i++) {
+  const passes = getHierarchicalGridIndices(nDep, nArr);
+  const evaluated = Array.from({ length: nDep }, () => new Uint8Array(nArr));
+
+  for (const pass of passes) {
     if (shouldStop?.()) break;
 
-    const depDate = srcDates[i];
-    const srcState = getBodyStateAtUT(srcBody, mainBody, depDate);
+    const S = pass.step;
+    for (const [i, j] of pass.points) {
+      if (shouldStop?.()) break;
 
-    for (let j = 0; j < nArr; j++) {
+      evaluated[i][j] = 1;
+      computedPointsCount++;
+
+      const depDate = srcDates[i];
       const arrDate = tgtDates[j];
       const dt = arrDate - depDate;
 
@@ -769,138 +825,678 @@ export async function computePorkchopPlot(
 
       const minDur = link.minFlightDuration ?? 0;
       const maxDur = link.maxFlightDuration ?? 1e10;
-      if (dt < minDur || dt > maxDur) {
-        continue;
+
+      let passC3 = false;
+      let c3Dep = Infinity;
+      let c3Arr = Infinity;
+      let dv = Infinity;
+      let v1 = { x: 0, y: 0, z: 0 };
+      let v2 = { x: 0, y: 0, z: 0 };
+
+      if (dt >= minDur && dt <= maxDur) {
+        const srcState = getBodyStateAtUT(srcBody, mainBody, depDate);
+        const tgtState = getBodyStateAtUT(tgtBody, mainBody, arrDate);
+
+        const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
+
+        if (sol.isValid) {
+          v1 = sol.v1;
+          v2 = sol.v2;
+
+          const vInfDep = vecSub(sol.v1, srcState.vel);
+          const vInfArr = vecSub(sol.v2, tgtState.vel);
+
+          const vInfDepMag = vecMag(vInfDep);
+          const vInfArrMag = vecMag(vInfArr);
+
+          c3Dep = (vInfDepMag * vInfDepMag) / 1e6;
+          c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
+          dv = vInfDepMag + vInfArrMag;
+
+          const passSrcC3 = (srcInstance.maxC3 === undefined || c3Dep <= srcInstance.maxC3) &&
+                            (srcInstance.computedMinC3 === undefined || c3Dep >= srcInstance.computedMinC3 - 0.05) &&
+                            (srcInstance.computedMaxC3 === undefined || c3Dep <= srcInstance.computedMaxC3 + 0.05);
+
+          const passTgtC3 = (tgtInstance.maxC3 === undefined || c3Arr <= tgtInstance.maxC3) &&
+                            (tgtInstance.computedMinC3 === undefined || c3Arr >= tgtInstance.computedMinC3 - 0.05) &&
+                            (tgtInstance.computedMaxC3 === undefined || c3Arr <= tgtInstance.computedMaxC3 + 0.05);
+
+          passC3 = passSrcC3 && passTgtC3;
+        }
       }
 
-      const tgtState = getBodyStateAtUT(tgtBody, mainBody, arrDate);
+      vTransDepMatrix[i][j] = v1;
+      vTransArrMatrix[i][j] = v2;
+      c3DepMatrix[i][j] = c3Dep;
+      c3ArrMatrix[i][j] = c3Arr;
+      dvMatrix[i][j] = dv;
+      validMatrix[i][j] = passC3;
+      if (passC3) validCount++;
 
-      const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
-
-      // Solve Lambert transfer
-      const sol = solveLambert(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius);
-
-      if (sol.isValid) {
-        vTransDepMatrix[i][j] = sol.v1;
-        vTransArrMatrix[i][j] = sol.v2;
-
-        const vInfDep = vecSub(sol.v1, srcState.vel);
-        const vInfArr = vecSub(sol.v2, tgtState.vel);
-
-        const vInfDepMag = vecMag(vInfDep);
-        const vInfArrMag = vecMag(vInfArr);
-
-        const c3Dep = (vInfDepMag * vInfDepMag) / 1000000; // km^2 / s^2
-        const c3Arr = (vInfArrMag * vInfArrMag) / 1000000;
-
-        c3DepMatrix[i][j] = c3Dep;
-        c3ArrMatrix[i][j] = c3Arr;
-        dvMatrix[i][j] = vInfDepMag + vInfArrMag;
-
-        // Check C3 constraints including gray C3 range
-        const passSrcC3 = (srcInstance.maxC3 === undefined || c3Dep <= srcInstance.maxC3) &&
-                          (srcInstance.computedMinC3 === undefined || c3Dep >= srcInstance.computedMinC3 - 0.05) &&
-                          (srcInstance.computedMaxC3 === undefined || c3Dep <= srcInstance.computedMaxC3 + 0.05);
-
-        const passTgtC3 = (tgtInstance.maxC3 === undefined || c3Arr <= tgtInstance.maxC3) &&
-                          (tgtInstance.computedMinC3 === undefined || c3Arr >= tgtInstance.computedMinC3 - 0.05) &&
-                          (tgtInstance.computedMaxC3 === undefined || c3Arr <= tgtInstance.computedMaxC3 + 0.05);
-
-        const passC3 = passSrcC3 && passTgtC3;
-
-        validMatrix[i][j] = passC3;
-        if (passC3) validCount++;
+      // Preview block fill for unvisited neighbor cells
+      for (let di = 0; di < S && i + di < nDep; di++) {
+        const r = i + di;
+        for (let dj = 0; dj < S && j + dj < nArr; dj++) {
+          const c = j + dj;
+          if (evaluated[r][c] === 0) {
+            vTransDepMatrix[r][c] = v1;
+            vTransArrMatrix[r][c] = v2;
+            c3DepMatrix[r][c] = c3Dep;
+            c3ArrMatrix[r][c] = c3Arr;
+            dvMatrix[r][c] = dv;
+            validMatrix[r][c] = passC3;
+            flightTimeMatrix[r][c] = tgtDates[c] - srcDates[r];
+          }
+        }
       }
-    }
 
-    const now = performance.now();
-    // Yield every ~35ms to keep main thread 100% smooth and prevent browser freeze warning
-    if (now - lastYieldTime > 35 || i === nDep - 1) {
-      lastYieldTime = now;
-      onProgress?.(
-        `Computing ${srcInstance.bodyName}-${tgtInstance.bodyName} porkchop plot (${i + 1}/${nDep} departure windows, ${validCount} valid transfers)...`
-      );
-      onPartialUpdatePorkchop?.({ ...pcData }, validCount);
-      await yieldUI();
+      const now = performance.now();
+      if (now - lastYieldTime > 30) {
+        lastYieldTime = now;
+        const totalPoints = nDep * nArr;
+        const pct = Math.floor((computedPointsCount / totalPoints) * 100);
+        onProgress?.(
+          `Computing ${srcInstance.bodyName}-${tgtInstance.bodyName} porkchop plot (${pct}%, ${validCount} valid transfers)...`
+        );
+        onPartialUpdatePorkchop?.({ ...pcData }, validCount);
+        await yieldUI();
+      }
     }
   }
 
+  onPartialUpdatePorkchop?.({ ...pcData }, validCount);
   return pcData;
 }
 
 /**
- * Computes a 3-instance sequence porkchop plot (A -> B -> C).
- * Departure date of body A on X axis, Arrival date of body C on Y axis.
- * For each (tDepA, tArrC), selects the flyby date at body B that minimizes powered flyby dV.
+ * Evaluates the optimal transfer across intermediate flyby bodies for a given departure (tDep) and arrival (tArr).
  */
-export async function computeSequencePorkchopPlot(
-  srcInst: InstanceNode,
-  flybyInst: InstanceNode,
-  tgtInst: InstanceNode,
+function evaluateSequenceTransferForDates(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
   bodies: CelestialBody[],
   mainBody: CelestialBody,
-  onProgress?: ProgressCallback,
-  onPartialUpdate?: (seqPc: SequencePorkchopData) => void,
-  shouldStop?: () => boolean
-): Promise<SequencePorkchopData> {
+  porkchops?: Record<string, PorkchopPlotData>
+): {
+  c3DepA: number;
+  c3ArrFinal: number;
+  totalDv: number;
+  flybyDvs: number[];
+  flybyDates: number[];
+  c3ArrB?: number;
+  c3DepB?: number;
+  c3ArrC?: number;
+  c3DepC?: number;
+} | null {
+  const N = pathInsts.length;
+  if (N < 3) return null;
+
   const bodyMap = new Map<string, CelestialBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
+  const srcInst = pathInsts[0];
+  const tgtInst = pathInsts[N - 1];
+  const flybyInsts = pathInsts.slice(1, N - 1);
+
   const srcBody = bodyMap.get(srcInst.bodyName) || mainBody;
-  const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+  const tgtBody = bodyMap.get(tgtInst.bodyName) || mainBody;
+  const muCentral = mainBody.stdGravParam || 1e12;
+  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
+
+  const stA = getBodyStateAtUT(srcBody, mainBody, tDep);
+  const stTgt = getBodyStateAtUT(tgtBody, mainBody, tArr);
+
+  if (N === 3) {
+    const flybyInst = flybyInsts[0];
+    const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+
+    const candidateDates = new Set<number>();
+    const FLYBY_SAMPLES = 30;
+    const totalDt = tArr - tDep;
+    const step = totalDt / (FLYBY_SAMPLES + 1);
+
+    for (let k = 1; k <= FLYBY_SAMPLES; k++) {
+      candidateDates.add(tDep + k * step);
+    }
+    if (flybyInst.validFlybyDates) {
+      for (const vf of flybyInst.validFlybyDates) {
+        if (vf > tDep + 3600 && vf < tArr - 3600) candidateDates.add(vf);
+      }
+    }
+
+    if (porkchops) {
+      Object.values(porkchops).forEach(pc => {
+        if (pc.arrDates) {
+          pc.arrDates.forEach(d => {
+            if (d > tDep + 3600 && d < tArr - 3600) candidateDates.add(d);
+          });
+        }
+        if (pc.depDates) {
+          pc.depDates.forEach(d => {
+            if (d > tDep + 3600 && d < tArr - 3600) candidateDates.add(d);
+          });
+        }
+      });
+    }
+
+    const candList = Array.from(candidateDates).sort((a, b) => a - b);
+
+    let minDv = Infinity;
+    let bestChoice: {
+      c3DepA: number;
+      c3ArrB: number;
+      c3DepB: number;
+      c3ArrC: number;
+      totalDv: number;
+      flybyDvs: number[];
+      flybyDates: number[];
+    } | null = null;
+
+    for (const tFlybyB of candList) {
+      const dt1 = tFlybyB - tDep;
+      const dt2 = tArr - tFlybyB;
+      if (dt1 <= 3600 || dt2 <= 3600) continue;
+
+      const stB = getBodyStateAtUT(flybyBody, mainBody, tFlybyB);
+
+      const sols1 = solveLambertAllRevolutions(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius);
+      if (sols1.length === 0) continue;
+
+      const sols2 = solveLambertAllRevolutions(stB.pos, stTgt.pos, dt2, muCentral, true, minAllowedRadius);
+      if (sols2.length === 0) continue;
+
+      for (const sol1 of sols1) {
+        for (const sol2 of sols2) {
+          const vInfDepA = vecSub(sol1.v1, stA.vel);
+          const vInfInB = vecSub(sol1.v2, stB.vel);
+          const vInfOutB = vecSub(sol2.v1, stB.vel);
+          const vInfArrC = vecSub(sol2.v2, stTgt.vel);
+
+          const evalRes = evaluateFlybyAtDate(
+            flybyBody,
+            vInfInB,
+            vInfOutB,
+            tFlybyB,
+            flybyInst.minFlybyRadius
+          );
+
+          if (evalRes.flybyMargin < -1e-3) continue;
+
+          const c3DepA = (vecMag(vInfDepA) ** 2) / 1e6;
+          const c3ArrB = (evalRes.vInfInMag ** 2) / 1e6;
+          const c3DepB = (evalRes.vInfOutMag ** 2) / 1e6;
+          const c3ArrC = (vecMag(vInfArrC) ** 2) / 1e6;
+
+          if (srcInst.maxC3 !== undefined && c3DepA > srcInst.maxC3) continue;
+          if (srcInst.computedMinC3 !== undefined && c3DepA < srcInst.computedMinC3 - 0.05) continue;
+          if (srcInst.computedMaxC3 !== undefined && c3DepA > srcInst.computedMaxC3 + 0.05) continue;
+
+          if (flybyInst.computedMinC3 !== undefined && (c3ArrB < flybyInst.computedMinC3 - 0.05 || c3DepB < flybyInst.computedMinC3 - 0.05)) continue;
+          if (flybyInst.computedMaxC3 !== undefined && (c3ArrB > flybyInst.computedMaxC3 + 0.05 || c3DepB > flybyInst.computedMaxC3 + 0.05)) continue;
+
+          if (tgtInst.maxC3 !== undefined && c3ArrC > tgtInst.maxC3) continue;
+          if (tgtInst.computedMinC3 !== undefined && c3ArrC < tgtInst.computedMinC3 - 0.05) continue;
+          if (tgtInst.computedMaxC3 !== undefined && c3ArrC > tgtInst.computedMaxC3 + 0.05) continue;
+
+          if (evalRes.poweredDv < minDv) {
+            minDv = evalRes.poweredDv;
+            bestChoice = {
+              c3DepA,
+              c3ArrB,
+              c3DepB,
+              c3ArrC,
+              totalDv: evalRes.poweredDv,
+              flybyDvs: [evalRes.poweredDv],
+              flybyDates: [tFlybyB],
+            };
+          }
+        }
+      }
+    }
+
+    if (!bestChoice) return null;
+    return {
+      c3DepA: bestChoice.c3DepA,
+      c3ArrFinal: bestChoice.c3ArrC,
+      totalDv: bestChoice.totalDv,
+      flybyDvs: bestChoice.flybyDvs,
+      flybyDates: bestChoice.flybyDates,
+      c3ArrB: bestChoice.c3ArrB,
+      c3DepB: bestChoice.c3DepB,
+      c3ArrC: bestChoice.c3ArrC,
+    };
+  }
+
+  if (N === 4) {
+    const flyby1Inst = flybyInsts[0];
+    const flyby2Inst = flybyInsts[1];
+    const flyby1Body = bodyMap.get(flyby1Inst.bodyName) || mainBody;
+    const flyby2Body = bodyMap.get(flyby2Inst.bodyName) || mainBody;
+
+    const totalDt = tArr - tDep;
+    const SAMPLES = 14;
+    const step1 = totalDt / (SAMPLES + 1);
+
+    const candBSet = new Set<number>();
+    for (let k = 1; k <= SAMPLES; k++) candBSet.add(tDep + k * step1);
+    if (flyby1Inst.validFlybyDates) {
+      for (const vf of flyby1Inst.validFlybyDates) {
+        if (vf > tDep + 3600 && vf < tArr - 7200) candBSet.add(vf);
+      }
+    }
+    const candB = Array.from(candBSet).sort((a, b) => a - b);
+
+    let minTotalDv = Infinity;
+    let bestChoice: {
+      c3DepA: number;
+      c3ArrB: number;
+      c3DepB: number;
+      c3ArrC: number;
+      c3DepC: number;
+      c3ArrD: number;
+      totalDv: number;
+      flybyDvs: number[];
+      flybyDates: number[];
+    } | null = null;
+
+    for (const tB of candB) {
+      const dt1 = tB - tDep;
+      if (dt1 <= 3600) continue;
+      const stB = getBodyStateAtUT(flyby1Body, mainBody, tB);
+
+      const sols1 = solveLambertAllRevolutions(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius);
+      if (sols1.length === 0) continue;
+
+      const subDt = tArr - tB;
+      const subStep = subDt / (SAMPLES + 1);
+      const candCSet = new Set<number>();
+      for (let m = 1; m <= SAMPLES; m++) candCSet.add(tB + m * subStep);
+      if (flyby2Inst.validFlybyDates) {
+        for (const vf of flyby2Inst.validFlybyDates) {
+          if (vf > tB + 3600 && vf < tArr - 3600) candCSet.add(vf);
+        }
+      }
+      const candC = Array.from(candCSet).sort((a, b) => a - b);
+
+      for (const tC of candC) {
+        const dt2 = tC - tB;
+        const dt3 = tArr - tC;
+        if (dt2 <= 3600 || dt3 <= 3600) continue;
+
+        const stC = getBodyStateAtUT(flyby2Body, mainBody, tC);
+
+        const sols2 = solveLambertAllRevolutions(stB.pos, stC.pos, dt2, muCentral, true, minAllowedRadius);
+        if (sols2.length === 0) continue;
+
+        const sols3 = solveLambertAllRevolutions(stC.pos, stTgt.pos, dt3, muCentral, true, minAllowedRadius);
+        if (sols3.length === 0) continue;
+
+        for (const sol1 of sols1) {
+          for (const sol2 of sols2) {
+            for (const sol3 of sols3) {
+              const vInfDepA = vecSub(sol1.v1, stA.vel);
+              const vInfInB = vecSub(sol1.v2, stB.vel);
+              const vInfOutB = vecSub(sol2.v1, stB.vel);
+              const vInfInC = vecSub(sol2.v2, stC.vel);
+              const vInfOutC = vecSub(sol3.v1, stC.vel);
+              const vInfArrD = vecSub(sol3.v2, stTgt.vel);
+
+              const evalB = evaluateFlybyAtDate(flyby1Body, vInfInB, vInfOutB, tB, flyby1Inst.minFlybyRadius);
+              if (evalB.flybyMargin < -1e-3) continue;
+
+              const evalC = evaluateFlybyAtDate(flyby2Body, vInfInC, vInfOutC, tC, flyby2Inst.minFlybyRadius);
+              if (evalC.flybyMargin < -1e-3) continue;
+
+              const c3DepA = (vecMag(vInfDepA) ** 2) / 1e6;
+              const c3ArrB = (evalB.vInfInMag ** 2) / 1e6;
+              const c3DepB = (evalB.vInfOutMag ** 2) / 1e6;
+              const c3ArrC = (evalC.vInfInMag ** 2) / 1e6;
+              const c3DepC = (evalC.vInfOutMag ** 2) / 1e6;
+              const c3ArrD = (vecMag(vInfArrD) ** 2) / 1e6;
+
+              if (srcInst.maxC3 !== undefined && c3DepA > srcInst.maxC3) continue;
+              if (srcInst.computedMinC3 !== undefined && c3DepA < srcInst.computedMinC3 - 0.05) continue;
+              if (srcInst.computedMaxC3 !== undefined && c3DepA > srcInst.computedMaxC3 + 0.05) continue;
+
+              if (flyby1Inst.computedMinC3 !== undefined && (c3ArrB < flyby1Inst.computedMinC3 - 0.05 || c3DepB < flyby1Inst.computedMinC3 - 0.05)) continue;
+              if (flyby1Inst.computedMaxC3 !== undefined && (c3ArrB > flyby1Inst.computedMaxC3 + 0.05 || c3DepB > flyby1Inst.computedMaxC3 + 0.05)) continue;
+
+              if (flyby2Inst.computedMinC3 !== undefined && (c3ArrC < flyby2Inst.computedMinC3 - 0.05 || c3DepC < flyby2Inst.computedMinC3 - 0.05)) continue;
+              if (flyby2Inst.computedMaxC3 !== undefined && (c3ArrC > flyby2Inst.computedMaxC3 + 0.05 || c3DepC > flyby2Inst.computedMaxC3 + 0.05)) continue;
+
+              if (tgtInst.maxC3 !== undefined && c3ArrD > tgtInst.maxC3) continue;
+              if (tgtInst.computedMinC3 !== undefined && c3ArrD < tgtInst.computedMinC3 - 0.05) continue;
+              if (tgtInst.computedMaxC3 !== undefined && c3ArrD > tgtInst.computedMaxC3 + 0.05) continue;
+
+              const totDv = evalB.poweredDv + evalC.poweredDv;
+              if (totDv < minTotalDv) {
+                minTotalDv = totDv;
+                bestChoice = {
+                  c3DepA,
+                  c3ArrB,
+                  c3DepB,
+                  c3ArrC,
+                  c3DepC,
+                  c3ArrD,
+                  totalDv: totDv,
+                  flybyDvs: [evalB.poweredDv, evalC.poweredDv],
+                  flybyDates: [tB, tC],
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!bestChoice) return null;
+    return {
+      c3DepA: bestChoice.c3DepA,
+      c3ArrFinal: bestChoice.c3ArrD,
+      totalDv: bestChoice.totalDv,
+      flybyDvs: bestChoice.flybyDvs,
+      flybyDates: bestChoice.flybyDates,
+      c3ArrB: bestChoice.c3ArrB,
+      c3DepB: bestChoice.c3DepB,
+      c3ArrC: bestChoice.c3ArrC,
+      c3DepC: bestChoice.c3DepC,
+    };
+  }
+
+  // General N > 4
+  let candidates: { times: number[]; totalDv: number; flybyDvs: number[] }[] = [
+    { times: [tDep], totalDv: 0, flybyDvs: [] },
+  ];
+
+  for (let step = 0; step < flybyInsts.length; step++) {
+    const currInst = pathInsts[step];
+    const nextInst = pathInsts[step + 1];
+    const nextBody = bodyMap.get(nextInst.bodyName) || mainBody;
+
+    const newCandidates: { times: number[]; totalDv: number; flybyDvs: number[] }[] = [];
+
+    for (const cand of candidates) {
+      const tCurr = cand.times[cand.times.length - 1];
+      const stCurr = getBodyStateAtUT(bodyMap.get(currInst.bodyName) || mainBody, mainBody, tCurr);
+
+      const remSteps = N - 1 - (step + 1);
+      const maxNextTime = tArr - remSteps * 86400;
+      const minNextTime = tCurr + 86400;
+      if (maxNextTime <= minNextTime) continue;
+
+      const sampleDatesSet = new Set<number>();
+      const SAMPLES = 16;
+      const dtStep = (maxNextTime - minNextTime) / Math.max(1, SAMPLES - 1);
+      for (let s = 0; s < SAMPLES; s++) {
+        sampleDatesSet.add(minNextTime + s * dtStep);
+      }
+      if (nextInst.validFlybyDates) {
+        for (const vf of nextInst.validFlybyDates) {
+          if (vf > minNextTime && vf < maxNextTime) {
+            sampleDatesSet.add(vf);
+          }
+        }
+      }
+      const sampleDates = Array.from(sampleDatesSet).sort((a, b) => a - b);
+
+      for (const tNext of sampleDates) {
+        const dtLeg = tNext - tCurr;
+        if (dtLeg < 3600) continue;
+        const stNext = getBodyStateAtUT(nextBody, mainBody, tNext);
+
+        const sol = solveLambertBest(stCurr.pos, stNext.pos, dtLeg, muCentral, true, minAllowedRadius, stCurr.vel, stNext.vel);
+        if (!sol.isValid) continue;
+
+        let poweredDv = 0;
+        if (step > 0) {
+          const flybyInst = pathInsts[step];
+          const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+          const prevTime = cand.times[cand.times.length - 2];
+          const stPrev = getBodyStateAtUT(bodyMap.get(pathInsts[step - 1].bodyName) || mainBody, mainBody, prevTime);
+          const solPrev = solveLambertBest(stPrev.pos, stCurr.pos, tCurr - prevTime, muCentral, true, minAllowedRadius, stPrev.vel, stCurr.vel);
+          if (!solPrev.isValid) continue;
+
+          const vInfIn = vecSub(solPrev.v2, stCurr.vel);
+          const vInfOut = vecSub(sol.v1, stCurr.vel);
+
+          const flybyEval = evaluateFlybyAtDate(
+            flybyBody,
+            vInfIn,
+            vInfOut,
+            tCurr,
+            flybyInst.minFlybyRadius
+          );
+
+          if (flybyEval.flybyMargin < -100000) continue;
+          poweredDv = flybyEval.poweredDv;
+        }
+
+        newCandidates.push({
+          times: [...cand.times, tNext],
+          totalDv: cand.totalDv + poweredDv,
+          flybyDvs: [...cand.flybyDvs, poweredDv],
+        });
+      }
+    }
+
+    newCandidates.sort((a, b) => a.totalDv - b.totalDv);
+    candidates = newCandidates.slice(0, 15);
+  }
+
+  let bestFinal: { times: number[]; totalDv: number; flybyDvs: number[]; c3DepA: number; c3ArrFinal: number } | null = null;
+  let minTotalDv = Infinity;
+
+  for (const cand of candidates) {
+    if (cand.times.length !== N - 1) continue;
+    const tLastFlyby = cand.times[cand.times.length - 1];
+    const lastFlybyInst = pathInsts[N - 2];
+    const lastFlybyBody = bodyMap.get(lastFlybyInst.bodyName) || mainBody;
+    const stLast = getBodyStateAtUT(lastFlybyBody, mainBody, tLastFlyby);
+
+    const solLeg1 = solveLambertBest(stA.pos, getBodyStateAtUT(bodyMap.get(pathInsts[1].bodyName) || mainBody, mainBody, cand.times[1]).pos, cand.times[1] - tDep, muCentral, true, minAllowedRadius, stA.vel);
+    if (!solLeg1.isValid) continue;
+
+    const solFinal = solveLambertBest(stLast.pos, stTgt.pos, tArr - tLastFlyby, muCentral, true, minAllowedRadius, stLast.vel, stTgt.vel);
+    if (!solFinal.isValid) continue;
+
+    const prevTime = cand.times[cand.times.length - 2];
+    const stPrev = getBodyStateAtUT(bodyMap.get(pathInsts[N - 3].bodyName) || mainBody, mainBody, prevTime);
+    const solPrev = solveLambertBest(stPrev.pos, stLast.pos, tLastFlyby - prevTime, muCentral, true, minAllowedRadius, stPrev.vel, stLast.vel);
+    if (!solPrev.isValid) continue;
+
+    const vInfIn = vecSub(solPrev.v2, stLast.vel);
+    const vInfOut = vecSub(solFinal.v1, stLast.vel);
+
+    const lastFlybyEval = evaluateFlybyAtDate(
+      lastFlybyBody,
+      vInfIn,
+      vInfOut,
+      tLastFlyby,
+      lastFlybyInst.minFlybyRadius
+    );
+    if (lastFlybyEval.flybyMargin < -100000) continue;
+
+    const allFlybyDvs = [...cand.flybyDvs.slice(1), lastFlybyEval.poweredDv];
+    const totDv = allFlybyDvs.reduce((a, b) => a + b, 0);
+
+    if (totDv < minTotalDv) {
+      minTotalDv = totDv;
+      const c3DepA = (vecMag(vecSub(solLeg1.v1, stA.vel)) ** 2) / 1e6;
+      const c3ArrFinal = (vecMag(vecSub(solFinal.v2, stTgt.vel)) ** 2) / 1e6;
+      bestFinal = {
+        times: [...cand.times, tArr],
+        totalDv: totDv,
+        flybyDvs: allFlybyDvs,
+        c3DepA,
+        c3ArrFinal,
+      };
+    }
+  }
+
+  if (!bestFinal) return null;
+
+  return {
+    c3DepA: bestFinal.c3DepA,
+    c3ArrFinal: bestFinal.c3ArrFinal,
+    totalDv: bestFinal.totalDv,
+    flybyDvs: bestFinal.flybyDvs,
+    flybyDates: bestFinal.times.slice(1, N - 1),
+  };
+}
+
+/**
+ * Unified Sequence Porkchop Plot solver for N-instance sequences (N >= 3).
+ * Progressive interlaced evaluation (16, 8, 4, 2, 1) with instant window opening.
+ */
+export async function computeSequencePorkchopPlot(
+  arg1: InstanceNode[] | InstanceNode,
+  arg2: DirectionalLink[] | InstanceNode | CelestialBody[],
+  arg3: CelestialBody[] | InstanceNode | CelestialBody,
+  arg4?: CelestialBody | CelestialBody[] | ProgressCallback,
+  arg5?: CelestialBody | ProgressCallback | ((seqPc: SequencePorkchopData) => void),
+  arg6?: ProgressCallback | ((seqPc: SequencePorkchopData) => void) | (() => boolean),
+  arg7?: ((seqPc: SequencePorkchopData) => void) | (() => boolean) | boolean,
+  arg8?: (() => boolean) | boolean | DirectionalLink[],
+  arg9?: boolean | Record<string, PorkchopPlotData>,
+  arg10?: Record<string, PorkchopPlotData>
+): Promise<SequencePorkchopData> {
+  let pathInsts: InstanceNode[] = [];
+  let links: DirectionalLink[] = [];
+  let bodies: CelestialBody[] = [];
+  let mainBody: CelestialBody;
+  let onProgress: ProgressCallback | undefined;
+  let onPartialUpdate: ((seqPc: SequencePorkchopData) => void) | undefined;
+  let shouldStop: (() => boolean) | undefined;
+  let isFullPath: boolean = false;
+  let porkchops: Record<string, PorkchopPlotData> | undefined;
+
+  if (Array.isArray(arg1)) {
+    pathInsts = arg1;
+    if (Array.isArray(arg3)) {
+      // Signature: (pathInsts, links, bodies, mainBody, onProgress, onPartialUpdate, shouldStop, isFullPath, porkchops)
+      links = Array.isArray(arg2) ? (arg2 as DirectionalLink[]) : [];
+      bodies = arg3 as CelestialBody[];
+      mainBody = arg4 as CelestialBody;
+      onProgress = typeof arg5 === 'function' ? (arg5 as ProgressCallback) : undefined;
+      onPartialUpdate = typeof arg6 === 'function' ? (arg6 as (seqPc: SequencePorkchopData) => void) : undefined;
+      shouldStop = typeof arg7 === 'function' ? (arg7 as () => boolean) : undefined;
+      isFullPath = typeof arg8 === 'boolean' ? arg8 : false;
+      porkchops = (arg9 && typeof arg9 === 'object') ? (arg9 as Record<string, PorkchopPlotData>) : undefined;
+    } else {
+      // Signature: (pathInsts, bodies, mainBody, onProgress, onPartialUpdate, shouldStop, isFullPath, links, porkchops)
+      links = Array.isArray(arg8) ? (arg8 as DirectionalLink[]) : [];
+      bodies = Array.isArray(arg2) ? (arg2 as CelestialBody[]) : [];
+      mainBody = arg3 as CelestialBody;
+      onProgress = typeof arg4 === 'function' ? (arg4 as ProgressCallback) : undefined;
+      onPartialUpdate = typeof arg5 === 'function' ? (arg5 as (seqPc: SequencePorkchopData) => void) : undefined;
+      shouldStop = typeof arg6 === 'function' ? (arg6 as () => boolean) : undefined;
+      isFullPath = typeof arg7 === 'boolean' ? arg7 : false;
+      porkchops = (arg9 && typeof arg9 === 'object') ? (arg9 as Record<string, PorkchopPlotData>) : undefined;
+    }
+  } else {
+    pathInsts = [arg1 as InstanceNode, arg2 as InstanceNode, arg3 as InstanceNode];
+    links = [];
+    bodies = Array.isArray(arg4) ? (arg4 as CelestialBody[]) : [];
+    mainBody = arg5 as CelestialBody;
+    onProgress = typeof arg6 === 'function' ? (arg6 as ProgressCallback) : undefined;
+    onPartialUpdate = typeof arg7 === 'function' ? (arg7 as (seqPc: SequencePorkchopData) => void) : undefined;
+    shouldStop = typeof arg8 === 'function' ? (arg8 as () => boolean) : undefined;
+    isFullPath = typeof arg9 === 'boolean' ? arg9 : false;
+    porkchops = (arg10 && typeof arg10 === 'object') ? (arg10 as Record<string, PorkchopPlotData>) : undefined;
+  }
+
+  if (typeof onProgress !== 'function') onProgress = undefined;
+  if (typeof onPartialUpdate !== 'function') onPartialUpdate = undefined;
+  if (typeof shouldStop !== 'function') shouldStop = undefined;
+
+  const N = pathInsts.length;
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  const srcInst = pathInsts[0];
+  const tgtInst = pathInsts[N - 1];
+  const flybyInsts = pathInsts.slice(1, N - 1);
+
+  const srcBody = bodyMap.get(srcInst.bodyName) || mainBody;
   const tgtBody = bodyMap.get(tgtInst.bodyName) || mainBody;
 
-  const muCentral = mainBody.stdGravParam || 1e12;
+  const minDep = srcInst.computedMinDate ?? srcInst.minDate ?? 0;
+  const maxDep = srcInst.computedMaxDate ?? srcInst.maxDate ?? (minDep + 31536000);
 
-  const minDepA = srcInst.minDate ?? srcInst.computedMinDate ?? 0;
-  const maxDepA = srcInst.maxDate ?? srcInst.computedMaxDate ?? (minDepA + 31536000);
+  const minArr = tgtInst.computedMinDate ?? tgtInst.minDate ?? (minDep + 86400 * 30 * (N - 1));
+  const maxArr = tgtInst.computedMaxDate ?? tgtInst.maxDate ?? (minArr + 31536000 * (N - 1));
 
-  const minArrC = tgtInst.minDate ?? tgtInst.computedMinDate ?? (minDepA + 86400 * 30);
-  const maxArrC = tgtInst.maxDate ?? tgtInst.computedMaxDate ?? (minArrC + 31536000 * 2);
+  const srcPeriod = srcBody ? getOrbitalPeriod(srcBody, mainBody) : 31536000;
+  const tgtPeriod = tgtBody ? getOrbitalPeriod(tgtBody, mainBody) : 31536000;
 
-  const N_DEP = srcInst.dateSampleCount !== undefined ? Math.max(1, srcInst.dateSampleCount) : 30;
-  const N_ARR = tgtInst.dateSampleCount !== undefined ? Math.max(1, tgtInst.dateSampleCount) : 30;
+  const rangeDep = Math.max(0, maxDep - minDep);
+  const rawNDep = Math.ceil((rangeDep / Math.max(1, srcPeriod)) * SAMPLE_PER_PERIOD);
+  const N_DEP = srcInst.dateSampleCount !== undefined
+    ? Math.max(1, srcInst.dateSampleCount)
+    : Math.min(200, Math.max(50, rawNDep));
+
+  const rangeArr = Math.max(0, maxArr - minArr);
+  const rawNArr = Math.ceil((rangeArr / Math.max(1, tgtPeriod)) * SAMPLE_PER_PERIOD);
+  const N_ARR = tgtInst.dateSampleCount !== undefined
+    ? Math.max(1, tgtInst.dateSampleCount)
+    : Math.min(200, Math.max(50, rawNArr));
 
   const depDates: number[] = [];
-  if (N_DEP === 1) {
-    depDates.push((minDepA + maxDepA) / 2);
-  } else {
-    const stepDep = (maxDepA - minDepA) / Math.max(1, N_DEP - 1);
-    for (let i = 0; i < N_DEP; i++) {
-      depDates.push(minDepA + i * stepDep);
-    }
-  }
+  const stepDep = N_DEP > 1 ? (maxDep - minDep) / (N_DEP - 1) : 0;
+  for (let i = 0; i < N_DEP; i++) depDates.push(N_DEP === 1 ? (minDep + maxDep) / 2 : minDep + i * stepDep);
 
   const arrDates: number[] = [];
-  if (N_ARR === 1) {
-    arrDates.push((minArrC + maxArrC) / 2);
-  } else {
-    const stepArr = (maxArrC - minArrC) / Math.max(1, N_ARR - 1);
-    for (let j = 0; j < N_ARR; j++) {
-      arrDates.push(minArrC + j * stepArr);
-    }
-  }
+  const stepArr = N_ARR > 1 ? (maxArr - minArr) / (N_ARR - 1) : 0;
+  for (let j = 0; j < N_ARR; j++) arrDates.push(N_ARR === 1 ? (minArr + maxArr) / 2 : minArr + j * stepArr);
 
   const c3DepAMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const c3ArrBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const c3DepBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const c3ArrCMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
+  const c3DepCMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
+  const c3ArrDMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
+  const c3ArrFinalMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
+
   const poweredDvBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
+  const poweredDvCMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
+  const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
+
   const flybyDateMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
+  const flyby2DateMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
   const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const validMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
 
-  const seqId = `seq-pc-${srcInst.id}-${flybyInst.id}-${tgtInst.id}`;
-  const seqLabel = `${srcInst.bodyName} ➔ ${flybyInst.bodyName} ➔ ${tgtInst.bodyName}`;
+  const flybyPoweredDvs = flybyInsts.map(inst => ({
+    flybyBody: inst.bodyName,
+    instanceId: inst.id,
+    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
+  }));
+
+  const flybyDates = flybyInsts.map(inst => ({
+    flybyBody: inst.bodyName,
+    instanceId: inst.id,
+    dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
+  }));
+
+  const seqId = `seq-pc-${pathInsts.map(i => i.id).join('-')}`;
+  const seqLabel = pathInsts.map(i => i.bodyName).join(' ➔ ');
 
   const seqData: SequencePorkchopData = {
     id: seqId,
     sequenceLabel: seqLabel,
+    isFullPath,
+    instanceCount: N,
+    instanceIds: pathInsts.map(i => i.id),
+    bodyNames: pathInsts.map(i => i.bodyName),
+    is4Body: N === 4,
     sourceInstanceId: srcInst.id,
-    flybyInstanceId: flybyInst.id,
+    flybyInstanceId: flybyInsts[0]?.id || '',
+    flyby2InstanceId: flybyInsts[1]?.id,
     targetInstanceId: tgtInst.id,
     sourceBody: srcInst.bodyName,
-    flybyBody: flybyInst.bodyName,
+    flybyBody: flybyInsts[0]?.bodyName || '',
+    flyby2Body: flybyInsts[1]?.bodyName,
     targetBody: tgtInst.bodyName,
     depDates,
     arrDates,
@@ -908,138 +1504,134 @@ export async function computeSequencePorkchopPlot(
     c3ArrBMatrix,
     c3DepBMatrix,
     c3ArrCMatrix,
+    c3DepCMatrix,
+    c3ArrDMatrix,
+    c3ArrFinalMatrix,
     poweredDvBMatrix,
+    poweredDvCMatrix,
+    totalPoweredDvMatrix,
     flybyDateMatrix,
+    flyby2DateMatrix,
     flightTimeMatrix,
     validMatrix,
+    flybyPoweredDvs,
+    flybyDates,
   };
 
+  // Immediate partial update to open sequence porkchop window instantly
+  onPartialUpdate?.({ ...seqData });
+
+  const passes = getHierarchicalGridIndices(N_DEP, N_ARR);
+  const evaluated = Array.from({ length: N_DEP }, () => new Uint8Array(N_ARR));
+
   let validCount = 0;
+  let computedPointsCount = 0;
   let lastYieldTime = performance.now();
 
-  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
-
-  for (let i = 0; i < N_DEP; i++) {
+  for (const pass of passes) {
     if (shouldStop?.()) break;
-    const tDepA = depDates[i];
-    const stA = getBodyStateAtUT(srcBody, mainBody, tDepA);
 
-    for (let j = 0; j < N_ARR; j++) {
-      const tArrC = arrDates[j];
-      const totalDt = tArrC - tDepA;
+    const S = pass.step;
+    for (const [i, j] of pass.points) {
+      if (shouldStop?.()) break;
+
+      evaluated[i][j] = 1;
+      computedPointsCount++;
+
+      const tDep = depDates[i];
+      const tArr = arrDates[j];
+      const totalDt = tArr - tDep;
       flightTimeMatrix[i][j] = totalDt;
 
-      if (totalDt < 86400) continue;
+      let bestRes: ReturnType<typeof evaluateSequenceTransferForDates> = null;
 
-      const stC = getBodyStateAtUT(tgtBody, mainBody, tArrC);
-
-      const candidateDates: number[] = [];
-      const FLYBY_SAMPLES = 25;
-      const flybyStep = totalDt / (FLYBY_SAMPLES + 1);
-      for (let k = 1; k <= FLYBY_SAMPLES; k++) {
-        candidateDates.push(tDepA + k * flybyStep);
+      if (totalDt >= 86400 * (N - 1)) {
+        bestRes = evaluateSequenceTransferForDates(pathInsts, tDep, tArr, bodies, mainBody, porkchops);
       }
-      if (flybyInst.validFlybyDates) {
-        for (const vf of flybyInst.validFlybyDates) {
-          if (vf > tDepA + 3600 && vf < tArrC - 3600) {
-            candidateDates.push(vf);
+
+      if (bestRes) {
+        validMatrix[i][j] = true;
+        c3DepAMatrix[i][j] = bestRes.c3DepA;
+        c3ArrFinalMatrix[i][j] = bestRes.c3ArrFinal;
+        totalPoweredDvMatrix[i][j] = bestRes.totalDv;
+
+        if (N === 3) {
+          c3ArrBMatrix[i][j] = bestRes.c3ArrB || 0;
+          c3DepBMatrix[i][j] = bestRes.c3DepB || 0;
+          c3ArrCMatrix[i][j] = bestRes.c3ArrFinal;
+          poweredDvBMatrix[i][j] = bestRes.flybyDvs[0] || 0;
+          flybyDateMatrix[i][j] = bestRes.flybyDates[0] || 0;
+        } else if (N === 4) {
+          c3ArrBMatrix[i][j] = bestRes.c3ArrB || 0;
+          c3DepBMatrix[i][j] = bestRes.c3DepB || 0;
+          if (c3ArrCMatrix) c3ArrCMatrix[i][j] = bestRes.c3ArrC || 0;
+          if (c3DepCMatrix) c3DepCMatrix[i][j] = bestRes.c3DepC || 0;
+          if (c3ArrDMatrix) c3ArrDMatrix[i][j] = bestRes.c3ArrFinal;
+          poweredDvBMatrix[i][j] = bestRes.flybyDvs[0] || 0;
+          if (poweredDvCMatrix) poweredDvCMatrix[i][j] = bestRes.flybyDvs[1] || 0;
+          flybyDateMatrix[i][j] = bestRes.flybyDates[0] || 0;
+          if (flyby2DateMatrix) flyby2DateMatrix[i][j] = bestRes.flybyDates[1] || 0;
+        }
+
+        for (let fb = 0; fb < flybyInsts.length; fb++) {
+          if (flybyPoweredDvs[fb]) flybyPoweredDvs[fb].poweredDvMatrix[i][j] = bestRes.flybyDvs[fb] || 0;
+          if (flybyDates[fb]) flybyDates[fb].dateMatrix[i][j] = bestRes.flybyDates[fb] || 0;
+        }
+
+        validCount++;
+      }
+
+      // Preview block fill for unvisited neighbor cells
+      for (let di = 0; di < S && i + di < N_DEP; di++) {
+        const r = i + di;
+        for (let dj = 0; dj < S && j + dj < N_ARR; dj++) {
+          const c = j + dj;
+          if (evaluated[r][c] === 0) {
+            flightTimeMatrix[r][c] = arrDates[c] - depDates[r];
+            validMatrix[r][c] = bestRes ? true : false;
+            c3DepAMatrix[r][c] = bestRes?.c3DepA || 0;
+            c3ArrFinalMatrix[r][c] = bestRes?.c3ArrFinal || 0;
+            totalPoweredDvMatrix[r][c] = bestRes?.totalDv || 0;
+
+            if (N === 3) {
+              c3ArrBMatrix[r][c] = bestRes?.c3ArrB || 0;
+              c3DepBMatrix[r][c] = bestRes?.c3DepB || 0;
+              c3ArrCMatrix[r][c] = bestRes?.c3ArrFinal || 0;
+              poweredDvBMatrix[r][c] = bestRes?.flybyDvs[0] || 0;
+              flybyDateMatrix[r][c] = bestRes?.flybyDates[0] || 0;
+            } else if (N === 4) {
+              c3ArrBMatrix[r][c] = bestRes?.c3ArrB || 0;
+              c3DepBMatrix[r][c] = bestRes?.c3DepB || 0;
+              if (c3ArrCMatrix) c3ArrCMatrix[r][c] = bestRes?.c3ArrC || 0;
+              if (c3DepCMatrix) c3DepCMatrix[r][c] = bestRes?.c3DepC || 0;
+              if (c3ArrDMatrix) c3ArrDMatrix[r][c] = bestRes?.c3ArrFinal;
+              poweredDvBMatrix[r][c] = bestRes?.flybyDvs[0] || 0;
+              if (poweredDvCMatrix) poweredDvCMatrix[r][c] = bestRes?.flybyDvs[1] || 0;
+              flybyDateMatrix[r][c] = bestRes?.flybyDates[0] || 0;
+              if (flyby2DateMatrix) flyby2DateMatrix[r][c] = bestRes?.flybyDates[1] || 0;
+            }
+
+            for (let fb = 0; fb < flybyInsts.length; fb++) {
+              if (flybyPoweredDvs[fb]) flybyPoweredDvs[fb].poweredDvMatrix[r][c] = bestRes?.flybyDvs[fb] || 0;
+              if (flybyDates[fb]) flybyDates[fb].dateMatrix[r][c] = bestRes?.flybyDates[fb] || 0;
+            }
           }
         }
       }
 
-      candidateDates.sort((a, b) => a - b);
-
-      let minDv = Infinity;
-      let bestChoice: {
-        c3DepA: number;
-        c3ArrB: number;
-        c3DepB: number;
-        c3ArrC: number;
-        poweredDv: number;
-        flybyDate: number;
-      } | null = null;
-
-      for (const tFlybyB of candidateDates) {
-        const dt1 = tFlybyB - tDepA;
-        const dt2 = tArrC - tFlybyB;
-        if (dt1 <= 3600 || dt2 <= 3600) continue;
-
-        const stB = getBodyStateAtUT(flybyBody, mainBody, tFlybyB);
-
-        const sol1 = solveLambert(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius);
-        if (!sol1.isValid) continue;
-
-        const sol2 = solveLambert(stB.pos, stC.pos, dt2, muCentral, true, minAllowedRadius);
-        if (!sol2.isValid) continue;
-
-        const vInfDepA = vecSub(sol1.v1, stA.vel);
-        const vInfInB = vecSub(sol1.v2, stB.vel);
-        const vInfOutB = vecSub(sol2.v1, stB.vel);
-        const vInfArrC = vecSub(sol2.v2, stC.vel);
-
-        const evalRes = evaluateFlybyAtDate(
-          flybyBody,
-          vInfInB,
-          vInfOutB,
-          tFlybyB,
-          flybyInst.minFlybyRadius
-        );
-
-        if (evalRes.flybyMargin < -1e-3) continue;
-
-        const c3DepA = (vecMag(vInfDepA) ** 2) / 1e6;
-        const c3ArrB = (evalRes.vInfInMag ** 2) / 1e6;
-        const c3DepB = (evalRes.vInfOutMag ** 2) / 1e6;
-        const c3ArrC = (vecMag(vInfArrC) ** 2) / 1e6;
-
-        if (srcInst.maxC3 !== undefined && c3DepA > srcInst.maxC3) continue;
-        if (srcInst.computedMinC3 !== undefined && c3DepA < srcInst.computedMinC3 - 0.05) continue;
-        if (srcInst.computedMaxC3 !== undefined && c3DepA > srcInst.computedMaxC3 + 0.05) continue;
-
-        if (flybyInst.maxC3 !== undefined && (c3ArrB > flybyInst.maxC3 || c3DepB > flybyInst.maxC3)) continue;
-        if (flybyInst.computedMinC3 !== undefined && (c3ArrB < flybyInst.computedMinC3 - 0.05 || c3DepB < flybyInst.computedMinC3 - 0.05)) continue;
-        if (flybyInst.computedMaxC3 !== undefined && (c3ArrB > flybyInst.computedMaxC3 + 0.05 || c3DepB > flybyInst.computedMaxC3 + 0.05)) continue;
-
-        if (tgtInst.maxC3 !== undefined && c3ArrC > tgtInst.maxC3) continue;
-        if (tgtInst.computedMinC3 !== undefined && c3ArrC < tgtInst.computedMinC3 - 0.05) continue;
-        if (tgtInst.computedMaxC3 !== undefined && c3ArrC > tgtInst.computedMaxC3 + 0.05) continue;
-
-        if (evalRes.poweredDv < minDv) {
-          minDv = evalRes.poweredDv;
-          bestChoice = {
-            c3DepA,
-            c3ArrB,
-            c3DepB,
-            c3ArrC,
-            poweredDv: evalRes.poweredDv,
-            flybyDate: tFlybyB,
-          };
-        }
+      const now = performance.now();
+      if (now - lastYieldTime > 30) {
+        lastYieldTime = now;
+        const totalPoints = N_DEP * N_ARR;
+        const pct = Math.floor((computedPointsCount / totalPoints) * 100);
+        onProgress?.(`Computing sequence porkchop plot for ${seqLabel} (${pct}%, ${validCount} valid)...`);
+        onPartialUpdate?.({ ...seqData });
+        await yieldUI();
       }
-
-      if (bestChoice) {
-        c3DepAMatrix[i][j] = bestChoice.c3DepA;
-        c3ArrBMatrix[i][j] = bestChoice.c3ArrB;
-        c3DepBMatrix[i][j] = bestChoice.c3DepB;
-        c3ArrCMatrix[i][j] = bestChoice.c3ArrC;
-        poweredDvBMatrix[i][j] = bestChoice.poweredDv;
-        flybyDateMatrix[i][j] = bestChoice.flybyDate;
-        validMatrix[i][j] = true;
-        validCount++;
-      }
-    }
-
-    const now = performance.now();
-    if (now - lastYieldTime > 35 || i === N_DEP - 1) {
-      lastYieldTime = now;
-      onProgress?.(
-        `Computing sequence porkchop plot for ${seqLabel} (${i + 1}/${N_DEP} departure windows)...`
-      );
-      onPartialUpdate?.(seqData);
-      await yieldUI();
     }
   }
 
+  onPartialUpdate?.({ ...seqData });
   return seqData;
 }
 
@@ -1052,252 +1644,43 @@ export async function compute4BodySequencePorkchopPlot(
   mainBody: CelestialBody,
   onProgress?: ProgressCallback,
   onPartialUpdate?: (partialSeq: SequencePorkchopData) => void,
-  shouldStop?: () => boolean
+  shouldStop?: () => boolean,
+  isFullPath?: boolean
 ): Promise<SequencePorkchopData> {
-  const bodyMap = new Map<string, CelestialBody>();
-  bodies.forEach(b => bodyMap.set(b.name, b));
+  return computeSequencePorkchopPlot(
+    [srcInst, flyby1Inst, flyby2Inst, tgtInst],
+    [],
+    bodies,
+    mainBody,
+    onProgress,
+    onPartialUpdate,
+    shouldStop,
+    isFullPath
+  );
+}
 
-  const srcBody = bodyMap.get(srcInst.bodyName) || mainBody;
-  const flyby1Body = bodyMap.get(flyby1Inst.bodyName) || mainBody;
-  const flyby2Body = bodyMap.get(flyby2Inst.bodyName) || mainBody;
-  const tgtBody = bodyMap.get(tgtInst.bodyName) || mainBody;
-
-  const muCentral = mainBody.stdGravParam || 1e12;
-
-  const minDepA = srcInst.minDate ?? srcInst.computedMinDate ?? 0;
-  const maxDepA = srcInst.maxDate ?? srcInst.computedMaxDate ?? (minDepA + 31536000);
-
-  const minArrD = tgtInst.minDate ?? tgtInst.computedMinDate ?? (minDepA + 86400 * 60);
-  const maxArrD = tgtInst.maxDate ?? tgtInst.computedMaxDate ?? (minArrD + 31536000 * 3);
-
-  const N_DEP = srcInst.dateSampleCount !== undefined ? Math.max(1, srcInst.dateSampleCount) : 25;
-  const N_ARR = tgtInst.dateSampleCount !== undefined ? Math.max(1, tgtInst.dateSampleCount) : 25;
-
-  const depDates: number[] = [];
-  if (N_DEP === 1) {
-    depDates.push((minDepA + maxDepA) / 2);
-  } else {
-    const stepDep = (maxDepA - minDepA) / Math.max(1, N_DEP - 1);
-    for (let i = 0; i < N_DEP; i++) {
-      depDates.push(minDepA + i * stepDep);
-    }
-  }
-
-  const arrDates: number[] = [];
-  if (N_ARR === 1) {
-    arrDates.push((minArrD + maxArrD) / 2);
-  } else {
-    const stepArr = (maxArrD - minArrD) / Math.max(1, N_ARR - 1);
-    for (let j = 0; j < N_ARR; j++) {
-      arrDates.push(minArrD + j * stepArr);
-    }
-  }
-
-  const c3DepAMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3ArrBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3DepBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3ArrCMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3DepCMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3ArrDMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const poweredDvBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const poweredDvCMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const flybyDateMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const flyby2DateMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const validMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
-
-  const seqId = `seq-pc-${srcInst.id}-${flyby1Inst.id}-${flyby2Inst.id}-${tgtInst.id}`;
-  const seqLabel = `${srcInst.bodyName} ➔ ${flyby1Inst.bodyName} ➔ ${flyby2Inst.bodyName} ➔ ${tgtInst.bodyName}`;
-
-  const seqData: SequencePorkchopData = {
-    id: seqId,
-    sequenceLabel: seqLabel,
-    is4Body: true,
-    sourceInstanceId: srcInst.id,
-    flybyInstanceId: flyby1Inst.id,
-    flyby2InstanceId: flyby2Inst.id,
-    targetInstanceId: tgtInst.id,
-    sourceBody: srcInst.bodyName,
-    flybyBody: flyby1Inst.bodyName,
-    flyby2Body: flyby2Inst.bodyName,
-    targetBody: tgtInst.bodyName,
-    depDates,
-    arrDates,
-    c3DepAMatrix,
-    c3ArrBMatrix,
-    c3DepBMatrix,
-    c3ArrCMatrix,
-    c3DepCMatrix,
-    c3ArrDMatrix,
-    poweredDvBMatrix,
-    poweredDvCMatrix,
-    totalPoweredDvMatrix,
-    flybyDateMatrix,
-    flyby2DateMatrix,
-    flightTimeMatrix,
-    validMatrix,
-  };
-
-  let validCount = 0;
-  let lastYieldTime = performance.now();
-  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
-
-  for (let i = 0; i < N_DEP; i++) {
-    if (shouldStop?.()) break;
-    const tDepA = depDates[i];
-    const stA = getBodyStateAtUT(srcBody, mainBody, tDepA);
-
-    for (let j = 0; j < N_ARR; j++) {
-      const tArrD = arrDates[j];
-      const totalDt = tArrD - tDepA;
-      flightTimeMatrix[i][j] = totalDt;
-
-      if (totalDt < 86400 * 2) continue;
-
-      const stD = getBodyStateAtUT(tgtBody, mainBody, tArrD);
-
-      const SAMPLES = 12;
-      const flybyStep1 = totalDt / (SAMPLES + 1);
-      const candB: number[] = [];
-      for (let k = 1; k <= SAMPLES; k++) candB.push(tDepA + k * flybyStep1);
-      if (flyby1Inst.validFlybyDates) {
-        for (const vf of flyby1Inst.validFlybyDates) {
-          if (vf > tDepA + 3600 && vf < tArrD - 7200) candB.push(vf);
-        }
-      }
-
-      let minTotalDv = Infinity;
-      let bestChoice: {
-        c3DepA: number;
-        c3ArrB: number;
-        c3DepB: number;
-        c3ArrC: number;
-        c3DepC: number;
-        c3ArrD: number;
-        poweredDvB: number;
-        poweredDvC: number;
-        totalPoweredDv: number;
-        flyby1Date: number;
-        flyby2Date: number;
-      } | null = null;
-
-      for (const tB of candB) {
-        const dt1 = tB - tDepA;
-        if (dt1 <= 3600) continue;
-        const stB = getBodyStateAtUT(flyby1Body, mainBody, tB);
-
-        const sol1 = solveLambert(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius);
-        if (!sol1.isValid) continue;
-
-        const candC: number[] = [];
-        const subDt = tArrD - tB;
-        const subStep = subDt / (SAMPLES + 1);
-        for (let m = 1; m <= SAMPLES; m++) candC.push(tB + m * subStep);
-        if (flyby2Inst.validFlybyDates) {
-          for (const vf of flyby2Inst.validFlybyDates) {
-            if (vf > tB + 3600 && vf < tArrD - 3600) candC.push(vf);
-          }
-        }
-
-        for (const tC of candC) {
-          const dt2 = tC - tB;
-          const dt3 = tArrD - tC;
-          if (dt2 <= 3600 || dt3 <= 3600) continue;
-
-          const stC = getBodyStateAtUT(flyby2Body, mainBody, tC);
-
-          const sol2 = solveLambert(stB.pos, stC.pos, dt2, muCentral, true, minAllowedRadius);
-          if (!sol2.isValid) continue;
-
-          const sol3 = solveLambert(stC.pos, stD.pos, dt3, muCentral, true, minAllowedRadius);
-          if (!sol3.isValid) continue;
-
-          const vInfDepA = vecSub(sol1.v1, stA.vel);
-          const vInfInB = vecSub(sol1.v2, stB.vel);
-          const vInfOutB = vecSub(sol2.v1, stB.vel);
-          const vInfInC = vecSub(sol2.v2, stC.vel);
-          const vInfOutC = vecSub(sol3.v1, stC.vel);
-          const vInfArrD = vecSub(sol3.v2, stD.vel);
-
-          const evalB = evaluateFlybyAtDate(flyby1Body, vInfInB, vInfOutB, tB, flyby1Inst.minFlybyRadius);
-          if (evalB.flybyMargin < -1e-3) continue;
-
-          const evalC = evaluateFlybyAtDate(flyby2Body, vInfInC, vInfOutC, tC, flyby2Inst.minFlybyRadius);
-          if (evalC.flybyMargin < -1e-3) continue;
-
-          const c3DepA = (vecMag(vInfDepA) ** 2) / 1e6;
-          const c3ArrB = (evalB.vInfInMag ** 2) / 1e6;
-          const c3DepB = (evalB.vInfOutMag ** 2) / 1e6;
-          const c3ArrC = (evalC.vInfInMag ** 2) / 1e6;
-          const c3DepC = (evalC.vInfOutMag ** 2) / 1e6;
-          const c3ArrD = (vecMag(vInfArrD) ** 2) / 1e6;
-
-          if (srcInst.maxC3 !== undefined && c3DepA > srcInst.maxC3) continue;
-          if (srcInst.computedMinC3 !== undefined && c3DepA < srcInst.computedMinC3 - 0.05) continue;
-          if (srcInst.computedMaxC3 !== undefined && c3DepA > srcInst.computedMaxC3 + 0.05) continue;
-
-          if (flyby1Inst.maxC3 !== undefined && (c3ArrB > flyby1Inst.maxC3 || c3DepB > flyby1Inst.maxC3)) continue;
-          if (flyby1Inst.computedMinC3 !== undefined && (c3ArrB < flyby1Inst.computedMinC3 - 0.05 || c3DepB < flyby1Inst.computedMinC3 - 0.05)) continue;
-          if (flyby1Inst.computedMaxC3 !== undefined && (c3ArrB > flyby1Inst.computedMaxC3 + 0.05 || c3DepB > flyby1Inst.computedMaxC3 + 0.05)) continue;
-
-          if (flyby2Inst.maxC3 !== undefined && (c3ArrC > flyby2Inst.maxC3 || c3DepC > flyby2Inst.maxC3)) continue;
-          if (flyby2Inst.computedMinC3 !== undefined && (c3ArrC < flyby2Inst.computedMinC3 - 0.05 || c3DepC < flyby2Inst.computedMinC3 - 0.05)) continue;
-          if (flyby2Inst.computedMaxC3 !== undefined && (c3ArrC > flyby2Inst.computedMaxC3 + 0.05 || c3DepC > flyby2Inst.computedMaxC3 + 0.05)) continue;
-
-          if (tgtInst.maxC3 !== undefined && c3ArrD > tgtInst.maxC3) continue;
-          if (tgtInst.computedMinC3 !== undefined && c3ArrD < tgtInst.computedMinC3 - 0.05) continue;
-          if (tgtInst.computedMaxC3 !== undefined && c3ArrD > tgtInst.computedMaxC3 + 0.05) continue;
-
-          const totDv = evalB.poweredDv + evalC.poweredDv;
-          if (totDv < minTotalDv) {
-            minTotalDv = totDv;
-            bestChoice = {
-              c3DepA,
-              c3ArrB,
-              c3DepB,
-              c3ArrC,
-              c3DepC,
-              c3ArrD,
-              poweredDvB: evalB.poweredDv,
-              poweredDvC: evalC.poweredDv,
-              totalPoweredDv: totDv,
-              flyby1Date: tB,
-              flyby2Date: tC
-            };
-          }
-        }
-      }
-
-      if (bestChoice) {
-        c3DepAMatrix[i][j] = bestChoice.c3DepA;
-        c3ArrBMatrix[i][j] = bestChoice.c3ArrB;
-        c3DepBMatrix[i][j] = bestChoice.c3DepB;
-        c3ArrCMatrix[i][j] = bestChoice.c3ArrC;
-        c3DepCMatrix[i][j] = bestChoice.c3DepC;
-        c3ArrDMatrix[i][j] = bestChoice.c3ArrD;
-        poweredDvBMatrix[i][j] = bestChoice.poweredDvB;
-        poweredDvCMatrix[i][j] = bestChoice.poweredDvC;
-        totalPoweredDvMatrix[i][j] = bestChoice.totalPoweredDv;
-        flybyDateMatrix[i][j] = bestChoice.flyby1Date;
-        flyby2DateMatrix[i][j] = bestChoice.flyby2Date;
-        validMatrix[i][j] = true;
-        validCount++;
-      }
-    }
-
-    const now = performance.now();
-    if (now - lastYieldTime > 35 || i === N_DEP - 1) {
-      lastYieldTime = now;
-      onProgress?.(
-        `Computing sequence porkchop plot for ${seqLabel} (${i + 1}/${N_DEP} departure windows)...`
-      );
-      onPartialUpdate?.(seqData);
-      await yieldUI();
-    }
-  }
-
-  return seqData;
+export async function computeNBodySequencePorkchopPlot(
+  pathInsts: InstanceNode[],
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  onProgress?: ProgressCallback,
+  onPartialUpdate?: (seqPc: SequencePorkchopData) => void,
+  shouldStop?: () => boolean,
+  isFullPath?: boolean,
+  links?: DirectionalLink[],
+  porkchops?: Record<string, PorkchopPlotData>
+): Promise<SequencePorkchopData> {
+  return computeSequencePorkchopPlot(
+    pathInsts,
+    links || [],
+    bodies,
+    mainBody,
+    onProgress,
+    onPartialUpdate,
+    shouldStop,
+    isFullPath,
+    porkchops
+  );
 }
 
 export type ProgressCallback = (statusMessage: string) => void;
@@ -1677,74 +2060,31 @@ export async function runSequenceSearch(
     }
   }
 
-  // Step 8: Compute 3-instance & 4-instance sequence porkchop plots
-  if (pairs && pairs.length > 0) {
-    for (const pair of pairs) {
-      if (shouldStop?.()) return earlyReturn();
-      const seqPc = await computeSequencePorkchopPlot(
-        pair.srcInst,
-        pair.flybyInst,
-        pair.tgtInst,
-        bodies,
-        mainBody,
-        onProgress,
-        (partialSeq) => {
-          sequencePorkchops[partialSeq.id] = partialSeq;
-          onPartialUpdate?.({
-            instances: currInstances,
-            links: currLinks,
-            porkchops: { ...porkchops },
-            sequencePorkchops: { ...sequencePorkchops },
-          });
-        },
-        shouldStop
-      );
-      sequencePorkchops[seqPc.id] = seqPc;
-    }
-  }
-
-  // 4-instance sequence porkchops for paths of length 3 links
-  for (const startInst of startInstances) {
+  // Step 8: Compute N-instance sequence porkchop plots for candidate sequences (N >= 3)
+  const candidateSubPaths = findAllSubPathsInGraph(currLinks, currInstances);
+  for (const cand of candidateSubPaths) {
     if (shouldStop?.()) return earlyReturn();
-    const paths = findAllPaths(startInst.id, currLinks, currInstances);
-    for (const pathLinks of paths) {
-      if (shouldStop?.()) return earlyReturn();
-      if (pathLinks.length >= 3) {
-        for (let k = 0; k <= pathLinks.length - 3; k++) {
-          const l1 = pathLinks[k];
-          const l2 = pathLinks[k + 1];
-          const l3 = pathLinks[k + 2];
-          const seq4Id = `seq-pc-${l1.sourceInstanceId}-${l1.targetInstanceId}-${l2.targetInstanceId}-${l3.targetInstanceId}`;
-          if (!sequencePorkchops[seq4Id]) {
-            const srcInst = currInstances.find(i => i.id === l1.sourceInstanceId);
-            const flyby1Inst = currInstances.find(i => i.id === l1.targetInstanceId);
-            const flyby2Inst = currInstances.find(i => i.id === l2.targetInstanceId);
-            const tgtInst = currInstances.find(i => i.id === l3.targetInstanceId);
-
-            if (srcInst && flyby1Inst && flyby2Inst && tgtInst) {
-              const seqPc = await compute4BodySequencePorkchopPlot(
-                srcInst,
-                flyby1Inst,
-                flyby2Inst,
-                tgtInst,
-                bodies,
-                mainBody,
-                onProgress,
-                (partialSeq) => {
-                  sequencePorkchops[partialSeq.id] = partialSeq;
-                  onPartialUpdate?.({
-                    instances: currInstances,
-                    links: currLinks,
-                    porkchops: { ...porkchops },
-                    sequencePorkchops: { ...sequencePorkchops },
-                  });
-                },
-                shouldStop
-              );
-              sequencePorkchops[seqPc.id] = seqPc;
-            }
-          }
-        }
+    // Auto-compute full paths during initial search execution
+    if (cand.isFullPath) {
+      if (!sequencePorkchops[cand.id]) {
+        const seqPc = await computeNBodySequencePorkchopPlot(
+          cand.pathInsts,
+          bodies,
+          mainBody,
+          onProgress,
+          (partialSeq) => {
+            sequencePorkchops[partialSeq.id] = partialSeq;
+            onPartialUpdate?.({
+              instances: currInstances,
+              links: currLinks,
+              porkchops: { ...porkchops },
+              sequencePorkchops: { ...sequencePorkchops },
+            });
+          },
+          shouldStop,
+          cand.isFullPath
+        );
+        sequencePorkchops[seqPc.id] = seqPc;
       }
     }
   }
@@ -1798,6 +2138,62 @@ export function findAllPaths(
   }
 
   return foundPaths;
+}
+
+export interface CandidateSequencePath {
+  id: string;
+  sequenceLabel: string;
+  count: number;
+  pathInsts: InstanceNode[];
+  isFullPath: boolean;
+}
+
+export function findAllSubPathsInGraph(
+  links: DirectionalLink[],
+  instances: InstanceNode[]
+): CandidateSequencePath[] {
+  const resultsMap = new Map<string, CandidateSequencePath>();
+
+  function dfs(
+    currentId: string,
+    currentPathInsts: InstanceNode[],
+    visitedIds: Set<string>
+  ) {
+    if (currentPathInsts.length >= 3) {
+      const seqId = `seq-pc-${currentPathInsts.map(i => i.id).join('-')}`;
+      if (!resultsMap.has(seqId)) {
+        const startInst = currentPathInsts[0];
+        const endInst = currentPathInsts[currentPathInsts.length - 1];
+        const isFullPath = isInstanceSource(startInst, links) && isInstanceTarget(endInst, links);
+        resultsMap.set(seqId, {
+          id: seqId,
+          sequenceLabel: currentPathInsts.map(i => i.bodyName).join(' ➔ '),
+          count: currentPathInsts.length,
+          pathInsts: currentPathInsts,
+          isFullPath,
+        });
+      }
+    }
+
+    const outgoingLinks = links.filter(l => l.sourceInstanceId === currentId);
+    for (const link of outgoingLinks) {
+      const nextId = link.targetInstanceId;
+      if (!visitedIds.has(nextId)) {
+        const nextInst = instances.find(i => i.id === nextId);
+        if (nextInst) {
+          const nextVisited = new Set(visitedIds);
+          nextVisited.add(nextId);
+          dfs(nextId, [...currentPathInsts, nextInst], nextVisited);
+        }
+      }
+    }
+  }
+
+  for (const startInst of instances) {
+    dfs(startInst.id, [startInst], new Set([startInst.id]));
+  }
+
+  return Array.from(resultsMap.values());
 }
 
 async function findValidTrajectoriesForPath(
@@ -1940,12 +2336,6 @@ async function findValidTrajectoriesForPath(
         );
 
         if (!flybyFeas.isValid || flybyFeas.matchedFlybyDate === undefined) continue;
-
-        if (prevInst.maxC3 !== undefined) {
-          const c3In = (flybyFeas.vInfInMag ** 2) / 1e6;
-          const c3Out = (flybyFeas.vInfOutMag ** 2) / 1e6;
-          if (c3In > prevInst.maxC3 || c3Out > prevInst.maxC3) continue;
-        }
 
         const matchedFlybyUT = flybyFeas.matchedFlybyDate;
 
@@ -2219,7 +2609,7 @@ export async function runSequenceSearchAlt(
         if (tgtNode.computedMaxDate !== undefined && tCurr > tgtNode.computedMaxDate) continue;
 
         const stTgt = getBodyStateAtUT(tgtBody, mainBody, tCurr);
-        const sol = solveLambert(stSrc.pos, stTgt.pos, dt, mainBody.stdGravParam || 1e12, true);
+        const sol = solveLambertBest(stSrc.pos, stTgt.pos, dt, mainBody.stdGravParam || 1e12, true, undefined, stSrc.vel, stTgt.vel);
         if (!sol.isValid) continue;
 
         let flybyDetail: FlybyDetail | undefined = undefined;
@@ -2240,7 +2630,6 @@ export async function runSequenceSearchAlt(
 
           const c3In = (flybyEval.vInfInMag / 1000) ** 2;
           const c3Out = (flybyEval.vInfOutMag / 1000) ** 2;
-          if (srcNode.maxC3 !== undefined && (c3In > srcNode.maxC3 || c3Out > srcNode.maxC3)) continue;
           if (srcNode.computedMinC3 !== undefined && (c3In < srcNode.computedMinC3 - 0.05 || c3Out < srcNode.computedMinC3 - 0.05)) continue;
           if (srcNode.computedMaxC3 !== undefined && (c3In > srcNode.computedMaxC3 + 0.05 || c3Out > srcNode.computedMaxC3 + 0.05)) continue;
 

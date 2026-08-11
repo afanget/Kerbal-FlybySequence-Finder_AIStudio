@@ -26,7 +26,7 @@ export function solveLambert(
   r2: Vector3D,
   dt: number,
   mu: number,
-  prograde: boolean,
+  prograde: boolean = true,
   minRadius?: number
 ): LambertSolution {
   const r1Mag = vecMag(r1);
@@ -66,6 +66,133 @@ export function solveLambert(
   const T = Math.sqrt((2 * mu) / (s * s * s)) * dt;
 
   const x = solveLambertX(lambda, T);
+  return constructLambertSolutionFromX(x, r1, r2, r1Mag, r2Mag, c, s, lambda, dTheta, mu, minRadius);
+}
+
+/**
+ * Solves Lambert's Problem for all valid revolution counts (Nrev = 0, 1, 2, ... up to maxRev).
+ */
+export function solveLambertAllRevolutions(
+  r1: Vector3D,
+  r2: Vector3D,
+  dt: number,
+  mu: number,
+  prograde: boolean = true,
+  minRadius?: number,
+  maxRev: number = 2
+): LambertSolution[] {
+  const solutions: LambertSolution[] = [];
+
+  // Nrev = 0 solution
+  const sol0 = solveLambert(r1, r2, dt, mu, prograde, minRadius);
+  if (sol0.isValid) {
+    solutions.push(sol0);
+  }
+
+  if (maxRev <= 0) return solutions;
+
+  const r1Mag = vecMag(r1);
+  const r2Mag = vecMag(r2);
+  if (r1Mag === 0 || r2Mag === 0 || dt <= 0 || mu <= 0) return solutions;
+
+  const cross12 = vecCross(r1, r2);
+  const cosTrueAnomaly = vecDot(r1, r2) / (r1Mag * r2Mag);
+  const clampedCos = Math.max(-1, Math.min(1, cosTrueAnomaly));
+
+  let dTheta = Math.acos(clampedCos);
+  if (prograde) {
+    if (cross12.z < 0) dTheta = 2 * Math.PI - dTheta;
+  } else {
+    if (cross12.z >= 0) dTheta = 2 * Math.PI - dTheta;
+  }
+
+  const c = Math.sqrt(r1Mag * r1Mag + r2Mag * r2Mag - 2 * r1Mag * r2Mag * Math.cos(dTheta));
+  const s = (r1Mag + r2Mag + c) / 2;
+  const lambdaSq = 1 - c / s;
+  const lambda = Math.sqrt(Math.max(0, lambdaSq)) * (dTheta > Math.PI ? -1 : 1);
+  const Ttarget = Math.sqrt((2 * mu) / (s * s * s)) * dt;
+
+  for (let Nrev = 1; Nrev <= maxRev; Nrev++) {
+    const { xMin, Tmin } = findMinXForRev(lambda, Nrev);
+    if (Ttarget < Tmin) {
+      // No solution exists for this or higher revolution counts
+      break;
+    }
+
+    // Left branch solution
+    const x1 = solveBranch(-0.99999, xMin, Ttarget, lambda, Nrev);
+    const sol1 = constructLambertSolutionFromX(x1, r1, r2, r1Mag, r2Mag, c, s, lambda, dTheta, mu, minRadius);
+    if (sol1.isValid) {
+      solutions.push(sol1);
+    }
+
+    // Right branch solution
+    if (Math.abs(Ttarget - Tmin) > 1e-5) {
+      const x2 = solveBranch(xMin, 0.99999, Ttarget, lambda, Nrev);
+      const sol2 = constructLambertSolutionFromX(x2, r1, r2, r1Mag, r2Mag, c, s, lambda, dTheta, mu, minRadius);
+      if (sol2.isValid) {
+        solutions.push(sol2);
+      }
+    }
+  }
+
+  return solutions;
+}
+
+/**
+ * Solves Lambert's Problem considering multi-revolution solutions and selects the best valid solution
+ * minimizing total delta-V relative to optional reference velocity vectors.
+ */
+export function solveLambertBest(
+  r1: Vector3D,
+  r2: Vector3D,
+  dt: number,
+  mu: number,
+  prograde: boolean = true,
+  minRadius?: number,
+  vDepRef?: Vector3D,
+  vArrRef?: Vector3D,
+  maxRev: number = 2
+): LambertSolution {
+  const allSols = solveLambertAllRevolutions(r1, r2, dt, mu, prograde, minRadius, maxRev);
+  if (allSols.length === 0) {
+    return { v1: { x: 0, y: 0, z: 0 }, v2: { x: 0, y: 0, z: 0 }, semiMajorAxis: 0, isValid: false };
+  }
+
+  let bestSol = allSols[0];
+  let minDv = Infinity;
+
+  for (const sol of allSols) {
+    let dv: number;
+    if (vDepRef && vArrRef) {
+      dv = vecMag(vecSub(sol.v1, vDepRef)) + vecMag(vecSub(sol.v2, vArrRef));
+    } else if (vDepRef) {
+      dv = vecMag(vecSub(sol.v1, vDepRef));
+    } else {
+      dv = vecMag(sol.v1) + vecMag(sol.v2);
+    }
+    if (dv < minDv) {
+      minDv = dv;
+      bestSol = sol;
+    }
+  }
+
+  return bestSol;
+}
+
+function constructLambertSolutionFromX(
+  x: number,
+  r1: Vector3D,
+  r2: Vector3D,
+  r1Mag: number,
+  r2Mag: number,
+  c: number,
+  s: number,
+  lambda: number,
+  dTheta: number,
+  mu: number,
+  minRadius?: number
+): LambertSolution {
   if (isNaN(x)) {
     return { v1: { x: 0, y: 0, z: 0 }, v2: { x: 0, y: 0, z: 0 }, semiMajorAxis: 0, isValid: false };
   }
@@ -73,10 +200,10 @@ export function solveLambert(
   const a = s / (2 * (1 - x * x));
 
   // Compute f, g Lagrange coefficients
-  const y = Math.sqrt(1 - lambda * lambda * (1 - x * x));
+  const y = Math.sqrt(Math.max(0, 1 - lambda * lambda * (1 - x * x)));
   const gamma = Math.sqrt((mu * s) / 2);
   const rho = (r1Mag - r2Mag) / c;
-  const sigma = Math.sqrt(1 - rho * rho);
+  const sigma = Math.sqrt(Math.max(0, 1 - rho * rho));
 
   const vr1 = (gamma * (lambda * y - x) - gamma * rho * (lambda * y + x)) / r1Mag;
   const vr2 = -(gamma * (lambda * y - x) + gamma * rho * (lambda * y + x)) / r2Mag;
@@ -140,6 +267,72 @@ export function solveLambert(
     semiMajorAxis: a,
     isValid
   };
+}
+
+function computeLambertTimeMultiRev(x: number, lambda: number, Nrev: number): number {
+  if (Nrev === 0) {
+    return computeLambertTime(x, lambda);
+  }
+  const clampedX = Math.max(-0.999999, Math.min(0.999999, x));
+  const a = 1 / (1 - clampedX * clampedX);
+  const alpha = 2 * Math.acos(clampedX);
+  const argBeta = Math.max(-1, Math.min(1, lambda * Math.sqrt(Math.max(0, 1 - clampedX * clampedX))));
+  const beta = 2 * Math.asin(argBeta);
+  return (a * Math.sqrt(a) * (alpha - Math.sin(alpha) - (beta - Math.sin(beta)) + 2 * Math.PI * Nrev)) / 2;
+}
+
+function findMinXForRev(lambda: number, Nrev: number): { xMin: number; Tmin: number } {
+  const phi = (Math.sqrt(5) - 1) / 2;
+  let a = -0.9999;
+  let b = 0.9999;
+  let c = b - phi * (b - a);
+  let d = a + phi * (b - a);
+  let fc = computeLambertTimeMultiRev(c, lambda, Nrev);
+  let fd = computeLambertTimeMultiRev(d, lambda, Nrev);
+
+  for (let i = 0; i < 30; i++) {
+    if (fc < fd) {
+      b = d;
+      d = c;
+      fd = fc;
+      c = b - phi * (b - a);
+      fc = computeLambertTimeMultiRev(c, lambda, Nrev);
+    } else {
+      a = c;
+      c = d;
+      fc = fd;
+      d = a + phi * (b - a);
+      fd = computeLambertTimeMultiRev(d, lambda, Nrev);
+    }
+  }
+
+  const xMin = 0.5 * (a + b);
+  const Tmin = computeLambertTimeMultiRev(xMin, lambda, Nrev);
+  return { xMin, Tmin };
+}
+
+function solveBranch(a: number, b: number, Ttarget: number, lambda: number, Nrev: number): number {
+  let xA = a;
+  let xB = b;
+  let fA = computeLambertTimeMultiRev(xA, lambda, Nrev) - Ttarget;
+  let fB = computeLambertTimeMultiRev(xB, lambda, Nrev) - Ttarget;
+
+  if (fA * fB > 0) return xB;
+
+  let xMid = 0.5 * (xA + xB);
+  for (let i = 0; i < 30; i++) {
+    xMid = 0.5 * (xA + xB);
+    const fMid = computeLambertTimeMultiRev(xMid, lambda, Nrev) - Ttarget;
+    if (Math.abs(fMid) < 1e-7 || Math.abs(xB - xA) < 1e-8) break;
+    if (fA * fMid <= 0) {
+      xB = xMid;
+      fB = fMid;
+    } else {
+      xA = xMid;
+      fA = fMid;
+    }
+  }
+  return xMid;
 }
 
 /**
