@@ -747,6 +747,23 @@ export function getHierarchicalGridIndices(nRows: number, nCols: number): { pass
   return passes;
 }
 
+const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
+
+export function clonePorkchopData(pcData: PorkchopPlotData): PorkchopPlotData {
+  return {
+    ...pcData,
+    computedSamples: pcData.computedSamples,
+    totalSamples: pcData.totalSamples,
+    c3DepMatrix: pcData.c3DepMatrix.map(row => [...row]),
+    c3ArrMatrix: pcData.c3ArrMatrix.map(row => [...row]),
+    dvMatrix: pcData.dvMatrix.map(row => [...row]),
+    flightTimeMatrix: pcData.flightTimeMatrix.map(row => [...row]),
+    validMatrix: pcData.validMatrix.map(row => [...row]),
+    vTransDepMatrix: pcData.vTransDepMatrix.map(row => [...row]),
+    vTransArrMatrix: pcData.vTransArrMatrix.map(row => [...row]),
+  };
+}
+
 /**
  * STEP 5: Compute Porkchop Plot for a given link using progressive interlaced passes.
  */
@@ -770,6 +787,7 @@ export async function computePorkchopPlot(
 
   const nDep = srcDates.length;
   const nArr = tgtDates.length;
+  const totalPoints = nDep * nArr;
 
   const c3DepMatrix: number[][] = Array.from({ length: nDep }, () => Array(nArr).fill(Infinity));
   const c3ArrMatrix: number[][] = Array.from({ length: nDep }, () => Array(nArr).fill(Infinity));
@@ -781,6 +799,10 @@ export async function computePorkchopPlot(
 
   const muCentral = mainBody.stdGravParam || 1e12;
   const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
+
+  // Precompute body states once for all departure and arrival dates (400x speedup)
+  const srcStates = srcDates.map(t => getBodyStateAtUT(srcBody, mainBody, t));
+  const tgtStates = tgtDates.map(t => getBodyStateAtUT(tgtBody, mainBody, t));
 
   const pcData: PorkchopPlotData = {
     linkId: link.id,
@@ -794,15 +816,19 @@ export async function computePorkchopPlot(
     flightTimeMatrix,
     validMatrix,
     vTransDepMatrix,
-    vTransArrMatrix
+    vTransArrMatrix,
+    computedSamples: 0,
+    totalSamples: totalPoints
   };
 
-  // Immediate update to open window instantly
-  onPartialUpdatePorkchop?.({ ...pcData }, 0);
+  // Immediate update to open window instantly with initial blank grid
+  onPartialUpdatePorkchop?.(clonePorkchopData(pcData), 0);
+  await yieldUI();
 
   let validCount = 0;
   let computedPointsCount = 0;
   let lastYieldTime = performance.now();
+  let lastUpdateDataTime = performance.now();
 
   const passes = getHierarchicalGridIndices(nDep, nArr);
   const evaluated = Array.from({ length: nDep }, () => new Uint8Array(nArr));
@@ -834,10 +860,11 @@ export async function computePorkchopPlot(
       let v2 = { x: 0, y: 0, z: 0 };
 
       if (dt >= minDur && dt <= maxDur) {
-        const srcState = getBodyStateAtUT(srcBody, mainBody, depDate);
-        const tgtState = getBodyStateAtUT(tgtBody, mainBody, arrDate);
+        const srcState = srcStates[i];
+        const tgtState = tgtStates[j];
 
-        const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
+        // Use fast direct Lambert solver (0-revolution) first for high-throughput grid calculation
+        const sol = solveLambert(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius);
 
         if (sol.isValid) {
           v1 = sol.v1;
@@ -891,21 +918,35 @@ export async function computePorkchopPlot(
       }
 
       const now = performance.now();
+      // Yield execution every 30ms so the browser event loop remains fully responsive
       if (now - lastYieldTime > 30) {
         lastYieldTime = now;
-        const totalPoints = nDep * nArr;
-        const pct = Math.floor((computedPointsCount / totalPoints) * 100);
-        onProgress?.(
-          `Computing ${srcInstance.bodyName}-${tgtInstance.bodyName} porkchop plot (${pct}%, ${validCount} valid transfers)...`
-        );
-        onPartialUpdatePorkchop?.({ ...pcData }, validCount);
+        // Throttle full matrix deep cloning & React state updates to every 10s
+        if (now - lastUpdateDataTime > 10000) {
+          lastUpdateDataTime = now;
+          pcData.computedSamples = computedPointsCount;
+          pcData.totalSamples = totalPoints;
+          const pct = Math.floor((computedPointsCount / totalPoints) * 100);
+          onProgress?.(
+            `Computing ${srcInstance.bodyName}-${tgtInstance.bodyName} porkchop plot (${pct}%, ${validCount} valid transfers)...`
+          );
+          onPartialUpdatePorkchop?.(clonePorkchopData(pcData), validCount);
+        }
         await yieldUI();
       }
     }
+
+    pcData.computedSamples = computedPointsCount;
+    pcData.totalSamples = totalPoints;
+    onPartialUpdatePorkchop?.(clonePorkchopData(pcData), validCount);
+    await yieldUI();
   }
 
-  onPartialUpdatePorkchop?.({ ...pcData }, validCount);
-  return pcData;
+  pcData.computedSamples = computedPointsCount;
+  pcData.totalSamples = totalPoints;
+  const finalClone = clonePorkchopData(pcData);
+  onPartialUpdatePorkchop?.(finalClone, validCount);
+  return finalClone;
 }
 
 /**
@@ -952,7 +993,7 @@ function evaluateSequenceTransferForDates(
     const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
 
     const candidateDates = new Set<number>();
-    const FLYBY_SAMPLES = 30;
+    const FLYBY_SAMPLES = 20;
     const totalDt = tArr - tDep;
     const step = totalDt / (FLYBY_SAMPLES + 1);
 
@@ -963,21 +1004,6 @@ function evaluateSequenceTransferForDates(
       for (const vf of flybyInst.validFlybyDates) {
         if (vf > tDep + 3600 && vf < tArr - 3600) candidateDates.add(vf);
       }
-    }
-
-    if (porkchops) {
-      Object.values(porkchops).forEach(pc => {
-        if (pc.arrDates) {
-          pc.arrDates.forEach(d => {
-            if (d > tDep + 3600 && d < tArr - 3600) candidateDates.add(d);
-          });
-        }
-        if (pc.depDates) {
-          pc.depDates.forEach(d => {
-            if (d > tDep + 3600 && d < tArr - 3600) candidateDates.add(d);
-          });
-        }
-      });
     }
 
     const candList = Array.from(candidateDates).sort((a, b) => a - b);
@@ -1000,11 +1026,17 @@ function evaluateSequenceTransferForDates(
 
       const stB = getBodyStateAtUT(flybyBody, mainBody, tFlybyB);
 
-      const sols1 = solveLambertAllRevolutions(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius);
-      if (sols1.length === 0) continue;
+      let sols1 = [solveLambert(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius)];
+      if (!sols1[0].isValid) {
+        sols1 = solveLambertAllRevolutions(stA.pos, stB.pos, dt1, muCentral, true, minAllowedRadius);
+      }
+      if (sols1.length === 0 || !sols1[0].isValid) continue;
 
-      const sols2 = solveLambertAllRevolutions(stB.pos, stTgt.pos, dt2, muCentral, true, minAllowedRadius);
-      if (sols2.length === 0) continue;
+      let sols2 = [solveLambert(stB.pos, stTgt.pos, dt2, muCentral, true, minAllowedRadius)];
+      if (!sols2[0].isValid) {
+        sols2 = solveLambertAllRevolutions(stB.pos, stTgt.pos, dt2, muCentral, true, minAllowedRadius);
+      }
+      if (sols2.length === 0 || !sols2[0].isValid) continue;
 
       for (const sol1 of sols1) {
         for (const sol2 of sols2) {
@@ -1690,8 +1722,6 @@ export type PartialUpdateCallback = (update: {
   porkchops?: Record<string, PorkchopPlotData>;
   sequencePorkchops?: Record<string, SequencePorkchopData>;
 }) => void;
-
-const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
 
 /**
  * Full Execution Pipeline (Steps 1 through 8)

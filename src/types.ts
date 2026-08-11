@@ -131,6 +131,8 @@ export interface PorkchopPlotData {
   validMatrix: boolean[][];
   vTransDepMatrix?: Vector3D[][];
   vTransArrMatrix?: Vector3D[][];
+  computedSamples?: number;
+  totalSamples?: number;
 }
 
 export interface SequencePorkchopData {

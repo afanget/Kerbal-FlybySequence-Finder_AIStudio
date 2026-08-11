@@ -3,15 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode } from '../types';
-import { formatUT, formatShortUT, formatDuration, daysToSeconds } from '../utils/timeFormat';
+import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
 import { getBodyStateAtUT, getGravitationalParameter, stateToOrbitalElements, Vector3D } from '../physics/kepler';
 import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath } from '../physics/solver';
+import { compute3BodyConsolidatedRangesAsync, LinkEndDateRanges, Sequence3BodyConsolidatedRange } from '../physics/tisserandRanges';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
 import * as XLSX from 'xlsx';
-import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, SlidersHorizontal, RefreshCw, Terminal, CheckCircle2, XCircle, Compass, Activity, Plus, Trash2, ArrowUp, ArrowDown, Layers, ListFilter, X, ChevronUp, ChevronDown } from 'lucide-react';
+import { Download, ArrowUpDown, ChevronLeft, ChevronRight, Eye, ShieldCheck, Sliders, SlidersHorizontal, RefreshCw, Terminal, CheckCircle2, XCircle, Compass, Activity, Plus, Trash2, ArrowUp, ArrowDown, Layers, ListFilter, X, ChevronUp, ChevronDown, Calendar, GitMerge } from 'lucide-react';
 
 export interface SortRule {
   id: string;
@@ -82,6 +83,100 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [expandedSeqId, setExpandedSeqId] = useState<string | null>(null);
   const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
   const [selectedInstanceFilter, setSelectedInstanceFilter] = useState<string>('ALL');
+  const [isSequencePorkchopsFolded, setIsSequencePorkchopsFolded] = useState<boolean>(true);
+  const [tisserandRangesTab, setTisserandRangesTab] = useState<'3body' | 'links'>('3body');
+
+  // Asynchronous state for Tisserand date range calculations
+  const [linkEndRangesMap, setLinkEndRangesMap] = useState<Record<string, LinkEndDateRanges>>({});
+  const [sequence3BodyRangesList, setSequence3BodyRangesList] = useState<Sequence3BodyConsolidatedRange[]>([]);
+  const [isCalculatingTisserandRanges, setIsCalculatingTisserandRanges] = useState<boolean>(false);
+  const [tisserandProgress, setTisserandProgress] = useState<number>(0);
+  const [tisserandStatusText, setTisserandStatusText] = useState<string>('');
+
+  useEffect(() => {
+    if (!instances || instances.length === 0 || !links || links.length === 0 || !mainBody) {
+      setLinkEndRangesMap({});
+      setSequence3BodyRangesList([]);
+      setIsCalculatingTisserandRanges(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsCalculatingTisserandRanges(true);
+    setTisserandProgress(0);
+    setTisserandStatusText('Initializing Tisserand date range calculation...');
+
+    compute3BodyConsolidatedRangesAsync(
+      instances,
+      links,
+      bodies,
+      mainBody,
+      timeFormatMode,
+      (progress, status) => {
+        if (isMounted) {
+          setTisserandProgress(progress);
+          setTisserandStatusText(status);
+        }
+      }
+    ).then(res => {
+      if (isMounted) {
+        setLinkEndRangesMap(res.linkEndRangesMap);
+        setSequence3BodyRangesList(res.sequence3BodyRangesList);
+        setIsCalculatingTisserandRanges(false);
+      }
+    }).catch(err => {
+      console.error("Failed to compute Tisserand date ranges:", err);
+      if (isMounted) {
+        setIsCalculatingTisserandRanges(false);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [instances, links, bodies, mainBody, timeFormatMode]);
+
+  const linkEndRangesList = useMemo(() => {
+    return Object.values(linkEndRangesMap);
+  }, [linkEndRangesMap]);
+
+  const handleExportTisserandRangesToExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    const seqDataForExport = sequence3BodyRangesList.map(item => {
+      const daysOver = secondsToDays(item.overlapDurationSec, timeFormatMode).toFixed(2);
+      return {
+        '3-Body Sequence': item.sequenceLabel,
+        'Flyby Body': item.flybyInstance.bodyName,
+        'Link 1 Arrival Window': `${formatShortUT(item.link1ArrMin, timeFormatMode)} - ${formatShortUT(item.link1ArrMax, timeFormatMode)}`,
+        'Link 2 Departure Window': `${formatShortUT(item.link2DepMin, timeFormatMode)} - ${formatShortUT(item.link2DepMax, timeFormatMode)}`,
+        'Consolidated Flyby Window (Intersection)': item.hasFlybyOverlap
+          ? `${formatShortUT(item.consolidatedFlybyMin, timeFormatMode)} - ${formatShortUT(item.consolidatedFlybyMax, timeFormatMode)}`
+          : 'NO OVERLAP',
+        'Flyby Window Overlap Status': item.hasFlybyOverlap ? `Overlap (${daysOver}d)` : `Disjoint (-${daysOver}d gap)`,
+        'Consolidated Departure Window': `${formatShortUT(item.consolidatedDepMin, timeFormatMode)} - ${formatShortUT(item.consolidatedDepMax, timeFormatMode)}`,
+        'Consolidated Arrival Window': `${formatShortUT(item.consolidatedArrMin, timeFormatMode)} - ${formatShortUT(item.consolidatedArrMax, timeFormatMode)}`
+      };
+    });
+    const ws1 = XLSX.utils.json_to_sheet(seqDataForExport);
+    XLSX.utils.book_append_sheet(wb, ws1, '3-Body Consolidated Ranges');
+
+    const linkDataForExport = linkEndRangesList.map(item => {
+      return {
+        'Link': `${item.sourceBodyName} ➔ ${item.targetBodyName}`,
+        'Departure End Target Vinf (m/s)': `${item.depTargetVinfRange.minMs.toFixed(0)} - ${item.depTargetVinfRange.maxMs.toFixed(0)}`,
+        'Departure End Date Range': `${formatShortUT(item.depDateMin, timeFormatMode)} - ${formatShortUT(item.depDateMax, timeFormatMode)}`,
+        'Departure Vinf Achieved (m/s)': `${item.depVinfMin.toFixed(0)} - ${item.depVinfMax.toFixed(0)}`,
+        'Arrival End Target Vinf (m/s)': `${item.arrTargetVinfRange.minMs.toFixed(0)} - ${item.arrTargetVinfRange.maxMs.toFixed(0)}`,
+        'Arrival End Date Range': `${formatShortUT(item.arrDateMin, timeFormatMode)} - ${formatShortUT(item.arrDateMax, timeFormatMode)}`,
+        'Arrival Vinf Achieved (m/s)': `${item.arrVinfMin.toFixed(0)} - ${item.arrVinfMax.toFixed(0)}`
+      };
+    });
+    const ws2 = XLSX.utils.json_to_sheet(linkDataForExport);
+    XLSX.utils.book_append_sheet(wb, ws2, 'Link Ends Date Ranges');
+
+    XLSX.writeFile(wb, `Tisserand_Date_Ranges_${Date.now()}.xlsx`);
+  };
 
   // Compute all candidate sequence paths (N >= 3, full paths and subsequences) directly from input graph
   const candidateSequencePaths = useMemo(() => {
@@ -522,129 +617,363 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         </div>
       </div>
 
-      {/* Sequence Porkchops Banners by Instance Count (Available directly from input graph) */}
-      {candidateInstanceCounts.length > 0 && (
-        <div className="flex flex-col gap-3">
-          {/* Instance Count Filter Bar when multiple counts exist */}
-          {candidateInstanceCounts.length > 1 && (
-            <div className="bg-[#25262B] px-3 py-2 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
-                <Compass className="w-4 h-4 text-[#38BDF8]" />
-                <span>Multi-Instance Sequence Porkchops</span>
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  onClick={() => setSelectedInstanceFilter('ALL')}
-                  className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
-                    selectedInstanceFilter === 'ALL'
-                      ? 'bg-[#38BDF8] text-black font-bold'
-                      : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
-                  }`}
-                >
-                  All ({candidateSequencePaths.length})
-                </button>
-                {candidateInstanceCounts.map(count => (
+      {/* Tisserand-Filtered Date Ranges & 3-Body Sequence Intersections */}
+      {(isCalculatingTisserandRanges || sequence3BodyRangesList.length > 0 || linkEndRangesList.length > 0) && (
+        <div className="bg-[#25262B] p-3.5 rounded border border-[#2D2E33] flex flex-col gap-3 text-xs shadow-sm">
+          {/* Section Header with Tabs & Export */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2D2E33] pb-2.5">
+            <div className="flex items-center gap-2">
+              <GitMerge className="w-4 h-4 text-emerald-400" />
+              <span className="font-bold text-white uppercase tracking-wider text-xs">
+                Tisserand v_inf Filtered Date Ranges & 3-Body Intersections
+              </span>
+              <span className="text-[10px] text-[#94A3B8] font-mono hidden sm:inline">
+                (0.01d dichotomic bisection precision)
+              </span>
+            </div>
+
+            {!isCalculatingTisserandRanges && (
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Tab selector */}
+                <div className="flex items-center bg-[#1A1B1E] p-0.5 rounded border border-[#2D2E33]">
                   <button
-                    key={count}
-                    onClick={() => setSelectedInstanceFilter(String(count))}
-                    className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
-                      selectedInstanceFilter === String(count)
+                    onClick={() => setTisserandRangesTab('3body')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
+                      tisserandRangesTab === '3body'
                         ? 'bg-[#38BDF8] text-black font-bold'
-                        : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
+                        : 'text-[#94A3B8] hover:text-white'
                     }`}
                   >
-                    {count}-Instance ({groupedCandidatePaths[count]?.length || 0})
+                    <GitMerge className="w-3.5 h-3.5" />
+                    <span>3-Body Consolidated Intersections ({sequence3BodyRangesList.length})</span>
                   </button>
-                ))}
+                  <button
+                    onClick={() => setTisserandRangesTab('links')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
+                      tisserandRangesTab === 'links'
+                        ? 'bg-[#38BDF8] text-black font-bold'
+                        : 'text-[#94A3B8] hover:text-white'
+                    }`}
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>Link Ends Date Ranges ({linkEndRangesList.length})</span>
+                  </button>
+                </div>
+
+                {/* Export XLSX button */}
+                <button
+                  onClick={handleExportTisserandRangesToExcel}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-cyan-300 border border-cyan-500/40 rounded text-[11px] font-semibold transition cursor-pointer"
+                  title="Export Tisserand date ranges to Excel"
+                >
+                  <Download className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Export XLSX</span>
+                </button>
               </div>
+            )}
+          </div>
+
+          {isCalculatingTisserandRanges ? (
+            <div className="bg-[#1A1B1E] border border-[#2D2E33] rounded-lg p-5 flex flex-col items-center justify-center gap-2.5 text-slate-300 my-1">
+              <div className="flex items-center gap-2 font-mono text-xs text-[#38BDF8] font-semibold">
+                <RefreshCw className="w-4 h-4 animate-spin text-[#38BDF8]" />
+                <span>Calculating Tisserand v_inf Date Ranges ({tisserandProgress}%)...</span>
+              </div>
+              <div className="w-full max-w-md bg-[#25262B] h-2.5 rounded-full overflow-hidden border border-[#33353A]">
+                <div
+                  className="bg-[#38BDF8] h-full transition-all duration-150 ease-out"
+                  style={{ width: `${tisserandProgress}%` }}
+                />
+              </div>
+              <div className="text-[11px] font-mono text-[#94A3B8]">
+                {tisserandStatusText || 'Evaluating orbital transfers in background thread...'}
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Tab 1: 3-Body Sequence Consolidated Date Ranges */}
+          {tisserandRangesTab === '3body' && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#1D1E22] text-[#94A3B8] font-mono text-[11px] uppercase tracking-wider border-b border-[#2D2E33]">
+                    <th className="p-2">3-Body Sequence</th>
+                    <th className="p-2">Flyby Body</th>
+                    <th className="p-2">Link 1 Arrival Window</th>
+                    <th className="p-2">Link 2 Departure Window</th>
+                    <th className="p-2">Consolidated Flyby Window (Intersection)</th>
+                    <th className="p-2">Overlap Status</th>
+                    <th className="p-2">Consolidated Departure</th>
+                    <th className="p-2">Consolidated Arrival</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#2D2E33]/50 font-mono text-xs">
+                  {sequence3BodyRangesList.map(item => {
+                    const overlapDays = secondsToDays(item.overlapDurationSec, timeFormatMode).toFixed(2);
+                    return (
+                      <tr key={item.sequenceId} className="hover:bg-[#2D2E33]/40 transition">
+                        <td className="p-2 font-bold text-white whitespace-nowrap">
+                          {item.sequenceLabel}
+                        </td>
+                        <td className="p-2 text-[#38BDF8] font-semibold">
+                          {item.flybyInstance.bodyName}
+                        </td>
+                        <td className="p-2 text-[#94A3B8] whitespace-nowrap">
+                          {formatShortUT(item.link1ArrMin, timeFormatMode)} ➔ {formatShortUT(item.link1ArrMax, timeFormatMode)}
+                        </td>
+                        <td className="p-2 text-[#94A3B8] whitespace-nowrap">
+                          {formatShortUT(item.link2DepMin, timeFormatMode)} ➔ {formatShortUT(item.link2DepMax, timeFormatMode)}
+                        </td>
+                        <td className="p-2 font-bold whitespace-nowrap">
+                          {item.hasFlybyOverlap ? (
+                            <span className="text-emerald-400">
+                              {formatShortUT(item.consolidatedFlybyMin, timeFormatMode)} ➔ {formatShortUT(item.consolidatedFlybyMax, timeFormatMode)}
+                            </span>
+                          ) : (
+                            <span className="text-rose-400 font-normal">
+                              No Overlap ({formatShortUT(item.consolidatedFlybyMin, timeFormatMode)} vs {formatShortUT(item.consolidatedFlybyMax, timeFormatMode)})
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-2 whitespace-nowrap">
+                          {item.hasFlybyOverlap ? (
+                            <span className="bg-emerald-950/60 text-emerald-300 border border-emerald-500/50 text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                              Overlap ({overlapDays}d)
+                            </span>
+                          ) : (
+                            <span className="bg-rose-950/60 text-rose-300 border border-rose-500/50 text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                              Disjoint (-{overlapDays}d gap)
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-2 text-[#E2E8F0] whitespace-nowrap">
+                          {formatShortUT(item.consolidatedDepMin, timeFormatMode)} ➔ {formatShortUT(item.consolidatedDepMax, timeFormatMode)}
+                        </td>
+                        <td className="p-2 text-[#E2E8F0] whitespace-nowrap">
+                          {formatShortUT(item.consolidatedArrMin, timeFormatMode)} ➔ {formatShortUT(item.consolidatedArrMax, timeFormatMode)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {sequence3BodyRangesList.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="p-4 text-center text-[#94A3B8] italic">
+                        No 3-body sequences found in the current graph. Add a 2-hop path (e.g. A ➔ B ➔ C) on the graph editor above to calculate consolidated date ranges!
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           )}
 
-          {candidateInstanceCounts
-            .filter(count => selectedInstanceFilter === 'ALL' || selectedInstanceFilter === String(count))
-            .map(count => {
-              const cands = groupedCandidatePaths[count] || [];
-              return (
-                <div key={count} className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
-                      <Compass className="w-4 h-4 text-[#38BDF8]" />
-                      <span>{count}-Instance Sequence Porkchops</span>
-                    </div>
-                    <span className="text-[11px] font-mono text-[#94A3B8]">
-                      {cands.length} sequence path(s)
-                    </span>
+          {/* Tab 2: Link Ends Date Ranges */}
+          {tisserandRangesTab === 'links' && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#1D1E22] text-[#94A3B8] font-mono text-[11px] uppercase tracking-wider border-b border-[#2D2E33]">
+                    <th className="p-2">Link</th>
+                    <th className="p-2">Departure Target v_inf</th>
+                    <th className="p-2">Departure End Date Range</th>
+                    <th className="p-2">Departure v_inf Achieved</th>
+                    <th className="p-2">Arrival Target v_inf</th>
+                    <th className="p-2">Arrival End Date Range</th>
+                    <th className="p-2">Arrival v_inf Achieved</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#2D2E33]/50 font-mono text-xs">
+                  {linkEndRangesList.map(item => (
+                    <tr key={item.linkId} className="hover:bg-[#2D2E33]/40 transition">
+                      <td className="p-2 font-bold text-white whitespace-nowrap">
+                        {item.sourceBodyName} ➔ {item.targetBodyName}
+                      </td>
+                      <td className="p-2 text-[#38BDF8] whitespace-nowrap">
+                        {item.depTargetVinfRange.minMs.toFixed(0)} - {item.depTargetVinfRange.maxMs.toFixed(0)} m/s
+                      </td>
+                      <td className="p-2 text-emerald-400 font-semibold whitespace-nowrap">
+                        {item.hasValidDepRange
+                          ? `${formatShortUT(item.depDateMin, timeFormatMode)} ➔ ${formatShortUT(item.depDateMax, timeFormatMode)}`
+                          : 'No valid range'}
+                      </td>
+                      <td className="p-2 text-[#E2E8F0] whitespace-nowrap">
+                        {item.depVinfMin.toFixed(0)} - {item.depVinfMax.toFixed(0)} m/s
+                      </td>
+                      <td className="p-2 text-[#38BDF8] whitespace-nowrap">
+                        {item.arrTargetVinfRange.minMs.toFixed(0)} - {item.arrTargetVinfRange.maxMs.toFixed(0)} m/s
+                      </td>
+                      <td className="p-2 text-emerald-400 font-semibold whitespace-nowrap">
+                        {item.hasValidArrRange
+                          ? `${formatShortUT(item.arrDateMin, timeFormatMode)} ➔ ${formatShortUT(item.arrDateMax, timeFormatMode)}`
+                          : 'No valid range'}
+                      </td>
+                      <td className="p-2 text-[#E2E8F0] whitespace-nowrap">
+                        {item.arrVinfMin.toFixed(0)} - {item.arrVinfMax.toFixed(0)} m/s
+                      </td>
+                    </tr>
+                  ))}
+                  {linkEndRangesList.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="p-4 text-center text-[#94A3B8] italic">
+                        No directional links found. Connect nodes on the canvas above to compute link end date ranges!
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )}
+
+      {/* Sequence Porkchops Banners by Instance Count (Foldable - folded by default) */}
+      {candidateInstanceCounts.length > 0 && (
+        <div className="bg-[#25262B] rounded border border-[#2D2E33] overflow-hidden flex flex-col shadow-sm">
+          {/* Fold Header Toggle Button */}
+          <button
+            onClick={() => setIsSequencePorkchopsFolded(!isSequencePorkchopsFolded)}
+            className="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-bold text-white uppercase tracking-wider bg-[#2D2E33]/40 hover:bg-[#2D2E33] transition cursor-pointer select-none"
+          >
+            <div className="flex items-center gap-2">
+              <Compass className="w-4 h-4 text-[#38BDF8]" />
+              <span>Multi-Instance / X-Instance Sequence Porkchops</span>
+              <span className="text-[10px] text-[#94A3B8] font-normal font-mono lowercase">
+                ({candidateSequencePaths.length} sequence path(s) available)
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-[#94A3B8] text-[11px] font-mono font-normal">
+              <span>{isSequencePorkchopsFolded ? 'Show / Unfold' : 'Hide / Fold'}</span>
+              {isSequencePorkchopsFolded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+            </div>
+          </button>
+
+          {/* Unfolded Content */}
+          {!isSequencePorkchopsFolded && (
+            <div className="p-3 flex flex-col gap-3">
+              {/* Instance Count Filter Bar when multiple counts exist */}
+              {candidateInstanceCounts.length > 1 && (
+                <div className="bg-[#1E1F23] px-3 py-2 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+                    <Compass className="w-4 h-4 text-[#38BDF8]" />
+                    <span>Filter by Instance Count:</span>
                   </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {cands.map(cand => {
-                      const isComputed = !!sequencePorkchops?.[cand.id];
-                      const isThisComputing = computingSeqId === cand.id;
-                      const isFull = cand.isFullPath;
-
-                      return (
-                        <button
-                          key={cand.id}
-                          onClick={() => {
-                            if (isComputed) {
-                              onOpenSequencePorkchop?.(cand.id);
-                            } else {
-                              onComputeSequencePorkchop?.(cand.id, cand.pathInsts, cand.isFullPath);
-                            }
-                          }}
-                          disabled={isThisComputing}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded transition text-xs font-mono font-medium shadow-sm cursor-pointer border ${
-                            isFull
-                              ? isComputed
-                                ? 'bg-cyan-950/40 hover:bg-cyan-900/50 border-cyan-500/50 text-cyan-300'
-                                : 'bg-[#18181B] hover:bg-[#27272A] border-cyan-600/40 text-cyan-400'
-                              : isComputed
-                                ? 'bg-purple-950/40 hover:bg-purple-900/50 border-purple-500/50 text-purple-300'
-                                : 'bg-[#18181B] hover:bg-[#27272A] border-purple-600/40 text-purple-400'
-                          }`}
-                          title={isComputed ? `View computed ${isFull ? 'full-path' : 'subsequence'} porkchop plot` : `Compute this ${isFull ? 'full-path' : 'subsequence'} porkchop plot`}
-                        >
-                          {isThisComputing ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#60A5FA]" />
-                          ) : isComputed ? (
-                            <Activity className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
-                          ) : (
-                            <Compass className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
-                          )}
-                          <span>{cand.sequenceLabel} Porkchop Plot</span>
-
-                          {/* Full Path vs Subsequence badge */}
-                          {isFull ? (
-                            <span className="bg-[#38BDF8]/20 text-[#38BDF8] text-[9px] px-1.5 py-0.5 rounded border border-[#38BDF8]/40 font-bold uppercase tracking-wider">
-                              Full Path
-                            </span>
-                          ) : (
-                            <span className="bg-purple-500/20 text-purple-300 text-[9px] px-1.5 py-0.5 rounded border border-purple-500/40 font-bold uppercase tracking-wider">
-                              Subsequence
-                            </span>
-                          )}
-
-                          {/* Status Badge */}
-                          {isComputed ? (
-                            <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.2 rounded border border-emerald-500/30 font-semibold">
-                              Ready
-                            </span>
-                          ) : (
-                            <span className={`text-[9px] px-1.5 py-0.2 rounded border font-semibold flex items-center gap-1 ${
-                              isFull
-                                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                                : 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                            }`}>
-                              {isThisComputing ? 'Computing...' : 'Compute'}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={() => setSelectedInstanceFilter('ALL')}
+                      className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+                        selectedInstanceFilter === 'ALL'
+                          ? 'bg-[#38BDF8] text-black font-bold'
+                          : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
+                      }`}
+                    >
+                      All ({candidateSequencePaths.length})
+                    </button>
+                    {candidateInstanceCounts.map(count => (
+                      <button
+                        key={count}
+                        onClick={() => setSelectedInstanceFilter(String(count))}
+                        className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+                          selectedInstanceFilter === String(count)
+                            ? 'bg-[#38BDF8] text-black font-bold'
+                            : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
+                        }`}
+                      >
+                        {count}-Instance ({groupedCandidatePaths[count]?.length || 0})
+                      </button>
+                    ))}
                   </div>
                 </div>
-              );
-            })}
+              )}
+
+              {candidateInstanceCounts
+                .filter(count => selectedInstanceFilter === 'ALL' || selectedInstanceFilter === String(count))
+                .map(count => {
+                  const cands = groupedCandidatePaths[count] || [];
+                  return (
+                    <div key={count} className="bg-[#1E1F23] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+                          <Compass className="w-4 h-4 text-[#38BDF8]" />
+                          <span>{count}-Instance Sequence Porkchops</span>
+                        </div>
+                        <span className="text-[11px] font-mono text-[#94A3B8]">
+                          {cands.length} sequence path(s)
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {cands.map(cand => {
+                          const isComputed = !!sequencePorkchops?.[cand.id];
+                          const isThisComputing = computingSeqId === cand.id;
+                          const isFull = cand.isFullPath;
+
+                          return (
+                            <button
+                              key={cand.id}
+                              onClick={() => {
+                                if (isComputed) {
+                                  onOpenSequencePorkchop?.(cand.id);
+                                } else {
+                                  onComputeSequencePorkchop?.(cand.id, cand.pathInsts, cand.isFullPath);
+                                }
+                              }}
+                              disabled={isThisComputing}
+                              className={`flex items-center gap-2 px-3 py-1.5 rounded transition text-xs font-mono font-medium shadow-sm cursor-pointer border ${
+                                isFull
+                                  ? isComputed
+                                    ? 'bg-cyan-950/40 hover:bg-cyan-900/50 border-cyan-500/50 text-cyan-300'
+                                    : 'bg-[#18181B] hover:bg-[#27272A] border-cyan-600/40 text-cyan-400'
+                                  : isComputed
+                                    ? 'bg-purple-950/40 hover:bg-purple-900/50 border-purple-500/50 text-purple-300'
+                                    : 'bg-[#18181B] hover:bg-[#27272A] border-purple-600/40 text-purple-400'
+                              }`}
+                              title={isComputed ? `View computed ${isFull ? 'full-path' : 'subsequence'} porkchop plot` : `Compute this ${isFull ? 'full-path' : 'subsequence'} porkchop plot`}
+                            >
+                              {isThisComputing ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#60A5FA]" />
+                              ) : isComputed ? (
+                                <Activity className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
+                              ) : (
+                                <Compass className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
+                              )}
+                              <span>{cand.sequenceLabel} Porkchop Plot</span>
+
+                              {/* Full Path vs Subsequence badge */}
+                              {isFull ? (
+                                <span className="bg-[#38BDF8]/20 text-[#38BDF8] text-[9px] px-1.5 py-0.5 rounded border border-[#38BDF8]/40 font-bold uppercase tracking-wider">
+                                  Full Path
+                                </span>
+                              ) : (
+                                <span className="bg-purple-500/20 text-purple-300 text-[9px] px-1.5 py-0.5 rounded border border-purple-500/40 font-bold uppercase tracking-wider">
+                                  Subsequence
+                                </span>
+                              )}
+
+                              {/* Status Badge */}
+                              {isComputed ? (
+                                <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.2 rounded border border-emerald-500/30 font-semibold">
+                                  Ready
+                                </span>
+                              ) : (
+                                <span className={`text-[9px] px-1.5 py-0.2 rounded border font-semibold flex items-center gap-1 ${
+                                  isFull
+                                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                                    : 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                }`}>
+                                  {isThisComputing ? 'Computing...' : 'Compute'}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
         </div>
       )}
 

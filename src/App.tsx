@@ -27,6 +27,7 @@ import { AutotestModal } from './components/AutotestModal';
 import {
   runSequenceSearch,
   runSequenceSearchAlt,
+  computePorkchopPlot,
   computeNBodySequencePorkchopPlot,
   findAllSubPathsInGraph,
   propagateDateBounds,
@@ -62,10 +63,80 @@ export default function App() {
   const stopSearchRef = useRef<boolean>(false);
 
   const [computingSeqId, setComputingSeqId] = useState<string | null>(null);
+  const [computingLinkId, setComputingLinkId] = useState<string | null>(null);
 
   const handleStopSearch = () => {
     stopSearchRef.current = true;
     setSearchStatusText('Stopping search...');
+  };
+
+  const handleComputeSingleLinkPorkchop = async (linkId: string, forceRecompute = false) => {
+    setPorkchopModalLinkId(linkId);
+
+    if (!forceRecompute && porkchops[linkId] && porkchops[linkId].c3DepMatrix && porkchops[linkId].c3DepMatrix.length > 0) {
+      return;
+    }
+
+    const link = links.find(l => l.id === linkId);
+    if (!link) return;
+    const srcInstance = instances.find(i => i.id === link.sourceInstanceId);
+    const tgtInstance = instances.find(i => i.id === link.targetInstanceId);
+    if (!srcInstance || !tgtInstance) return;
+
+    const { srcDates, tgtDates } = countPossibleTransfers(link, srcInstance, tgtInstance);
+
+    // Initialize porkchop state immediately so modal opens on frame 1
+    if (!porkchops[linkId] || forceRecompute) {
+      const initialPcData: PorkchopPlotData = {
+        linkId,
+        sourceBody: srcInstance.bodyName,
+        targetBody: tgtInstance.bodyName,
+        depDates: srcDates,
+        arrDates: tgtDates,
+        c3DepMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(Infinity)),
+        c3ArrMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(Infinity)),
+        dvMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(Infinity)),
+        flightTimeMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(0)),
+        validMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(false)),
+        vTransDepMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: 0, y: 0, z: 0 })),
+        vTransArrMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: 0, y: 0, z: 0 })),
+        computedSamples: 0,
+        totalSamples: srcDates.length * tgtDates.length,
+      };
+      setPorkchops(prev => ({ ...prev, [linkId]: initialPcData }));
+    }
+
+    setComputingLinkId(linkId);
+
+    // Yield to the browser event loop so React flushes state and paints PorkchopViewer immediately
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    try {
+      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const pcData = await computePorkchopPlot(
+        link,
+        srcInstance,
+        tgtInstance,
+        currentSystem.bodies,
+        mainBody,
+        (msg) => setSearchStatusText(msg),
+        (partialPcData) => {
+          setPorkchops(prev => ({
+            ...prev,
+            [linkId]: partialPcData
+          }));
+        },
+        () => stopSearchRef.current
+      );
+      setPorkchops(prev => ({
+        ...prev,
+        [linkId]: pcData
+      }));
+    } catch (err) {
+      console.error('Error computing single porkchop:', err);
+    } finally {
+      setComputingLinkId(null);
+    }
   };
 
   const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => {
@@ -548,11 +619,7 @@ export default function App() {
             onRemoveLink={handleRemoveLink}
             onUpdateInstancePosition={handleUpdateInstancePosition}
             onOpenPorkchopModal={(linkId) => {
-              // Ensure porkchop is computed or trigger computation
-              if (!porkchops[linkId]) {
-                handleSearchSequences();
-              }
-              setPorkchopModalLinkId(linkId);
+              handleComputeSingleLinkPorkchop(linkId);
             }}
           />
         </section>
@@ -622,6 +689,12 @@ export default function App() {
         <PorkchopViewer
           porkchop={activePorkchop}
           timeFormatMode={timeFormatMode}
+          isComputing={computingLinkId === porkchopModalLinkId}
+          onRecompute={() => {
+            if (porkchopModalLinkId) {
+              handleComputeSingleLinkPorkchop(porkchopModalLinkId, true);
+            }
+          }}
           onClose={() => setPorkchopModalLinkId(null)}
         />
       )}

@@ -6,17 +6,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { PorkchopPlotData } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
-import { X, Activity, Layers, Crosshair } from 'lucide-react';
+import { X, Activity, Layers, Crosshair, RefreshCw } from 'lucide-react';
 
 interface PorkchopViewerProps {
   porkchop: PorkchopPlotData;
   timeFormatMode: 'ksp' | 'earth';
+  isComputing?: boolean;
+  onRecompute?: () => void;
   onClose: () => void;
 }
 
 export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
   porkchop,
   timeFormatMode,
+  isComputing,
+  onRecompute,
   onClose,
 }) => {
   const [viewMode, setViewMode] = useState<'c3Dep' | 'c3Arr' | 'dvTotal'>('c3Dep');
@@ -36,6 +40,8 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
 
   const nDep = porkchop.depDates.length;
   const nArr = porkchop.arrDates.length;
+  const totalSamples = porkchop.totalSamples ?? (nDep * nArr);
+  const computedSamples = porkchop.computedSamples ?? (isComputing ? 0 : totalSamples);
 
   // Find min & max values for scale mapping
   let minVal = Infinity;
@@ -163,6 +169,31 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onRecompute ? (
+              <button
+                onClick={onRecompute}
+                disabled={isComputing}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono transition border ${
+                  isComputing
+                    ? 'bg-[#38BDF8]/10 text-[#38BDF8] border-[#38BDF8]/30 cursor-wait animate-pulse'
+                    : 'bg-[#25262B] hover:bg-[#334155] border-[#2D2E33] text-[#94A3B8] hover:text-white cursor-pointer'
+                }`}
+                title={isComputing ? `Computing... (${computedSamples}/${totalSamples} samples)` : 'Recompute this single transfer plot'}
+              >
+                <RefreshCw className={`w-3 h-3 ${isComputing ? 'animate-spin text-[#38BDF8]' : ''}`} />
+                <span>
+                  {isComputing
+                    ? `Computing (${computedSamples}/${totalSamples})`
+                    : 'Recompute'}
+                </span>
+              </button>
+            ) : isComputing ? (
+              <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[#38BDF8]/10 border border-[#38BDF8]/30 text-[#38BDF8] rounded text-[11px] font-mono animate-pulse">
+                <RefreshCw className="w-3 h-3 animate-spin text-[#38BDF8]" />
+                <span>Computing ({computedSamples}/${totalSamples})</span>
+              </span>
+            ) : null}
+
             {/* View Mode Toggle */}
             <div className="flex bg-[#25262B] p-1 rounded border border-[#2D2E33] text-[11px] font-mono uppercase tracking-wider">
               <button
