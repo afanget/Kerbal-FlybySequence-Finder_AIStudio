@@ -749,6 +749,14 @@ export function getHierarchicalGridIndices(nRows: number, nCols: number): { pass
 
 const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
 
+export function shallowClonePorkchopData(pcData: PorkchopPlotData): PorkchopPlotData {
+  return {
+    ...pcData,
+    computedSamples: pcData.computedSamples,
+    totalSamples: pcData.totalSamples,
+  };
+}
+
 export function clonePorkchopData(pcData: PorkchopPlotData): PorkchopPlotData {
   return {
     ...pcData,
@@ -822,7 +830,7 @@ export async function computePorkchopPlot(
   };
 
   // Immediate update to open window instantly with initial blank grid
-  onPartialUpdatePorkchop?.(clonePorkchopData(pcData), 0);
+  onPartialUpdatePorkchop?.(shallowClonePorkchopData(pcData), 0);
   await yieldUI();
 
   let validCount = 0;
@@ -918,10 +926,10 @@ export async function computePorkchopPlot(
       }
 
       const now = performance.now();
-      // Yield execution every 30ms so the browser event loop remains fully responsive
-      if (now - lastYieldTime > 30) {
+      // Yield execution every 25ms so the browser event loop remains responsive
+      if (now - lastYieldTime > 25) {
         lastYieldTime = now;
-        // Throttle full matrix deep cloning & React state updates to every 10s
+        // Throttle UI updates to every 120ms (smooth ~8 FPS updates without deep cloning overhead)
         if (now - lastUpdateDataTime > 10000) {
           lastUpdateDataTime = now;
           pcData.computedSamples = computedPointsCount;
@@ -930,7 +938,7 @@ export async function computePorkchopPlot(
           onProgress?.(
             `Computing ${srcInstance.bodyName}-${tgtInstance.bodyName} porkchop plot (${pct}%, ${validCount} valid transfers)...`
           );
-          onPartialUpdatePorkchop?.(clonePorkchopData(pcData), validCount);
+          onPartialUpdatePorkchop?.(shallowClonePorkchopData(pcData), validCount);
         }
         await yieldUI();
       }
@@ -938,15 +946,15 @@ export async function computePorkchopPlot(
 
     pcData.computedSamples = computedPointsCount;
     pcData.totalSamples = totalPoints;
-    onPartialUpdatePorkchop?.(clonePorkchopData(pcData), validCount);
+    onPartialUpdatePorkchop?.(shallowClonePorkchopData(pcData), validCount);
     await yieldUI();
   }
 
   pcData.computedSamples = computedPointsCount;
   pcData.totalSamples = totalPoints;
-  const finalClone = clonePorkchopData(pcData);
-  onPartialUpdatePorkchop?.(finalClone, validCount);
-  return finalClone;
+  const finalResult = shallowClonePorkchopData(pcData);
+  onPartialUpdatePorkchop?.(finalResult, validCount);
+  return finalResult;
 }
 
 /**

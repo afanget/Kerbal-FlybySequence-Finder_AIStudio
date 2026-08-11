@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { PorkchopPlotData } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
-import { X, Activity, Layers, Crosshair, RefreshCw } from 'lucide-react';
+import { X, Activity, Layers, Crosshair, RefreshCw, Calendar } from 'lucide-react';
 
 interface PorkchopViewerProps {
   porkchop: PorkchopPlotData;
@@ -43,32 +43,96 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
   const totalSamples = porkchop.totalSamples ?? (nDep * nArr);
   const computedSamples = porkchop.computedSamples ?? (isComputing ? 0 : totalSamples);
 
-  // Find min & max values for scale mapping
-  let minVal = Infinity;
-  let maxVal = -Infinity;
+  // Find min & max values for scale mapping (memoized for high performance)
+  const { minVal, maxVal, effectiveMin, redCap, logRange } = useMemo(() => {
+    let min = Infinity;
+    let max = -Infinity;
 
-  for (let i = 0; i < nDep; i++) {
-    for (let j = 0; j < nArr; j++) {
-      if (porkchop.validMatrix[i]?.[j]) {
-        let val = 0;
-        if (viewMode === 'c3Dep') val = porkchop.c3DepMatrix[i][j];
-        else if (viewMode === 'c3Arr') val = porkchop.c3ArrMatrix[i][j];
-        else val = porkchop.dvMatrix[i][j];
+    const valid = porkchop.validMatrix;
+    let matrix = porkchop.dvMatrix;
+    if (viewMode === 'c3Dep') matrix = porkchop.c3DepMatrix;
+    else if (viewMode === 'c3Arr') matrix = porkchop.c3ArrMatrix;
 
-        if (val < minVal) minVal = val;
-        if (val > maxVal) maxVal = val;
+    if (valid && matrix) {
+      for (let i = 0; i < nDep; i++) {
+        const vRow = valid[i];
+        const mRow = matrix[i];
+        if (!vRow || !mRow) continue;
+        for (let j = 0; j < nArr; j++) {
+          if (vRow[j]) {
+            const val = mRow[j];
+            if (val < min) min = val;
+            if (val > max) max = val;
+          }
+        }
       }
     }
-  }
 
-  if (minVal === Infinity) {
-    minVal = 0;
-    maxVal = 100;
-  }
+    if (min === Infinity) {
+      min = 0;
+      max = 100;
+    }
 
-  const effectiveMin = Math.max(1e-4, minVal);
-  const redCap = effectiveMin * Math.pow(1.1, 16);
-  const logRange = Math.log(redCap / effectiveMin);
+    const effMin = Math.max(1e-4, min);
+    const red = effMin * Math.pow(1.1, 16);
+    const range = Math.log(red / effMin);
+
+    return { minVal: min, maxVal: max, effectiveMin: effMin, redCap: red, logRange: range };
+  }, [porkchop, viewMode, nDep, nArr]);
+
+  // Compute departure & arrival date windows based on first/last feasible columns (departure) and lines (arrival)
+  const dateWindows = useMemo(() => {
+    if (!porkchop.validMatrix || nDep === 0 || nArr === 0) {
+      return null;
+    }
+
+    let firstDepIdx = -1;
+    let lastDepIdx = -1;
+    let firstArrIdx = -1;
+    let lastArrIdx = -1;
+
+    // First and last departure columns (i) with at least one feasible sample
+    for (let i = 0; i < nDep; i++) {
+      const row = porkchop.validMatrix[i];
+      if (row && row.some(Boolean)) {
+        if (firstDepIdx === -1) firstDepIdx = i;
+        lastDepIdx = i;
+      }
+    }
+
+    // First and last arrival lines (j) with at least one feasible sample
+    for (let j = 0; j < nArr; j++) {
+      let hasFeasible = false;
+      for (let i = 0; i < nDep; i++) {
+        if (porkchop.validMatrix[i]?.[j]) {
+          hasFeasible = true;
+          break;
+        }
+      }
+      if (hasFeasible) {
+        if (firstArrIdx === -1) firstArrIdx = j;
+        lastArrIdx = j;
+      }
+    }
+
+    if (firstDepIdx === -1 || firstArrIdx === -1) {
+      return null;
+    }
+
+    const depStart = porkchop.depDates[firstDepIdx];
+    const depEnd = porkchop.depDates[lastDepIdx];
+    const arrStart = porkchop.arrDates[firstArrIdx];
+    const arrEnd = porkchop.arrDates[lastArrIdx];
+
+    return {
+      depStart,
+      depEnd,
+      depDuration: depEnd - depStart,
+      arrStart,
+      arrEnd,
+      arrDuration: arrEnd - arrStart,
+    };
+  }, [porkchop, nDep, nArr]);
 
   // Draw Heatmap Canvas
   useEffect(() => {
@@ -326,6 +390,41 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
               <div className="mt-4 pt-2 border-t border-[#2D2E33] text-[10px] text-[#94A3B8]">
                 Minimum energy transfer: <strong className="text-[#60A5FA] font-mono">{minVal.toFixed(2)} {viewMode === 'dvTotal' ? 'm/s' : 'km²/s²'}</strong>
               </div>
+            </div>
+
+            {/* Feasible Date Windows */}
+            <div className="bg-[#25262B] p-3.5 rounded border border-[#2D2E33] text-xs">
+              <span className="font-serif uppercase tracking-wider text-[11px] text-[#E2E8F0] flex items-center gap-1 mb-2">
+                <Calendar className="w-3.5 h-3.5 text-[#60A5FA]" /> Feasible Date Windows
+              </span>
+
+              {dateWindows ? (
+                <div className="space-y-2.5 font-mono text-[11px]">
+                  <div>
+                    <div className="text-[#94A3B8] text-[10px] uppercase tracking-wider mb-0.5 flex items-center justify-between">
+                      <span>Departure Window</span>
+                      <span className="text-[#60A5FA]">{formatDuration(dateWindows.depDuration, timeFormatMode)}</span>
+                    </div>
+                    <div className="text-[#E2E8F0] text-[11px] bg-[#1A1B1E] px-2 py-1 rounded border border-[#2D2E33]">
+                      {formatShortUT(dateWindows.depStart, timeFormatMode)} ➔ {formatShortUT(dateWindows.depEnd, timeFormatMode)}
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-[#2D2E33]">
+                    <div className="text-[#94A3B8] text-[10px] uppercase tracking-wider mb-0.5 flex items-center justify-between">
+                      <span>Arrival Window</span>
+                      <span className="text-[#60A5FA]">{formatDuration(dateWindows.arrDuration, timeFormatMode)}</span>
+                    </div>
+                    <div className="text-[#E2E8F0] text-[11px] bg-[#1A1B1E] px-2 py-1 rounded border border-[#2D2E33]">
+                      {formatShortUT(dateWindows.arrStart, timeFormatMode)} ➔ {formatShortUT(dateWindows.arrEnd, timeFormatMode)}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-[#64748B] italic text-[11px]">
+                  {isComputing ? 'Computing feasible windows...' : 'No feasible transfers found in this range.'}
+                </p>
+              )}
             </div>
           </div>
         </div>

@@ -4,9 +4,9 @@
  */
 
 import { InstanceNode, DirectionalLink, CelestialBody } from '../types';
-import { getBodyStateAtUT, vecMag, vecSub } from './kepler';
+import { getBodyStateAtUT, vecMag, vecSub, Vector3D } from './kepler';
 import { solveLambertBest } from './lambert';
-import { computeTisserandEnvelopes, findAllSubPathsInGraph, countPossibleTransfers } from './solver';
+import { computeTisserandEnvelopes, findAllSubPathsInGraph } from './solver';
 
 export interface LinkEndDateRanges {
   linkId: string;
@@ -67,156 +67,92 @@ export interface Sequence3BodyConsolidatedRange {
   consolidatedArrMax: number;
 }
 
-/**
- * Evaluates the optimal departure v_inf for a given departure date across a range of arrival dates.
- */
-function evalMinDepVinf(
-  depDate: number,
-  srcBody: CelestialBody,
-  tgtBody: CelestialBody,
-  mainBody: CelestialBody,
-  arrDates: number[],
-  minDur: number,
-  maxDur: number
-): { minDepVinfMs: number; minArrVinfMs: number; bestArrDate: number } {
-  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
-  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
-  const srcState = getBodyStateAtUT(srcBody, mainBody, depDate);
-
-  let minDepVinfMs = Infinity;
-  let minArrVinfMs = Infinity;
-  let bestArrDate = arrDates[0] || depDate + minDur;
-
-  for (const arrDate of arrDates) {
-    const dt = arrDate - depDate;
-    if (dt < minDur || dt > maxDur) continue;
-
-    const tgtState = getBodyStateAtUT(tgtBody, mainBody, arrDate);
-    const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
-
-    if (sol.isValid) {
-      const vInfDep = vecSub(sol.v1, srcState.vel);
-      const vInfArr = vecSub(sol.v2, tgtState.vel);
-      const depMag = vecMag(vInfDep);
-      const arrMag = vecMag(vInfArr);
-
-      if (depMag < minDepVinfMs) {
-        minDepVinfMs = depMag;
-        minArrVinfMs = arrMag;
-        bestArrDate = arrDate;
-      }
-    }
-  }
-
-  return { minDepVinfMs, minArrVinfMs, bestArrDate };
+interface LinkPorkchopGrid {
+  linkId: string;
+  srcInst: InstanceNode;
+  tgtInst: InstanceNode;
+  srcBody: CelestialBody;
+  tgtBody: CelestialBody;
+  srcEnv: { minMs: number; maxMs: number };
+  tgtEnv: { minMs: number; maxMs: number };
+  minDur: number;
+  maxDur: number;
+  srcMinDate: number;
+  srcMaxDate: number;
+  tgtMinDate: number;
+  tgtMaxDate: number;
+  depDates: number[];
+  arrDates: number[];
+  depStates: { pos: Vector3D; vel: Vector3D }[];
+  tgtStates: { pos: Vector3D; vel: Vector3D }[];
+  validMatrix: boolean[][];
 }
 
-/**
- * Evaluates the optimal arrival v_inf for a given arrival date across a range of departure dates.
- */
-function evalMinArrVinf(
-  arrDate: number,
-  srcBody: CelestialBody,
-  tgtBody: CelestialBody,
-  mainBody: CelestialBody,
-  depDates: number[],
-  minDur: number,
-  maxDur: number
-): { minArrVinfMs: number; minDepVinfMs: number; bestDepDate: number } {
-  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
-  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
-  const tgtState = getBodyStateAtUT(tgtBody, mainBody, arrDate);
-
-  let minArrVinfMs = Infinity;
-  let minDepVinfMs = Infinity;
-  let bestDepDate = depDates[0] || arrDate - minDur;
-
-  for (const depDate of depDates) {
-    const dt = arrDate - depDate;
-    if (dt < minDur || dt > maxDur) continue;
-
-    const srcState = getBodyStateAtUT(srcBody, mainBody, depDate);
-    const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
-
-    if (sol.isValid) {
-      const vInfDep = vecSub(sol.v1, srcState.vel);
-      const vInfArr = vecSub(sol.v2, tgtState.vel);
-      const depMag = vecMag(vInfDep);
-      const arrMag = vecMag(vInfArr);
-
-      if (arrMag < minArrVinfMs) {
-        minArrVinfMs = arrMag;
-        minDepVinfMs = depMag;
-        bestDepDate = depDate;
-      }
-    }
-  }
-
-  return { minArrVinfMs, minDepVinfMs, bestDepDate };
-}
+const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
 
 /**
- * Dichotomic (bisection) search to locate exact boundary date to 0.01 day precision.
+ * Bisection search to locate departure boundary date to high precision (~10 seconds).
  */
 function bisectDepBoundary(
   tValid: number,
   tInvalid: number,
+  depStatesSample: { pos: Vector3D; vel: Vector3D }[],
+  tgtDates: number[],
+  tgtStates: { pos: Vector3D; vel: Vector3D }[],
   srcBody: CelestialBody,
   tgtBody: CelestialBody,
   mainBody: CelestialBody,
-  arrDates: number[],
-  vInfMax: number,
+  srcInst: InstanceNode,
+  tgtInst: InstanceNode,
+  srcEnv: { minMs: number; maxMs: number },
+  tgtEnv: { minMs: number; maxMs: number },
   minDur: number,
   maxDur: number,
-  timeFormatMode: 'ksp' | 'earth'
+  arrMinLimit: number = -Infinity,
+  arrMaxLimit: number = Infinity
 ): number {
-  const secondsPerDay = timeFormatMode === 'ksp' ? 21600 : 86400;
-  const toleranceSec = 0.01 * secondsPerDay;
+  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
+  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
 
   let low = tValid;
   let high = tInvalid;
 
-  for (let iter = 0; iter < 25; iter++) {
-    if (Math.abs(high - low) <= toleranceSec) break;
-    const mid = (low + high) / 2;
-    const res = evalMinDepVinf(mid, srcBody, tgtBody, mainBody, arrDates, minDur, maxDur);
-    const isValid = res.minDepVinfMs <= vInfMax + 1.0;
+  const testDepValid = (tDep: number): boolean => {
+    const srcState = getBodyStateAtUT(srcBody, mainBody, tDep);
+    for (let j = 0; j < tgtDates.length; j++) {
+      const tArr = tgtDates[j];
+      if (tArr < arrMinLimit || tArr > arrMaxLimit) continue;
+      const dt = tArr - tDep;
+      if (dt < minDur || dt > maxDur) continue;
 
-    if (isValid) {
-      low = mid;
-    } else {
-      high = mid;
+      const tgtState = tgtStates[j];
+      const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
+      if (!sol.isValid) continue;
+
+      const vInfDepMag = vecMag(vecSub(sol.v1, srcState.vel));
+      const vInfArrMag = vecMag(vecSub(sol.v2, tgtState.vel));
+      const c3Dep = (vInfDepMag * vInfDepMag) / 1e6;
+      const c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
+
+      const passSrc = (srcInst.maxC3 === undefined || c3Dep <= srcInst.maxC3) &&
+                       (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
+                       (srcInst.computedMaxC3 === undefined || c3Dep <= srcInst.computedMaxC3 + 0.05) &&
+                       (vInfDepMag >= srcEnv.minMs - 1.0 && vInfDepMag <= srcEnv.maxMs + 10.0);
+
+      const passTgt = (tgtInst.maxC3 === undefined || c3Arr <= tgtInst.maxC3) &&
+                       (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
+                       (tgtInst.computedMaxC3 === undefined || c3Arr <= tgtInst.computedMaxC3 + 0.05) &&
+                       (vInfArrMag >= tgtEnv.minMs - 1.0 && vInfArrMag <= tgtEnv.maxMs + 10.0);
+
+      if (passSrc && passTgt) return true;
     }
-  }
+    return false;
+  };
 
-  return low;
-}
-
-function bisectArrBoundary(
-  tValid: number,
-  tInvalid: number,
-  srcBody: CelestialBody,
-  tgtBody: CelestialBody,
-  mainBody: CelestialBody,
-  depDates: number[],
-  vInfMax: number,
-  minDur: number,
-  maxDur: number,
-  timeFormatMode: 'ksp' | 'earth'
-): number {
-  const secondsPerDay = timeFormatMode === 'ksp' ? 21600 : 86400;
-  const toleranceSec = 0.01 * secondsPerDay;
-
-  let low = tValid;
-  let high = tInvalid;
-
-  for (let iter = 0; iter < 25; iter++) {
-    if (Math.abs(high - low) <= toleranceSec) break;
+  for (let iter = 0; iter < 20; iter++) {
+    if (Math.abs(high - low) <= 10) break;
     const mid = (low + high) / 2;
-    const res = evalMinArrVinf(mid, srcBody, tgtBody, mainBody, depDates, minDur, maxDur);
-    const isValid = res.minArrVinfMs <= vInfMax + 1.0;
-
-    if (isValid) {
+    if (testDepValid(mid)) {
       low = mid;
     } else {
       high = mid;
@@ -227,10 +163,79 @@ function bisectArrBoundary(
 }
 
 /**
- * Computes link end date ranges filtered by Tisserand v_inf ranges with 0.01 day dichotomic search (asynchronously with progress callbacks and UI yielding).
+ * Bisection search to locate arrival boundary date to high precision (~10 seconds).
  */
-const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
+function bisectArrBoundary(
+  tValid: number,
+  tInvalid: number,
+  depDates: number[],
+  depStates: { pos: Vector3D; vel: Vector3D }[],
+  srcBody: CelestialBody,
+  tgtBody: CelestialBody,
+  mainBody: CelestialBody,
+  srcInst: InstanceNode,
+  tgtInst: InstanceNode,
+  srcEnv: { minMs: number; maxMs: number },
+  tgtEnv: { minMs: number; maxMs: number },
+  minDur: number,
+  maxDur: number,
+  depMinLimit: number = -Infinity,
+  depMaxLimit: number = Infinity
+): number {
+  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
+  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
 
+  let low = tValid;
+  let high = tInvalid;
+
+  const testArrValid = (tArr: number): boolean => {
+    const tgtState = getBodyStateAtUT(tgtBody, mainBody, tArr);
+    for (let i = 0; i < depDates.length; i++) {
+      const tDep = depDates[i];
+      if (tDep < depMinLimit || tDep > depMaxLimit) continue;
+      const dt = tArr - tDep;
+      if (dt < minDur || dt > maxDur) continue;
+
+      const srcState = depStates[i];
+      const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
+      if (!sol.isValid) continue;
+
+      const vInfDepMag = vecMag(vecSub(sol.v1, srcState.vel));
+      const vInfArrMag = vecMag(vecSub(sol.v2, tgtState.vel));
+      const c3Dep = (vInfDepMag * vInfDepMag) / 1e6;
+      const c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
+
+      const passSrc = (srcInst.maxC3 === undefined || c3Dep <= srcInst.maxC3) &&
+                       (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
+                       (srcInst.computedMaxC3 === undefined || c3Dep <= srcInst.computedMaxC3 + 0.05) &&
+                       (vInfDepMag >= srcEnv.minMs - 1.0 && vInfDepMag <= srcEnv.maxMs + 10.0);
+
+      const passTgt = (tgtInst.maxC3 === undefined || c3Arr <= tgtInst.maxC3) &&
+                       (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
+                       (tgtInst.computedMaxC3 === undefined || c3Arr <= tgtInst.computedMaxC3 + 0.05) &&
+                       (vInfArrMag >= tgtEnv.minMs - 1.0 && vInfArrMag <= tgtEnv.maxMs + 10.0);
+
+      if (passSrc && passTgt) return true;
+    }
+    return false;
+  };
+
+  for (let iter = 0; iter < 20; iter++) {
+    if (Math.abs(high - low) <= 10) break;
+    const mid = (low + high) / 2;
+    if (testArrValid(mid)) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
+}
+
+/**
+ * Computes link end date ranges by constructing 2D transfer porkchop matrices for each link.
+ */
 export async function computeLinkEndDateRangesAsync(
   instances: InstanceNode[],
   links: DirectionalLink[],
@@ -239,6 +244,29 @@ export async function computeLinkEndDateRangesAsync(
   timeFormatMode: 'ksp' | 'earth' = 'ksp',
   onProgress?: (progressPercent: number, statusText: string) => void
 ): Promise<Record<string, LinkEndDateRanges>> {
+  const { linkEndRangesMap } = await computeLinkGridsAndRangesAsync(
+    instances,
+    links,
+    bodies,
+    mainBody,
+    onProgress
+  );
+  return linkEndRangesMap;
+}
+
+/**
+ * Internal async solver that calculates porkchop grids and date ranges for all links.
+ */
+async function computeLinkGridsAndRangesAsync(
+  instances: InstanceNode[],
+  links: DirectionalLink[],
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  onProgress?: (progressPercent: number, statusText: string) => void
+): Promise<{
+  linkEndRangesMap: Record<string, LinkEndDateRanges>;
+  porkchopGridsMap: Record<string, LinkPorkchopGrid>;
+}> {
   const envs = computeTisserandEnvelopes(instances, links, bodies, mainBody);
   const instMap = new Map<string, InstanceNode>();
   instances.forEach(i => instMap.set(i.id, i));
@@ -246,7 +274,11 @@ export async function computeLinkEndDateRangesAsync(
   const bodyMap = new Map<string, CelestialBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
-  const result: Record<string, LinkEndDateRanges> = {};
+  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
+  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
+
+  const linkEndRangesMap: Record<string, LinkEndDateRanges> = {};
+  const porkchopGridsMap: Record<string, LinkPorkchopGrid> = {};
   const totalLinks = links.length;
 
   for (let lIdx = 0; lIdx < totalLinks; lIdx++) {
@@ -264,168 +296,174 @@ export async function computeLinkEndDateRangesAsync(
     const minDur = link.minFlightDuration ?? 0;
     const maxDur = link.maxFlightDuration ?? 1e10;
 
-    let depDates: number[] = [];
-    let arrDates: number[] = [];
+    const srcMinDate = srcInst.minDate ?? srcInst.computedMinDate ?? 0;
+    let srcMaxDate = srcInst.maxDate ?? srcInst.computedMaxDate ?? (srcMinDate + 86400 * 365 * 10);
+    if (srcMaxDate <= srcMinDate) srcMaxDate = srcMinDate + 86400 * 365 * 10;
 
-    const { srcDates, tgtDates } = countPossibleTransfers(link, srcInst, tgtInst);
-    if (srcDates.length >= 2 && tgtDates.length >= 2) {
-      depDates = srcDates;
-      arrDates = tgtDates;
-    } else {
-      const minDep = srcInst.computedMinDate ?? 0;
-      const maxDep = srcInst.computedMaxDate ?? (minDep + 86400 * 365 * 3);
-      const minArr = tgtInst.computedMinDate ?? (minDep + minDur);
-      const maxArr = tgtInst.computedMaxDate ?? (maxDep + (maxDur < 1e9 ? maxDur : 86400 * 365 * 3));
+    const tgtMinDate = tgtInst.minDate ?? tgtInst.computedMinDate ?? (srcMinDate + minDur);
+    let tgtMaxDate = tgtInst.maxDate ?? tgtInst.computedMaxDate ?? (srcMaxDate + (maxDur < 1e9 ? maxDur : 86400 * 365 * 10));
+    if (tgtMaxDate <= tgtMinDate) tgtMaxDate = tgtMinDate + 86400 * 365 * 10;
 
-      const N = 32;
-      const stepDep = Math.max(1, (maxDep - minDep) / (N - 1));
-      const stepArr = Math.max(1, (maxArr - minArr) / (N - 1));
+    const N_DEP = Math.max(96, link.departureSampleCount || 10);
+    const N_ARR = Math.max(96, link.arrivalSampleCount || 10);
 
-      for (let i = 0; i < N; i++) depDates.push(minDep + i * stepDep);
-      for (let j = 0; j < N; j++) arrDates.push(minArr + j * stepArr);
-    }
+    const stepDep = (srcMaxDate - srcMinDate) / (N_DEP - 1);
+    const stepArr = (tgtMaxDate - tgtMinDate) / (N_ARR - 1);
+
+    const depDates: number[] = [];
+    const arrDates: number[] = [];
+
+    for (let i = 0; i < N_DEP; i++) depDates.push(srcMinDate + i * stepDep);
+    for (let j = 0; j < N_ARR; j++) arrDates.push(tgtMinDate + j * stepArr);
+
+    const depStates = depDates.map(t => getBodyStateAtUT(srcBody, mainBody, t));
+    const tgtStates = arrDates.map(t => getBodyStateAtUT(tgtBody, mainBody, t));
+
+    const validMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
+    const depValidRowSet = new Set<number>();
+    const arrValidColSet = new Set<number>();
+
+    const depVinfAchieved: number[] = [];
+    const arrVinfAchieved: number[] = [];
 
     const baseProgress = (lIdx / totalLinks) * 100;
     const linkWeight = 100 / totalLinks;
-    onProgress?.(
-      Math.round(baseProgress),
-      `Evaluating link date ranges: ${srcInst.bodyName} ➔ ${tgtInst.bodyName}...`
-    );
-    await yieldUI();
 
-    // --- 1. Departure End Date Range ---
-    const depValidIndices: number[] = [];
-    const depVinfAchieved: number[] = [];
-
-    for (let i = 0; i < depDates.length; i++) {
-      if (i % 6 === 0) {
+    for (let i = 0; i < N_DEP; i++) {
+      if (i % 12 === 0) {
         onProgress?.(
-          Math.min(99, Math.round(baseProgress + (i / depDates.length) * (linkWeight * 0.5))),
-          `Evaluating departure date bounds: ${srcInst.bodyName} ➔ ${tgtInst.bodyName} (${i + 1}/${depDates.length})...`
+          Math.min(99, Math.round(baseProgress + (i / N_DEP) * linkWeight)),
+          `Computing Porkchop Grid for ${srcInst.bodyName} ➔ ${tgtInst.bodyName} (${i + 1}/${N_DEP})...`
         );
         await yieldUI();
       }
+
       const tDep = depDates[i];
-      const evalRes = evalMinDepVinf(tDep, srcBody, tgtBody, mainBody, arrDates, minDur, maxDur);
-      if (evalRes.minDepVinfMs < Infinity) {
-        if (evalRes.minDepVinfMs >= srcEnv.minMs - 1.0 && evalRes.minDepVinfMs <= srcEnv.maxMs + 10.0) {
-          depValidIndices.push(i);
-          depVinfAchieved.push(evalRes.minDepVinfMs);
+      const srcState = depStates[i];
+
+      for (let j = 0; j < N_ARR; j++) {
+        const tArr = arrDates[j];
+        const dt = tArr - tDep;
+        if (dt < minDur || dt > maxDur) continue;
+
+        const tgtState = tgtStates[j];
+        const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
+        if (!sol.isValid) continue;
+
+        const vInfDepMag = vecMag(vecSub(sol.v1, srcState.vel));
+        const vInfArrMag = vecMag(vecSub(sol.v2, tgtState.vel));
+        const c3Dep = (vInfDepMag * vInfDepMag) / 1e6;
+        const c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
+
+        const passSrc = (srcInst.maxC3 === undefined || c3Dep <= srcInst.maxC3) &&
+                         (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
+                         (srcInst.computedMaxC3 === undefined || c3Dep <= srcInst.computedMaxC3 + 0.05) &&
+                         (vInfDepMag >= srcEnv.minMs - 1.0 && vInfDepMag <= srcEnv.maxMs + 10.0);
+
+        const passTgt = (tgtInst.maxC3 === undefined || c3Arr <= tgtInst.maxC3) &&
+                         (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
+                         (tgtInst.computedMaxC3 === undefined || c3Arr <= tgtInst.computedMaxC3 + 0.05) &&
+                         (vInfArrMag >= tgtEnv.minMs - 1.0 && vInfArrMag <= tgtEnv.maxMs + 10.0);
+
+        if (passSrc && passTgt) {
+          validMatrix[i][j] = true;
+          depValidRowSet.add(i);
+          arrValidColSet.add(j);
+          depVinfAchieved.push(vInfDepMag);
+          arrVinfAchieved.push(vInfArrMag);
         }
       }
     }
 
-    let depDateMin = depDates[0];
-    let depDateMax = depDates[depDates.length - 1];
-    let depVinfMin = depVinfAchieved.length > 0 ? Math.min(...depVinfAchieved) : 0;
-    let depVinfMax = depVinfAchieved.length > 0 ? Math.max(...depVinfAchieved) : 0;
-    const hasValidDepRange = depValidIndices.length > 0;
+    // Departure Window Projection & Bisection
+    const validDepIndices = Array.from(depValidRowSet).sort((a, b) => a - b);
+    const hasValidDepRange = validDepIndices.length > 0;
+    let depDateMin = NaN;
+    let depDateMax = NaN;
 
     if (hasValidDepRange) {
-      const firstIdx = depValidIndices[0];
-      const lastIdx = depValidIndices[depValidIndices.length - 1];
+      const firstI = validDepIndices[0];
+      const lastI = validDepIndices[validDepIndices.length - 1];
 
-      depDateMin = depDates[firstIdx];
-      depDateMax = depDates[lastIdx];
+      depDateMin = firstI === 0 ? depDates[0] : bisectDepBoundary(
+        depDates[firstI],
+        depDates[firstI - 1],
+        depStates,
+        arrDates,
+        tgtStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
 
-      if (firstIdx > 0) {
-        depDateMin = bisectDepBoundary(
-          depDates[firstIdx],
-          depDates[firstIdx - 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          arrDates,
-          srcEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
-
-      if (lastIdx < depDates.length - 1) {
-        depDateMax = bisectDepBoundary(
-          depDates[lastIdx],
-          depDates[lastIdx + 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          arrDates,
-          srcEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
+      depDateMax = lastI === N_DEP - 1 ? depDates[N_DEP - 1] : bisectDepBoundary(
+        depDates[lastI],
+        depDates[lastI + 1],
+        depStates,
+        arrDates,
+        tgtStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
     }
 
-    // --- 2. Arrival End Date Range ---
-    const arrValidIndices: number[] = [];
-    const arrVinfAchieved: number[] = [];
-
-    for (let j = 0; j < arrDates.length; j++) {
-      if (j % 6 === 0) {
-        onProgress?.(
-          Math.min(99, Math.round(baseProgress + (linkWeight * 0.5) + (j / arrDates.length) * (linkWeight * 0.5))),
-          `Evaluating arrival date bounds: ${srcInst.bodyName} ➔ ${tgtInst.bodyName} (${j + 1}/${arrDates.length})...`
-        );
-        await yieldUI();
-      }
-      const tArr = arrDates[j];
-      const evalRes = evalMinArrVinf(tArr, srcBody, tgtBody, mainBody, depDates, minDur, maxDur);
-      if (evalRes.minArrVinfMs < Infinity) {
-        if (evalRes.minArrVinfMs >= tgtEnv.minMs - 1.0 && evalRes.minArrVinfMs <= tgtEnv.maxMs + 10.0) {
-          arrValidIndices.push(j);
-          arrVinfAchieved.push(evalRes.minArrVinfMs);
-        }
-      }
-    }
-
-    let arrDateMin = arrDates[0];
-    let arrDateMax = arrDates[arrDates.length - 1];
-    let arrVinfMin = arrVinfAchieved.length > 0 ? Math.min(...arrVinfAchieved) : 0;
-    let arrVinfMax = arrVinfAchieved.length > 0 ? Math.max(...arrVinfAchieved) : 0;
-    const hasValidArrRange = arrValidIndices.length > 0;
+    // Arrival Window Projection & Bisection
+    const validArrIndices = Array.from(arrValidColSet).sort((a, b) => a - b);
+    const hasValidArrRange = validArrIndices.length > 0;
+    let arrDateMin = NaN;
+    let arrDateMax = NaN;
 
     if (hasValidArrRange) {
-      const firstIdx = arrValidIndices[0];
-      const lastIdx = arrValidIndices[arrValidIndices.length - 1];
+      const firstJ = validArrIndices[0];
+      const lastJ = validArrIndices[validArrIndices.length - 1];
 
-      arrDateMin = arrDates[firstIdx];
-      arrDateMax = arrDates[lastIdx];
+      arrDateMin = firstJ === 0 ? arrDates[0] : bisectArrBoundary(
+        arrDates[firstJ],
+        arrDates[firstJ - 1],
+        depDates,
+        depStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
 
-      if (firstIdx > 0) {
-        arrDateMin = bisectArrBoundary(
-          arrDates[firstIdx],
-          arrDates[firstIdx - 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          depDates,
-          tgtEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
-
-      if (lastIdx < arrDates.length - 1) {
-        arrDateMax = bisectArrBoundary(
-          arrDates[lastIdx],
-          arrDates[lastIdx + 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          depDates,
-          tgtEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
+      arrDateMax = lastJ === N_ARR - 1 ? arrDates[N_ARR - 1] : bisectArrBoundary(
+        arrDates[lastJ],
+        arrDates[lastJ + 1],
+        depDates,
+        depStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
     }
 
-    result[link.id] = {
+    linkEndRangesMap[link.id] = {
       linkId: link.id,
       sourceInstanceId: link.sourceInstanceId,
       targetInstanceId: link.targetInstanceId,
@@ -433,23 +471,46 @@ export async function computeLinkEndDateRangesAsync(
       targetBodyName: tgtInst.bodyName,
       depDateMin,
       depDateMax,
-      depVinfMin,
-      depVinfMax,
+      depVinfMin: depVinfAchieved.length > 0 ? Math.min(...depVinfAchieved) : 0,
+      depVinfMax: depVinfAchieved.length > 0 ? Math.max(...depVinfAchieved) : 0,
       depTargetVinfRange: srcEnv,
       hasValidDepRange,
       arrDateMin,
       arrDateMax,
-      arrVinfMin,
-      arrVinfMax,
+      arrVinfMin: arrVinfAchieved.length > 0 ? Math.min(...arrVinfAchieved) : 0,
+      arrVinfMax: arrVinfAchieved.length > 0 ? Math.max(...arrVinfAchieved) : 0,
       arrTargetVinfRange: tgtEnv,
       hasValidArrRange
     };
+
+    porkchopGridsMap[link.id] = {
+      linkId: link.id,
+      srcInst,
+      tgtInst,
+      srcBody,
+      tgtBody,
+      srcEnv,
+      tgtEnv,
+      minDur,
+      maxDur,
+      srcMinDate,
+      srcMaxDate,
+      tgtMinDate,
+      tgtMaxDate,
+      depDates,
+      arrDates,
+      depStates,
+      tgtStates,
+      validMatrix
+    };
   }
 
-  onProgress?.(100, 'Finished computing Tisserand date ranges');
-  return result;
+  return { linkEndRangesMap, porkchopGridsMap };
 }
 
+/**
+ * Computes consolidated 3-body sequence ranges using transfer porkchop matrix projections.
+ */
 export async function compute3BodyConsolidatedRangesAsync(
   instances: InstanceNode[],
   links: DirectionalLink[],
@@ -461,12 +522,11 @@ export async function compute3BodyConsolidatedRangesAsync(
   linkEndRangesMap: Record<string, LinkEndDateRanges>;
   sequence3BodyRangesList: Sequence3BodyConsolidatedRange[];
 }> {
-  const linkEndRangesMap = await computeLinkEndDateRangesAsync(
+  const { linkEndRangesMap, porkchopGridsMap } = await computeLinkGridsAndRangesAsync(
     instances,
     links,
     bodies,
     mainBody,
-    timeFormatMode,
     onProgress
   );
 
@@ -493,45 +553,156 @@ export async function compute3BodyConsolidatedRangesAsync(
 
     if (!range1 || !range2) continue;
 
+    const grid1 = porkchopGridsMap[link1.id];
+    const grid2 = porkchopGridsMap[link2.id];
+
     const link1ArrMin = range1.arrDateMin;
     const link1ArrMax = range1.arrDateMax;
 
     const link2DepMin = range2.depDateMin;
     const link2DepMax = range2.depDateMax;
 
-    const consolidatedFlybyMin = Math.max(link1ArrMin, link2DepMin);
-    const consolidatedFlybyMax = Math.min(link1ArrMax, link2DepMax);
+    const isLink1Valid = range1.hasValidArrRange && !isNaN(link1ArrMin) && !isNaN(link1ArrMax);
+    const isLink2Valid = range2.hasValidDepRange && !isNaN(link2DepMin) && !isNaN(link2DepMax);
 
-    const hasFlybyOverlap = consolidatedFlybyMin <= consolidatedFlybyMax;
+    let consolidatedFlybyMin = NaN;
+    let consolidatedFlybyMax = NaN;
+    let hasFlybyOverlap = false;
+
+    if (isLink1Valid && isLink2Valid) {
+      consolidatedFlybyMin = Math.max(link1ArrMin, link2DepMin);
+      consolidatedFlybyMax = Math.min(link1ArrMax, link2DepMax);
+      hasFlybyOverlap = consolidatedFlybyMin <= consolidatedFlybyMax;
+    }
+
     const overlapDurationSec = hasFlybyOverlap
       ? (consolidatedFlybyMax - consolidatedFlybyMin)
-      : (consolidatedFlybyMin - consolidatedFlybyMax);
+      : (isLink1Valid && isLink2Valid ? Math.abs(link2DepMin - link1ArrMax) : 0);
 
-    const minDur1 = link1.minFlightDuration ?? 0;
-    const maxDur1 = link1.maxFlightDuration ?? 1e10;
+    let consolidatedDepMin = NaN;
+    let consolidatedDepMax = NaN;
+    let consolidatedArrMin = NaN;
+    let consolidatedArrMax = NaN;
 
-    let consolidatedDepMin = range1.depDateMin;
-    let consolidatedDepMax = range1.depDateMax;
+    if (hasFlybyOverlap && grid1 && grid2) {
+      // 1. Consolidated Departure Window at Source Instance (filtering Link 1 porkchop grid)
+      const validDepRows: number[] = [];
+      for (let i = 0; i < grid1.depDates.length; i++) {
+        let rowHasOverlapCell = false;
+        for (let j = 0; j < grid1.arrDates.length; j++) {
+          if (grid1.validMatrix[i][j]) {
+            const arrT = grid1.arrDates[j];
+            if (arrT >= consolidatedFlybyMin - 1.0 && arrT <= consolidatedFlybyMax + 1.0) {
+              rowHasOverlapCell = true;
+              break;
+            }
+          }
+        }
+        if (rowHasOverlapCell) validDepRows.push(i);
+      }
 
-    if (hasFlybyOverlap) {
-      consolidatedDepMin = Math.max(range1.depDateMin, consolidatedFlybyMin - (maxDur1 < 1e9 ? maxDur1 : 86400 * 365 * 5));
-      consolidatedDepMax = Math.min(range1.depDateMax, consolidatedFlybyMax - minDur1);
-      if (consolidatedDepMin > consolidatedDepMax) {
+      if (validDepRows.length > 0) {
+        const minI = validDepRows[0];
+        const maxI = validDepRows[validDepRows.length - 1];
+
+        consolidatedDepMin = minI === 0 ? grid1.depDates[0] : bisectDepBoundary(
+          grid1.depDates[minI],
+          grid1.depDates[minI - 1],
+          grid1.depStates,
+          grid1.arrDates,
+          grid1.tgtStates,
+          grid1.srcBody,
+          grid1.tgtBody,
+          mainBody,
+          grid1.srcInst,
+          grid1.tgtInst,
+          grid1.srcEnv,
+          grid1.tgtEnv,
+          grid1.minDur,
+          grid1.maxDur,
+          consolidatedFlybyMin,
+          consolidatedFlybyMax
+        );
+
+        consolidatedDepMax = maxI === grid1.depDates.length - 1 ? grid1.depDates[grid1.depDates.length - 1] : bisectDepBoundary(
+          grid1.depDates[maxI],
+          grid1.depDates[maxI + 1],
+          grid1.depStates,
+          grid1.arrDates,
+          grid1.tgtStates,
+          grid1.srcBody,
+          grid1.tgtBody,
+          mainBody,
+          grid1.srcInst,
+          grid1.tgtInst,
+          grid1.srcEnv,
+          grid1.tgtEnv,
+          grid1.minDur,
+          grid1.maxDur,
+          consolidatedFlybyMin,
+          consolidatedFlybyMax
+        );
+      } else {
         consolidatedDepMin = range1.depDateMin;
         consolidatedDepMax = range1.depDateMax;
       }
-    }
 
-    const minDur2 = link2.minFlightDuration ?? 0;
-    const maxDur2 = link2.maxFlightDuration ?? 1e10;
+      // 2. Consolidated Arrival Window at Target Instance (filtering Link 2 porkchop grid)
+      const validArrCols: number[] = [];
+      for (let j = 0; j < grid2.arrDates.length; j++) {
+        let colHasOverlapCell = false;
+        for (let i = 0; i < grid2.depDates.length; i++) {
+          if (grid2.validMatrix[i][j]) {
+            const depT = grid2.depDates[i];
+            if (depT >= consolidatedFlybyMin - 1.0 && depT <= consolidatedFlybyMax + 1.0) {
+              colHasOverlapCell = true;
+              break;
+            }
+          }
+        }
+        if (colHasOverlapCell) validArrCols.push(j);
+      }
 
-    let consolidatedArrMin = range2.arrDateMin;
-    let consolidatedArrMax = range2.arrDateMax;
+      if (validArrCols.length > 0) {
+        const minJ = validArrCols[0];
+        const maxJ = validArrCols[validArrCols.length - 1];
 
-    if (hasFlybyOverlap) {
-      consolidatedArrMin = Math.max(range2.arrDateMin, consolidatedFlybyMin + minDur2);
-      consolidatedArrMax = Math.min(range2.arrDateMax, consolidatedFlybyMax + (maxDur2 < 1e9 ? maxDur2 : 86400 * 365 * 5));
-      if (consolidatedArrMin > consolidatedArrMax) {
+        consolidatedArrMin = minJ === 0 ? grid2.arrDates[0] : bisectArrBoundary(
+          grid2.arrDates[minJ],
+          grid2.arrDates[minJ - 1],
+          grid2.depDates,
+          grid2.depStates,
+          grid2.srcBody,
+          grid2.tgtBody,
+          mainBody,
+          grid2.srcInst,
+          grid2.tgtInst,
+          grid2.srcEnv,
+          grid2.tgtEnv,
+          grid2.minDur,
+          grid2.maxDur,
+          consolidatedFlybyMin,
+          consolidatedFlybyMax
+        );
+
+        consolidatedArrMax = maxJ === grid2.arrDates.length - 1 ? grid2.arrDates[grid2.arrDates.length - 1] : bisectArrBoundary(
+          grid2.arrDates[maxJ],
+          grid2.arrDates[maxJ + 1],
+          grid2.depDates,
+          grid2.depStates,
+          grid2.srcBody,
+          grid2.tgtBody,
+          mainBody,
+          grid2.srcInst,
+          grid2.tgtInst,
+          grid2.srcEnv,
+          grid2.tgtEnv,
+          grid2.minDur,
+          grid2.maxDur,
+          consolidatedFlybyMin,
+          consolidatedFlybyMax
+        );
+      } else {
         consolidatedArrMin = range2.arrDateMin;
         consolidatedArrMax = range2.arrDateMax;
       }
@@ -561,11 +732,12 @@ export async function compute3BodyConsolidatedRangesAsync(
     });
   }
 
+  onProgress?.(100, 'Finished computing Tisserand date ranges');
   return { linkEndRangesMap, sequence3BodyRangesList: consolidatedList };
 }
 
 /**
- * Computes link end date ranges filtered by Tisserand v_inf ranges with 0.01 day dichotomic search.
+ * Synchronous version for legacy compatibility.
  */
 export function computeLinkEndDateRanges(
   instances: InstanceNode[],
@@ -580,6 +752,9 @@ export function computeLinkEndDateRanges(
 
   const bodyMap = new Map<string, CelestialBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
+
+  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
+  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
 
   const result: Record<string, LinkEndDateRanges> = {};
 
@@ -597,147 +772,156 @@ export function computeLinkEndDateRanges(
     const minDur = link.minFlightDuration ?? 0;
     const maxDur = link.maxFlightDuration ?? 1e10;
 
-    let depDates: number[] = [];
-    let arrDates: number[] = [];
+    const srcMinDate = srcInst.minDate ?? srcInst.computedMinDate ?? 0;
+    let srcMaxDate = srcInst.maxDate ?? srcInst.computedMaxDate ?? (srcMinDate + 86400 * 365 * 10);
+    if (srcMaxDate <= srcMinDate) srcMaxDate = srcMinDate + 86400 * 365 * 10;
 
-    const { srcDates, tgtDates } = countPossibleTransfers(link, srcInst, tgtInst);
-    if (srcDates.length >= 2 && tgtDates.length >= 2) {
-      depDates = srcDates;
-      arrDates = tgtDates;
-    } else {
-      const minDep = srcInst.computedMinDate ?? 0;
-      const maxDep = srcInst.computedMaxDate ?? (minDep + 86400 * 365 * 3);
-      const minArr = tgtInst.computedMinDate ?? (minDep + minDur);
-      const maxArr = tgtInst.computedMaxDate ?? (maxDep + (maxDur < 1e9 ? maxDur : 86400 * 365 * 3));
+    const tgtMinDate = tgtInst.minDate ?? tgtInst.computedMinDate ?? (srcMinDate + minDur);
+    let tgtMaxDate = tgtInst.maxDate ?? tgtInst.computedMaxDate ?? (srcMaxDate + (maxDur < 1e9 ? maxDur : 86400 * 365 * 10));
+    if (tgtMaxDate <= tgtMinDate) tgtMaxDate = tgtMinDate + 86400 * 365 * 10;
 
-      const N = 48;
-      const stepDep = Math.max(1, (maxDep - minDep) / (N - 1));
-      const stepArr = Math.max(1, (maxArr - minArr) / (N - 1));
+    const N_DEP = Math.max(96, link.departureSampleCount || 10);
+    const N_ARR = Math.max(96, link.arrivalSampleCount || 10);
 
-      for (let i = 0; i < N; i++) depDates.push(minDep + i * stepDep);
-      for (let j = 0; j < N; j++) arrDates.push(minArr + j * stepArr);
-    }
+    const stepDep = (srcMaxDate - srcMinDate) / (N_DEP - 1);
+    const stepArr = (tgtMaxDate - tgtMinDate) / (N_ARR - 1);
 
-    // --- 1. Departure End Date Range ---
-    const depValidIndices: number[] = [];
+    const depDates: number[] = [];
+    const arrDates: number[] = [];
+
+    for (let i = 0; i < N_DEP; i++) depDates.push(srcMinDate + i * stepDep);
+    for (let j = 0; j < N_ARR; j++) arrDates.push(tgtMinDate + j * stepArr);
+
+    const depStates = depDates.map(t => getBodyStateAtUT(srcBody, mainBody, t));
+    const tgtStates = arrDates.map(t => getBodyStateAtUT(tgtBody, mainBody, t));
+
+    const depValidRowSet = new Set<number>();
+    const arrValidColSet = new Set<number>();
+
     const depVinfAchieved: number[] = [];
-
-    for (let i = 0; i < depDates.length; i++) {
-      const tDep = depDates[i];
-      const evalRes = evalMinDepVinf(tDep, srcBody, tgtBody, mainBody, arrDates, minDur, maxDur);
-      if (evalRes.minDepVinfMs < Infinity) {
-        if (evalRes.minDepVinfMs >= srcEnv.minMs - 1.0 && evalRes.minDepVinfMs <= srcEnv.maxMs + 10.0) {
-          depValidIndices.push(i);
-          depVinfAchieved.push(evalRes.minDepVinfMs);
-        }
-      }
-    }
-
-    let depDateMin = depDates[0];
-    let depDateMax = depDates[depDates.length - 1];
-    let depVinfMin = depVinfAchieved.length > 0 ? Math.min(...depVinfAchieved) : 0;
-    let depVinfMax = depVinfAchieved.length > 0 ? Math.max(...depVinfAchieved) : 0;
-    const hasValidDepRange = depValidIndices.length > 0;
-
-    if (hasValidDepRange) {
-      const firstIdx = depValidIndices[0];
-      const lastIdx = depValidIndices[depValidIndices.length - 1];
-
-      depDateMin = depDates[firstIdx];
-      depDateMax = depDates[lastIdx];
-
-      // Dichotomic refinement for start boundary
-      if (firstIdx > 0) {
-        depDateMin = bisectDepBoundary(
-          depDates[firstIdx],
-          depDates[firstIdx - 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          arrDates,
-          srcEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
-
-      // Dichotomic refinement for end boundary
-      if (lastIdx < depDates.length - 1) {
-        depDateMax = bisectDepBoundary(
-          depDates[lastIdx],
-          depDates[lastIdx + 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          arrDates,
-          srcEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
-    }
-
-    // --- 2. Arrival End Date Range ---
-    const arrValidIndices: number[] = [];
     const arrVinfAchieved: number[] = [];
 
-    for (let j = 0; j < arrDates.length; j++) {
-      const tArr = arrDates[j];
-      const evalRes = evalMinArrVinf(tArr, srcBody, tgtBody, mainBody, depDates, minDur, maxDur);
-      if (evalRes.minArrVinfMs < Infinity) {
-        if (evalRes.minArrVinfMs >= tgtEnv.minMs - 1.0 && evalRes.minArrVinfMs <= tgtEnv.maxMs + 10.0) {
-          arrValidIndices.push(j);
-          arrVinfAchieved.push(evalRes.minArrVinfMs);
+    for (let i = 0; i < N_DEP; i++) {
+      const tDep = depDates[i];
+      const srcState = depStates[i];
+
+      for (let j = 0; j < N_ARR; j++) {
+        const tArr = arrDates[j];
+        const dt = tArr - tDep;
+        if (dt < minDur || dt > maxDur) continue;
+
+        const tgtState = tgtStates[j];
+        const sol = solveLambertBest(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius, srcState.vel, tgtState.vel);
+        if (!sol.isValid) continue;
+
+        const vInfDepMag = vecMag(vecSub(sol.v1, srcState.vel));
+        const vInfArrMag = vecMag(vecSub(sol.v2, tgtState.vel));
+        const c3Dep = (vInfDepMag * vInfDepMag) / 1e6;
+        const c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
+
+        const passSrc = (srcInst.maxC3 === undefined || c3Dep <= srcInst.maxC3) &&
+                         (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
+                         (srcInst.computedMaxC3 === undefined || c3Dep <= srcInst.computedMaxC3 + 0.05) &&
+                         (vInfDepMag >= srcEnv.minMs - 1.0 && vInfDepMag <= srcEnv.maxMs + 10.0);
+
+        const passTgt = (tgtInst.maxC3 === undefined || c3Arr <= tgtInst.maxC3) &&
+                         (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
+                         (tgtInst.computedMaxC3 === undefined || c3Arr <= tgtInst.computedMaxC3 + 0.05) &&
+                         (vInfArrMag >= tgtEnv.minMs - 1.0 && vInfArrMag <= tgtEnv.maxMs + 10.0);
+
+        if (passSrc && passTgt) {
+          depValidRowSet.add(i);
+          arrValidColSet.add(j);
+          depVinfAchieved.push(vInfDepMag);
+          arrVinfAchieved.push(vInfArrMag);
         }
       }
     }
 
-    let arrDateMin = arrDates[0];
-    let arrDateMax = arrDates[arrDates.length - 1];
-    let arrVinfMin = arrVinfAchieved.length > 0 ? Math.min(...arrVinfAchieved) : 0;
-    let arrVinfMax = arrVinfAchieved.length > 0 ? Math.max(...arrVinfAchieved) : 0;
-    const hasValidArrRange = arrValidIndices.length > 0;
+    const validDepIndices = Array.from(depValidRowSet).sort((a, b) => a - b);
+    const hasValidDepRange = validDepIndices.length > 0;
+    let depDateMin = NaN;
+    let depDateMax = NaN;
+
+    if (hasValidDepRange) {
+      const firstI = validDepIndices[0];
+      const lastI = validDepIndices[validDepIndices.length - 1];
+
+      depDateMin = firstI === 0 ? depDates[0] : bisectDepBoundary(
+        depDates[firstI],
+        depDates[firstI - 1],
+        depStates,
+        arrDates,
+        tgtStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
+
+      depDateMax = lastI === N_DEP - 1 ? depDates[N_DEP - 1] : bisectDepBoundary(
+        depDates[lastI],
+        depDates[lastI + 1],
+        depStates,
+        arrDates,
+        tgtStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
+    }
+
+    const validArrIndices = Array.from(arrValidColSet).sort((a, b) => a - b);
+    const hasValidArrRange = validArrIndices.length > 0;
+    let arrDateMin = NaN;
+    let arrDateMax = NaN;
 
     if (hasValidArrRange) {
-      const firstIdx = arrValidIndices[0];
-      const lastIdx = arrValidIndices[arrValidIndices.length - 1];
+      const firstJ = validArrIndices[0];
+      const lastJ = validArrIndices[validArrIndices.length - 1];
 
-      arrDateMin = arrDates[firstIdx];
-      arrDateMax = arrDates[lastIdx];
+      arrDateMin = firstJ === 0 ? arrDates[0] : bisectArrBoundary(
+        arrDates[firstJ],
+        arrDates[firstJ - 1],
+        depDates,
+        depStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
 
-      // Dichotomic refinement for start boundary
-      if (firstIdx > 0) {
-        arrDateMin = bisectArrBoundary(
-          arrDates[firstIdx],
-          arrDates[firstIdx - 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          depDates,
-          tgtEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
-
-      // Dichotomic refinement for end boundary
-      if (lastIdx < arrDates.length - 1) {
-        arrDateMax = bisectArrBoundary(
-          arrDates[lastIdx],
-          arrDates[lastIdx + 1],
-          srcBody,
-          tgtBody,
-          mainBody,
-          depDates,
-          tgtEnv.maxMs,
-          minDur,
-          maxDur,
-          timeFormatMode
-        );
-      }
+      arrDateMax = lastJ === N_ARR - 1 ? arrDates[N_ARR - 1] : bisectArrBoundary(
+        arrDates[lastJ],
+        arrDates[lastJ + 1],
+        depDates,
+        depStates,
+        srcBody,
+        tgtBody,
+        mainBody,
+        srcInst,
+        tgtInst,
+        srcEnv,
+        tgtEnv,
+        minDur,
+        maxDur
+      );
     }
 
     result[link.id] = {
@@ -748,14 +932,14 @@ export function computeLinkEndDateRanges(
       targetBodyName: tgtInst.bodyName,
       depDateMin,
       depDateMax,
-      depVinfMin,
-      depVinfMax,
+      depVinfMin: depVinfAchieved.length > 0 ? Math.min(...depVinfAchieved) : 0,
+      depVinfMax: depVinfAchieved.length > 0 ? Math.max(...depVinfAchieved) : 0,
       depTargetVinfRange: srcEnv,
       hasValidDepRange,
       arrDateMin,
       arrDateMax,
-      arrVinfMin,
-      arrVinfMax,
+      arrVinfMin: arrVinfAchieved.length > 0 ? Math.min(...arrVinfAchieved) : 0,
+      arrVinfMax: arrVinfAchieved.length > 0 ? Math.max(...arrVinfAchieved) : 0,
       arrTargetVinfRange: tgtEnv,
       hasValidArrRange
     };
@@ -765,7 +949,7 @@ export function computeLinkEndDateRanges(
 }
 
 /**
- * Computes consolidated intersection date ranges for all 3-body sub-paths (Inst1 ➔ Inst2 ➔ Inst3).
+ * Synchronous version for 3-body sequences.
  */
 export function compute3BodyConsolidatedRanges(
   instances: InstanceNode[],
@@ -777,12 +961,6 @@ export function compute3BodyConsolidatedRanges(
   const linkEndRanges = computeLinkEndDateRanges(instances, links, bodies, mainBody, timeFormatMode);
   const subPaths = findAllSubPathsInGraph(links, instances);
   const sub3Paths = subPaths.filter(sp => sp.pathInsts.length === 3);
-
-  const instMap = new Map<string, InstanceNode>();
-  instances.forEach(i => instMap.set(i.id, i));
-
-  const linkMap = new Map<string, DirectionalLink>();
-  links.forEach(l => linkMap.set(l.id, l));
 
   const consolidatedList: Sequence3BodyConsolidatedRange[] = [];
 
@@ -810,45 +988,38 @@ export function compute3BodyConsolidatedRanges(
     const link2DepMin = range2.depDateMin;
     const link2DepMax = range2.depDateMax;
 
-    // Intersection at Flyby Instance
-    const consolidatedFlybyMin = Math.max(link1ArrMin, link2DepMin);
-    const consolidatedFlybyMax = Math.min(link1ArrMax, link2DepMax);
+    const isLink1Valid = range1.hasValidArrRange && !isNaN(link1ArrMin) && !isNaN(link1ArrMax);
+    const isLink2Valid = range2.hasValidDepRange && !isNaN(link2DepMin) && !isNaN(link2DepMax);
 
-    const hasFlybyOverlap = consolidatedFlybyMin <= consolidatedFlybyMax;
-    const overlapDurationSec = hasFlybyOverlap
-      ? (consolidatedFlybyMax - consolidatedFlybyMin)
-      : (consolidatedFlybyMin - consolidatedFlybyMax);
+    let consolidatedFlybyMin = NaN;
+    let consolidatedFlybyMax = NaN;
+    let hasFlybyOverlap = false;
 
-    // Consolidated departure window at Source Instance
-    const minDur1 = link1.minFlightDuration ?? 0;
-    const maxDur1 = link1.maxFlightDuration ?? 1e10;
-
-    let consolidatedDepMin = range1.depDateMin;
-    let consolidatedDepMax = range1.depDateMax;
-
-    if (hasFlybyOverlap) {
-      consolidatedDepMin = Math.max(range1.depDateMin, consolidatedFlybyMin - (maxDur1 < 1e9 ? maxDur1 : 86400 * 365 * 5));
-      consolidatedDepMax = Math.min(range1.depDateMax, consolidatedFlybyMax - minDur1);
-      if (consolidatedDepMin > consolidatedDepMax) {
-        consolidatedDepMin = range1.depDateMin;
-        consolidatedDepMax = range1.depDateMax;
-      }
+    if (isLink1Valid && isLink2Valid) {
+      consolidatedFlybyMin = Math.max(link1ArrMin, link2DepMin);
+      consolidatedFlybyMax = Math.min(link1ArrMax, link2DepMax);
+      hasFlybyOverlap = consolidatedFlybyMin <= consolidatedFlybyMax;
     }
 
-    // Consolidated arrival window at Target Instance
-    const minDur2 = link2.minFlightDuration ?? 0;
-    const maxDur2 = link2.maxFlightDuration ?? 1e10;
+    const overlapDurationSec = hasFlybyOverlap
+      ? (consolidatedFlybyMax - consolidatedFlybyMin)
+      : (isLink1Valid && isLink2Valid ? Math.abs(link2DepMin - link1ArrMax) : 0);
 
-    let consolidatedArrMin = range2.arrDateMin;
-    let consolidatedArrMax = range2.arrDateMax;
+    let consolidatedDepMin = NaN;
+    let consolidatedDepMax = NaN;
+    let consolidatedArrMin = NaN;
+    let consolidatedArrMax = NaN;
 
     if (hasFlybyOverlap) {
+      const minDur1 = link1.minFlightDuration ?? 0;
+      const maxDur1 = link1.maxFlightDuration ?? 1e10;
+      consolidatedDepMin = Math.max(range1.depDateMin, consolidatedFlybyMin - (maxDur1 < 1e9 ? maxDur1 : 86400 * 365 * 5));
+      consolidatedDepMax = Math.min(range1.depDateMax, consolidatedFlybyMax - minDur1);
+
+      const minDur2 = link2.minFlightDuration ?? 0;
+      const maxDur2 = link2.maxFlightDuration ?? 1e10;
       consolidatedArrMin = Math.max(range2.arrDateMin, consolidatedFlybyMin + minDur2);
       consolidatedArrMax = Math.min(range2.arrDateMax, consolidatedFlybyMax + (maxDur2 < 1e9 ? maxDur2 : 86400 * 365 * 5));
-      if (consolidatedArrMin > consolidatedArrMax) {
-        consolidatedArrMin = range2.arrDateMin;
-        consolidatedArrMax = range2.arrDateMax;
-      }
     }
 
     consolidatedList.push({

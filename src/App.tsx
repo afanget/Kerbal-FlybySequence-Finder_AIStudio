@@ -286,8 +286,8 @@ export default function App() {
         {id: 'inst-K2', bodyName: 'Kerbin' , x: 320, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 16, isSourceOverride: true},
         {id: 'inst-E1', bodyName: 'Eve'    , x: 420, y: 120, minFlybyRadius: 100000},
         {id: 'inst-K3', bodyName: 'Kerbin' , x: 520, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25, isSourceOverride: true},
-        {id: 'inst-J',  bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000},
-        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000},
+        {id: 'inst-J',  bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000      , minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
+        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000     , minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
         {id: 'inst-G',  bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25, dateSampleCount: 1},
       ];
 

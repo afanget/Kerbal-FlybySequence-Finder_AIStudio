@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { SequencePorkchopData } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import { X, Compass, Calendar, RefreshCw } from 'lucide-react';
@@ -88,6 +88,58 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   };
 
   const currentMatrix = getMatrixForTab(activeTab);
+
+  // Compute departure & arrival date windows based on first/last feasible columns (departure) and lines (arrival)
+  const dateWindows = useMemo(() => {
+    if (!seqPorkchop.validMatrix || nDep === 0 || nArr === 0) {
+      return null;
+    }
+
+    let firstDepIdx = -1;
+    let lastDepIdx = -1;
+    let firstArrIdx = -1;
+    let lastArrIdx = -1;
+
+    for (let i = 0; i < nDep; i++) {
+      const row = seqPorkchop.validMatrix[i];
+      if (row && row.some(Boolean)) {
+        if (firstDepIdx === -1) firstDepIdx = i;
+        lastDepIdx = i;
+      }
+    }
+
+    for (let j = 0; j < nArr; j++) {
+      let hasFeasible = false;
+      for (let i = 0; i < nDep; i++) {
+        if (seqPorkchop.validMatrix[i]?.[j]) {
+          hasFeasible = true;
+          break;
+        }
+      }
+      if (hasFeasible) {
+        if (firstArrIdx === -1) firstArrIdx = j;
+        lastArrIdx = j;
+      }
+    }
+
+    if (firstDepIdx === -1 || firstArrIdx === -1) {
+      return null;
+    }
+
+    const depStart = seqPorkchop.depDates[firstDepIdx];
+    const depEnd = seqPorkchop.depDates[lastDepIdx];
+    const arrStart = seqPorkchop.arrDates[firstArrIdx];
+    const arrEnd = seqPorkchop.arrDates[lastArrIdx];
+
+    return {
+      depStart,
+      depEnd,
+      depDuration: depEnd - depStart,
+      arrStart,
+      arrEnd,
+      arrDuration: arrEnd - arrStart,
+    };
+  }, [seqPorkchop, nDep, nArr]);
 
   // Collect valid values for current matrix
   const validValues: number[] = [];
@@ -557,6 +609,30 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                   {hoverData && hoverData.isValid ? `${hoverData.totalPoweredDv.toFixed(1)} m/s` : '--'}
                 </span>
               </div>
+            </div>
+
+            {/* Row 3: Feasible Date Windows */}
+            <div className="border-t border-[#27272A] pt-1.5 mt-1.5 text-[10px] flex flex-wrap items-center justify-between gap-2 text-[#A1A1AA]">
+              <div className="flex items-center gap-1.5 font-semibold text-[#60A5FA]">
+                <Calendar className="w-3 h-3 text-[#60A5FA]" />
+                <span>Feasible Windows:</span>
+              </div>
+              {dateWindows ? (
+                <div className="flex flex-wrap items-center gap-3 font-mono text-[10px]">
+                  <div>
+                    <span className="text-[#71717A] mr-1">Dep:</span>
+                    <strong className="text-white">{formatShortUT(dateWindows.depStart, timeFormatMode)} ➔ {formatShortUT(dateWindows.depEnd, timeFormatMode)}</strong>
+                    <span className="text-[#38BDF8] ml-1">({formatDuration(dateWindows.depDuration, timeFormatMode)})</span>
+                  </div>
+                  <div>
+                    <span className="text-[#71717A] mr-1">Arr:</span>
+                    <strong className="text-white">{formatShortUT(dateWindows.arrStart, timeFormatMode)} ➔ {formatShortUT(dateWindows.arrEnd, timeFormatMode)}</strong>
+                    <span className="text-[#38BDF8] ml-1">({formatDuration(dateWindows.arrDuration, timeFormatMode)})</span>
+                  </div>
+                </div>
+              ) : (
+                <span className="italic text-[#71717A]">No feasible transfers found in this range.</span>
+              )}
             </div>
 
           </div>
