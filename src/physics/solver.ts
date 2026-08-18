@@ -9,13 +9,31 @@ import {
   DirectionalLink,
   PorkchopPlotData,
   SequencePorkchopData,
+  SubtaskProgressInfo,
   LambertTransferResult,
   FlyableSequenceResult,
   FlybyDetail
 } from '../types';
-import { getBodyStateAtUT, getOrbitalPeriod, vecMag, vecDot, vecSub, Vector3D } from './kepler';
+import { getBodyStateAtUT, getOrbitalPeriod, getGravitationalParameter, vecMag, vecDot, vecSub, Vector3D } from './kepler';
 import { solveLambert, solveLambertBest, solveLambertAllRevolutions, LambertSolution } from './lambert';
-import { matchUnpoweredFlyby, evaluateFlybyAtDate, FlybyFeasibility } from './flyby';
+import {
+  matchUnpoweredFlyby,
+  evaluateFlybyAtDate,
+  FlybyFeasibility,
+  evaluateSequenceTransferFromDirectPorkchops,
+  evaluateHigherOrderSequenceTransferAddLastLeg,
+  evaluateHigherOrderSequenceTransferAddFirstLeg,
+  SequenceTransferResult,
+  SequenceTransferProfiler,
+} from './flyby';
+
+export {
+  evaluateSequenceTransferFromDirectPorkchops,
+  evaluateHigherOrderSequenceTransferAddLastLeg,
+  evaluateHigherOrderSequenceTransferAddFirstLeg,
+  SequenceTransferProfiler,
+};
+export type { SequenceTransferResult };
 
 const MIN_SAMPLE_COUNT = 20;
 export const SAMPLE_PER_PERIOD = 64;
@@ -184,6 +202,14 @@ function getTisserandIntersectionTheta(
 
 /**
  * Computes Tisserand v_inf envelopes (in m/s) for each instance using iterative 3-body deflection/crossing propagation.
+ * This function calculates the minimum and maximum allowable incoming/outgoing velocity (v_infinity)
+ * for each celestial body instance, ensuring compatibility with connected instances (flybys, arrivals, departures).
+ *
+ * @param instances - Array of mission instances (e.g., flybys, arrivals, departures).
+ * @param links - Array of directional links between instances (e.g., trajectories).
+ * @param bodies - Array of celestial bodies (e.g., planets, moons).
+ * @param mainBody - The primary celestial body (e.g., the Sun) for gravitational calculations.
+ * @returns A record mapping instance IDs to their { minMs, maxMs } velocity envelopes.
  */
 export function computeTisserandEnvelopes(
   instances: InstanceNode[],
@@ -191,27 +217,37 @@ export function computeTisserandEnvelopes(
   bodies: CelestialBody[],
   mainBody: CelestialBody
 ): Record<string, { minMs: number; maxMs: number }> {
+
+  // --- Step 1: Create lookup maps for instances and bodies for quick access ---
   const instMap = new Map<string, InstanceNode>();
   instances.forEach(i => instMap.set(i.id, i));
 
   const bodyMap = new Map<string, CelestialBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
+  // Default gravitational parameter for the main body (e.g., Sun)
   const mu_main = mainBody.stdGravParam || 1.32712440018e20;
 
+  // --- Step 2: Precompute body-specific parameters ---
+  // For each body (except the main body), calculate:
+  // - Minimum flyby radius (r_p_min): body radius + minimum altitude (from instances or atmosphere height)
+  // - vInf5DegMs: Maximum v_infinity for a 5-degree deflection (derived from Tisserand's criterion)
   const bodyPrepMap: Record<string, {
     body: CelestialBody;
     r_p_min: number;
     vInf5DegMs: number;
   }> = {};
 
+  // Initialize envelopes for active instances (default: { minMs: 0, maxMs: vInf5DegMs })
   const activeInstanceEnvelopes: Record<string, { minMs: number; maxMs: number }> = {};
 
   bodies.forEach(body => {
-    if (body.name === mainBody.name) return;
-    const mu_b = body.stdGravParam;
-    const R_b = body.radius;
+    if (body.name === mainBody.name) return; // Skip the main body
 
+    const mu_b = body.stdGravParam; // Gravitational parameter of the body
+    const R_b = body.radius; // Radius of the body
+
+    // Find the minimum flyby altitude for this body across all instances
     const bodyInstances = instances.filter(i => i.bodyName === body.name);
     let minAlt = Infinity;
     bodyInstances.forEach(inst => {
@@ -219,15 +255,18 @@ export function computeTisserandEnvelopes(
         minAlt = inst.minFlybyRadius;
       }
     });
+    // Fallback to atmosphere height if no instances define a minFlybyRadius
     if (minAlt === Infinity) {
       minAlt = body.atmosphereHeight;
     }
-    const r_p_min = R_b + minAlt;
+    const r_p_min = R_b + minAlt; // Minimum flyby radius (body radius + min altitude)
 
-    const targetDeltaRad = (5 * Math.PI) / 180;
+    // Calculate v_infinity for a 5-degree deflection angle (Tisserand's criterion)
+    const targetDeltaRad = (5 * Math.PI) / 180; // 5 degrees in radians
     const sinHalfDelta = Math.sin(targetDeltaRad / 2);
     const vInf5DegMs = Math.sqrt(((1 / sinHalfDelta) - 1) * mu_b / r_p_min);
 
+    // Store precomputed values for the body
     bodyPrepMap[body.name] = {
       body,
       r_p_min,
@@ -235,32 +274,49 @@ export function computeTisserandEnvelopes(
     };
   });
 
+  // --- Step 3: Initialize envelopes for all instances ---
+  // For each instance, set the initial maxMs to the body's vInf5DegMs (or maxC3 if applicable)
   instances.forEach(inst => {
     const prep = bodyPrepMap[inst.bodyName];
     if (!prep) return;
+
     let maxMs = prep.vInf5DegMs;
-    const hasIncoming = links.some(l => l.targetInstanceId === inst.id);
-    const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id);
-    const isPureFlyby = hasIncoming && hasOutgoing && !inst.isSourceOverride;
+    const hasIncoming = links.some(l => l.targetInstanceId === inst.id); // Has incoming trajectory
+    const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id); // Has outgoing trajectory
+    const isPureFlyby = hasIncoming && hasOutgoing && !inst.isSourceOverride; // Pure flyby (no source override)
+
+    // If not a pure flyby and maxC3 is defined, cap maxMs to sqrt(maxC3) * 1000 (convert km²/s² to m/s)
     if (!isPureFlyby && inst.maxC3 !== undefined && inst.maxC3 > 0) {
       maxMs = Math.min(maxMs, Math.sqrt(inst.maxC3) * 1000);
     }
+    // Ensure maxMs is at least 1000 m/s
     maxMs = Math.max(1000, maxMs);
+
     activeInstanceEnvelopes[inst.id] = { minMs: 0, maxMs };
   });
 
+  // --- Step 4: Helper function to validate v_infinity for an instance ---
+  // Checks if a given v_infinity (vInfMs) is valid for an instance by ensuring:
+  // - For pure flybys: The deflection angle is compatible with connected instances.
+  // - For arrivals/departures: The v_infinity allows a connection to at least one neighbor.
   const testInstanceVInfMsValid = (inst: InstanceNode, vInfMs: number): boolean => {
     const body = bodyMap.get(inst.bodyName);
     const prep = bodyPrepMap[inst.bodyName];
-    if (!body || !prep) return true;
+    if (!body || !prep) return true; // Skip if body or prep data is missing
 
-    const inLinks = links.filter(l => l.targetInstanceId === inst.id);
-    const outLinks = links.filter(l => l.sourceInstanceId === inst.id);
+    const inLinks = links.filter(l => l.targetInstanceId === inst.id); // Incoming trajectories
+    const outLinks = links.filter(l => l.sourceInstanceId === inst.id); // Outgoing trajectories
 
+    // --- Case 1: Pure flyby (incoming + outgoing trajectories) ---
     if (inLinks.length > 0 && outLinks.length > 0) {
-      const sinHalfDeltaMax = Math.min(1, Math.max(0, 1 / (1 + (prep.r_p_min * vInfMs * vInfMs) / body.stdGravParam)));
+      // Calculate the maximum possible deflection angle for this v_infinity
+      const sinHalfDeltaMax = Math.min(
+        1,
+        Math.max(0, 1 / (1 + (prep.r_p_min * vInfMs * vInfMs) / body.stdGravParam))
+      );
       const deltaMaxRad = 2 * Math.asin(sinHalfDeltaMax);
 
+      // Check if there exists at least one pair of incoming/outgoing links that satisfy the deflection constraint
       let satisfiesPair = false;
       for (const inLink of inLinks) {
         const srcInst = instMap.get(inLink.sourceInstanceId);
@@ -276,10 +332,12 @@ export function computeTisserandEnvelopes(
           const env2 = activeInstanceEnvelopes[tgtInst.id];
           if (!b2 || !env2 || (env2.minMs === 0 && env2.maxMs === 0)) continue;
 
+          // Sample velocities from the source and target envelopes
           const numSamples: number = 30;
           const theta1List: number[] = [];
           const theta2List: number[] = [];
 
+          // Sample incoming velocities (env1)
           for (let i = 0; i < numSamples; i++) {
             const frac = numSamples === 1 ? 0 : i / (numSamples - 1);
             const v1 = env1.minMs + frac * (env1.maxMs - env1.minMs);
@@ -287,6 +345,7 @@ export function computeTisserandEnvelopes(
             if (res1) theta1List.push(res1.thetaA);
           }
 
+          // Sample outgoing velocities (env2)
           for (let i = 0; i < numSamples; i++) {
             const frac = numSamples === 1 ? 0 : i / (numSamples - 1);
             const v2 = env2.minMs + frac * (env2.maxMs - env2.minMs);
@@ -296,6 +355,7 @@ export function computeTisserandEnvelopes(
 
           if (theta1List.length === 0 || theta2List.length === 0) continue;
 
+          // Find the minimum angular separation between incoming and outgoing theta ranges
           const minT1 = Math.min(...theta1List);
           const maxT1 = Math.max(...theta1List);
           const minT2 = Math.min(...theta2List);
@@ -303,6 +363,7 @@ export function computeTisserandEnvelopes(
 
           const minDeflectionRad = Math.max(0, minT2 - maxT1, minT1 - maxT2);
 
+          // If the minimum deflection is <= deltaMaxRad, the pair is valid
           if (minDeflectionRad <= deltaMaxRad + 1e-4) {
             satisfiesPair = true;
             break;
@@ -311,7 +372,9 @@ export function computeTisserandEnvelopes(
         if (satisfiesPair) break;
       }
       return satisfiesPair;
-    } else if (inLinks.length > 0) {
+    }
+    // --- Case 2: Arrival (only incoming trajectories) ---
+    else if (inLinks.length > 0) {
       let satisfiesNeigh = false;
       for (const inLink of inLinks) {
         const srcInst = instMap.get(inLink.sourceInstanceId);
@@ -320,10 +383,12 @@ export function computeTisserandEnvelopes(
         const envNb = activeInstanceEnvelopes[srcInst.id];
         if (!nb || !envNb || (envNb.minMs === 0 && envNb.maxMs === 0)) continue;
 
+        // Sample velocities from the source envelope
         const numSamplesIn: number = 30;
         for (let i = 0; i < numSamplesIn; i++) {
           const frac = numSamplesIn === 1 ? 0 : i / (numSamplesIn - 1);
           const vNb = envNb.minMs + frac * (envNb.maxMs - envNb.minMs);
+          // Check if a valid intersection exists for this v_infinity
           if (getTisserandIntersectionTheta(body, vInfMs, nb, vNb, mu_main) !== null) {
             satisfiesNeigh = true;
             break;
@@ -332,7 +397,9 @@ export function computeTisserandEnvelopes(
         if (satisfiesNeigh) break;
       }
       return satisfiesNeigh;
-    } else if (outLinks.length > 0) {
+    }
+    // --- Case 3: Departure (only outgoing trajectories) ---
+    else if (outLinks.length > 0) {
       let satisfiesNeigh = false;
       for (const outLink of outLinks) {
         const tgtInst = instMap.get(outLink.targetInstanceId);
@@ -341,10 +408,12 @@ export function computeTisserandEnvelopes(
         const envNb = activeInstanceEnvelopes[tgtInst.id];
         if (!nb || !envNb || (envNb.minMs === 0 && envNb.maxMs === 0)) continue;
 
+        // Sample velocities from the target envelope
         const numSamplesOut: number = 30;
         for (let i = 0; i < numSamplesOut; i++) {
           const frac = numSamplesOut === 1 ? 0 : i / (numSamplesOut - 1);
           const vNb = envNb.minMs + frac * (envNb.maxMs - envNb.minMs);
+          // Check if a valid intersection exists for this v_infinity
           if (getTisserandIntersectionTheta(body, vInfMs, nb, vNb, mu_main) !== null) {
             satisfiesNeigh = true;
             break;
@@ -355,17 +424,21 @@ export function computeTisserandEnvelopes(
       return satisfiesNeigh;
     }
 
+    // If no links, assume valid (edge case)
     return true;
   };
 
+  // --- Step 5: Iteratively refine envelopes ---
+  // Use a binary search to adjust minMs and maxMs for each instance until convergence
   let changed = true;
   let passCount = 0;
-  const maxPasses = 100;
+  const maxPasses = 100; // Prevent infinite loops
 
   while (changed && passCount < maxPasses) {
     changed = false;
     passCount++;
 
+    // Alternate sweep direction (forward/backward) for better convergence
     const sweepOrder = passCount % 2 === 1
       ? [...instances]
       : [...instances].reverse();
@@ -380,15 +453,18 @@ export function computeTisserandEnvelopes(
       const instPrevMinMs = curInstEnv.minMs;
       const instPrevMaxMs = curInstEnv.maxMs;
 
-      const stepMs = 50;
+      // --- Step 5.1: Coarse sampling of v_infinity values ---
+      const stepMs = 50; // Coarse step size (m/s)
       const coarseSamples: number[] = [];
       for (let v = curInstEnv.minMs; v < curInstEnv.maxMs; v += stepMs) {
         coarseSamples.push(v);
       }
+      // Ensure the maxMs is included
       if (coarseSamples.length === 0 || coarseSamples[coarseSamples.length - 1] !== curInstEnv.maxMs) {
         coarseSamples.push(curInstEnv.maxMs);
       }
 
+      // Find indices of valid v_infinity values in the coarse sample
       const validCoarseIndices: number[] = [];
       for (let i = 0; i < coarseSamples.length; i++) {
         if (testInstanceVInfMsValid(inst, coarseSamples[i])) {
@@ -396,6 +472,7 @@ export function computeTisserandEnvelopes(
         }
       }
 
+      // If no valid coarse samples, try finer sampling
       if (validCoarseIndices.length === 0) {
         for (let v = curInstEnv.minMs; v <= curInstEnv.maxMs; v += 10) {
           if (testInstanceVInfMsValid(inst, v)) {
@@ -405,16 +482,19 @@ export function computeTisserandEnvelopes(
         }
       }
 
+      // --- Step 5.2: Refine minMs and maxMs using binary search ---
       let newMinMs = 0;
       let newMaxMs = 0;
 
       if (validCoarseIndices.length > 0) {
+        // Refine minMs
         const firstValidIdx = validCoarseIndices[0];
         if (firstValidIdx === 0 && testInstanceVInfMsValid(inst, curInstEnv.minMs)) {
           newMinMs = curInstEnv.minMs;
         } else {
           let low = firstValidIdx > 0 ? coarseSamples[firstValidIdx - 1] : curInstEnv.minMs;
           let high = coarseSamples[firstValidIdx];
+          // Binary search to find the smallest valid v_infinity
           while (high - low > 1) {
             const mid = Math.floor((low + high) / 2);
             if (testInstanceVInfMsValid(inst, mid)) {
@@ -426,12 +506,14 @@ export function computeTisserandEnvelopes(
           newMinMs = high;
         }
 
+        // Refine maxMs
         const lastValidIdx = validCoarseIndices[validCoarseIndices.length - 1];
         if (lastValidIdx === coarseSamples.length - 1 && testInstanceVInfMsValid(inst, curInstEnv.maxMs)) {
           newMaxMs = curInstEnv.maxMs;
         } else {
           let low = coarseSamples[lastValidIdx];
           let high = lastValidIdx < coarseSamples.length - 1 ? coarseSamples[lastValidIdx + 1] : curInstEnv.maxMs;
+          // Binary search to find the largest valid v_infinity
           while (high - low > 1) {
             const mid = Math.floor((low + high) / 2);
             if (testInstanceVInfMsValid(inst, mid)) {
@@ -444,11 +526,13 @@ export function computeTisserandEnvelopes(
         }
       }
 
+      // Ensure minMs <= maxMs
       if (newMinMs > newMaxMs) {
         newMinMs = 0;
         newMaxMs = 0;
       }
 
+      // Update the envelope if there's a significant change
       if (Math.abs(newMinMs - instPrevMinMs) >= 1 || Math.abs(newMaxMs - instPrevMaxMs) >= 1) {
         activeInstanceEnvelopes[inst.id] = { minMs: newMinMs, maxMs: newMaxMs };
         changed = true;
@@ -475,23 +559,27 @@ export function propagateC3Bounds(
     const env = envs[inst.id];
     const hasIncoming = links.some(l => l.targetInstanceId === inst.id);
     const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id);
-    const isPureFlyby = hasIncoming && hasOutgoing && !inst.isSourceOverride;
+    const isFlyby = hasIncoming && hasOutgoing;
+    const isSource = !hasIncoming || !!inst.isSourceOverride;
+    const isTarget = !hasOutgoing;
 
     if (!env || (env.minMs === 0 && env.maxMs === 0)) {
       return {
         ...inst,
         computedMinC3: 0,
-        computedMaxC3: !isPureFlyby ? (inst.maxC3 ?? 0) : 0,
+        computedMaxC3: !isFlyby ? (inst.maxC3 ?? 0) : 0,
       };
     }
 
     const minKms = env.minMs / 1000;
     const maxKms = env.maxMs / 1000;
 
-    let minC3 = minKms * minKms;
+    // 2. an instance which is a source or target should have a minimum C3 of 0
+    let minC3 = (isSource || isTarget) ? 0 : minKms * minKms;
     let maxC3 = maxKms * maxKms;
 
-    if (!isPureFlyby && inst.maxC3 !== undefined) {
+    // 1. maxC3 should not lower the maximum C3 given by the tisserand plot if the instance is a flyby among other roles
+    if (!isFlyby && inst.maxC3 !== undefined) {
       maxC3 = Math.min(maxC3, inst.maxC3);
       if (minC3 > maxC3) minC3 = 0;
     }
@@ -888,12 +976,10 @@ export async function computePorkchopPlot(
           c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
           dv = vInfDepMag + vInfArrMag;
 
-          const passSrcC3 = (srcInstance.maxC3 === undefined || c3Dep <= srcInstance.maxC3) &&
-                            (srcInstance.computedMinC3 === undefined || c3Dep >= srcInstance.computedMinC3 - 0.05) &&
+          const passSrcC3 = (srcInstance.computedMinC3 === undefined || c3Dep >= srcInstance.computedMinC3 - 0.05) &&
                             (srcInstance.computedMaxC3 === undefined || c3Dep <= srcInstance.computedMaxC3 + 0.05);
 
-          const passTgtC3 = (tgtInstance.maxC3 === undefined || c3Arr <= tgtInstance.maxC3) &&
-                            (tgtInstance.computedMinC3 === undefined || c3Arr >= tgtInstance.computedMinC3 - 0.05) &&
+          const passTgtC3 = (tgtInstance.computedMinC3 === undefined || c3Arr >= tgtInstance.computedMinC3 - 0.05) &&
                             (tgtInstance.computedMaxC3 === undefined || c3Arr <= tgtInstance.computedMaxC3 + 0.05);
 
           passC3 = passSrcC3 && passTgtC3;
@@ -929,8 +1015,8 @@ export async function computePorkchopPlot(
       // Yield execution every 25ms so the browser event loop remains responsive
       if (now - lastYieldTime > 25) {
         lastYieldTime = now;
-        // Throttle UI updates to every 120ms (smooth ~8 FPS updates without deep cloning overhead)
-        if (now - lastUpdateDataTime > 10000) {
+        // Throttle UI updates to every 60ms for smooth progress animation
+        if (now - lastUpdateDataTime > 60) {
           lastUpdateDataTime = now;
           pcData.computedSamples = computedPointsCount;
           pcData.totalSamples = totalPoints;
@@ -978,8 +1064,8 @@ function evaluateSequenceTransferForDates(
   c3ArrC?: number;
   c3DepC?: number;
 } | null {
+  if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 3) return null;
   const N = pathInsts.length;
-  if (N < 3) return null;
 
   const bodyMap = new Map<string, CelestialBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
@@ -1016,16 +1102,18 @@ function evaluateSequenceTransferForDates(
 
     const candList = Array.from(candidateDates).sort((a, b) => a - b);
 
-    let minDv = Infinity;
-    let bestChoice: {
+    interface DirectFlybySample {
+      tFlybyB: number;
       c3DepA: number;
       c3ArrB: number;
       c3DepB: number;
       c3ArrC: number;
-      totalDv: number;
-      flybyDvs: number[];
-      flybyDates: number[];
-    } | null = null;
+      deflectionAngleDeg: number;
+      maxDeflectionAngleDeg: number;
+      dv: number;
+    }
+
+    const samples: DirectFlybySample[] = [];
 
     for (const tFlybyB of candList) {
       const dt1 = tFlybyB - tDep;
@@ -1045,6 +1133,9 @@ function evaluateSequenceTransferForDates(
         sols2 = solveLambertAllRevolutions(stB.pos, stTgt.pos, dt2, muCentral, true, minAllowedRadius);
       }
       if (sols2.length === 0 || !sols2[0].isValid) continue;
+
+      let bestSampleForDate: DirectFlybySample | null = null;
+      let minDvForDate = Infinity;
 
       for (const sol1 of sols1) {
         for (const sol2 of sols2) {
@@ -1079,19 +1170,183 @@ function evaluateSequenceTransferForDates(
           if (tgtInst.computedMinC3 !== undefined && c3ArrC < tgtInst.computedMinC3 - 0.05) continue;
           if (tgtInst.computedMaxC3 !== undefined && c3ArrC > tgtInst.computedMaxC3 + 0.05) continue;
 
-          if (evalRes.poweredDv < minDv) {
-            minDv = evalRes.poweredDv;
-            bestChoice = {
+          if (evalRes.poweredDv < minDvForDate) {
+            minDvForDate = evalRes.poweredDv;
+            bestSampleForDate = {
+              tFlybyB,
               c3DepA,
               c3ArrB,
               c3DepB,
               c3ArrC,
-              totalDv: evalRes.poweredDv,
-              flybyDvs: [evalRes.poweredDv],
-              flybyDates: [tFlybyB],
+              deflectionAngleDeg: evalRes.deflectionAngleDeg,
+              maxDeflectionAngleDeg: evalRes.maxDeflectionAngleDeg,
+              dv: evalRes.poweredDv,
             };
           }
         }
+      }
+
+      if (bestSampleForDate) {
+        samples.push(bestSampleForDate);
+      }
+    }
+
+    if (samples.length === 0) return null;
+
+    // Find all local minima in samples
+    const M = samples.length;
+    const localMinIndices: number[] = [];
+
+    for (let k = 0; k < M; k++) {
+      if (k > 0 && k < M - 1) {
+        if (samples[k - 1].dv > samples[k].dv && samples[k + 1].dv > samples[k].dv) {
+          localMinIndices.push(k);
+        }
+      } else if (k === 0) {
+        if (M >= 2 && samples[1].dv > samples[0].dv) {
+          localMinIndices.push(0);
+        } else if (M === 1) {
+          localMinIndices.push(0);
+        }
+      } else if (k === M - 1) {
+        if (M >= 2 && samples[M - 2].dv > samples[M - 1].dv) {
+          localMinIndices.push(M - 1);
+        }
+      }
+    }
+
+    if (localMinIndices.length === 0) {
+      let minK = 0;
+      let minVal = Infinity;
+      for (let k = 0; k < M; k++) {
+        if (samples[k].dv < minVal) {
+          minVal = samples[k].dv;
+          minK = k;
+        }
+      }
+      localMinIndices.push(minK);
+    }
+
+    const muFlyby = getGravitationalParameter(flybyBody);
+    const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+    const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
+
+    const evalExtrapolatedAtDate = (t: number) => {
+      let s = 0;
+      while (s < M - 2 && samples[s + 1].tFlybyB <= t) {
+        s++;
+      }
+
+      const p1 = samples[s];
+      const p2 = samples[Math.min(M - 1, s + 1)];
+      const dt = p2.tFlybyB - p1.tFlybyB;
+      const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlybyB) / dt)) : 0;
+
+      const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
+      const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
+      const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
+      const c3ArrC = interp(p1.c3ArrC, p2.c3ArrC, alpha);
+      const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
+      const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
+
+      let totalDv = 0;
+      if (c3ArrB >= 0 && c3DepB >= 0) {
+        const vInfInMag = Math.sqrt(c3ArrB * 1e6);
+        const vInfOutMag = Math.sqrt(c3DepB * 1e6);
+
+        const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
+        const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
+
+        let excessAngle = 0;
+        if (deflectionAngleDeg > maxDeflectionAngleDeg) {
+          excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
+        }
+
+        if (excessAngle > 1e-5) {
+          totalDv = Math.sqrt(
+            vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
+          );
+        } else {
+          totalDv = Math.abs(vpOut - vpIn);
+        }
+
+        const deltaC3 = Math.abs(c3ArrB - c3DepB);
+        if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
+          totalDv = 0;
+        }
+      }
+
+      return {
+        c3DepA,
+        c3ArrB,
+        c3DepB,
+        c3ArrC,
+        totalDv,
+        flybyDvs: [totalDv],
+        flybyDates: [t],
+      };
+    };
+
+    let bestChoice: {
+      c3DepA: number;
+      c3ArrB: number;
+      c3DepB: number;
+      c3ArrC: number;
+      totalDv: number;
+      flybyDvs: number[];
+      flybyDates: number[];
+    } | null = null;
+
+    let bestOverallDv = Infinity;
+
+    for (const candIndex of localMinIndices) {
+      let a = candIndex > 0 ? samples[candIndex - 1].tFlybyB : samples[0].tFlybyB;
+      let b = candIndex < M - 1 ? samples[candIndex + 1].tFlybyB : samples[M - 1].tFlybyB;
+
+      const datePrecision = 864; // 1% of a day (864 seconds)
+      let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+
+      let iter = 0;
+      while (b - a > datePrecision && iter < 30) {
+        iter++;
+        const delta = (b - a) * 0.001;
+        const mid = (a + b) / 2;
+        const m1 = mid - delta;
+        const m2 = mid + delta;
+
+        const res1 = evalExtrapolatedAtDate(m1);
+        const res2 = evalExtrapolatedAtDate(m2);
+
+        if (res1.totalDv < currentBest.totalDv) currentBest = res1;
+        if (res2.totalDv < currentBest.totalDv) currentBest = res2;
+
+        if (res1.totalDv < 1.0 || res2.totalDv < 1.0) {
+          break;
+        }
+
+        if (res1.totalDv < res2.totalDv) {
+          b = m2;
+        } else {
+          a = m1;
+        }
+      }
+
+      if (currentBest.totalDv < 1.0) {
+        return {
+          c3DepA: currentBest.c3DepA,
+          c3ArrFinal: currentBest.c3ArrC,
+          totalDv: currentBest.totalDv,
+          flybyDvs: currentBest.flybyDvs,
+          flybyDates: currentBest.flybyDates,
+          c3ArrB: currentBest.c3ArrB,
+          c3DepB: currentBest.c3DepB,
+          c3ArrC: currentBest.c3ArrC,
+        };
+      }
+
+      if (currentBest.totalDv < bestOverallDv) {
+        bestOverallDv = currentBest.totalDv;
+        bestChoice = currentBest;
       }
     }
 
@@ -1385,311 +1640,55 @@ function evaluateSequenceTransferForDates(
   };
 }
 
-/**
- * Evaluates sequence transfer for a pair of departure/arrival dates using precomputed direct transfer porkchops.
- * NO Lambert calculations — parses direct transfer porkchop matrices and evaluates flybys.
- */
-export function evaluateSequenceTransferFromDirectPorkchops(
-  pathInsts: InstanceNode[],
-  tDep: number,
-  tArr: number,
-  bodies: CelestialBody[],
-  mainBody: CelestialBody,
-  porkchops: Record<string, PorkchopPlotData> = {},
-  links: DirectionalLink[] = []
-): {
-  c3DepA: number;
-  c3ArrB?: number;
-  c3DepB?: number;
-  c3ArrC?: number;
-  c3DepC?: number;
-  c3ArrFinal: number;
-  totalDv: number;
-  flybyDvs: number[];
-  flybyDates: number[];
-} | null {
-  const N = pathInsts.length;
-  if (N < 3) return null;
-
-  const bodyMap = new Map<string, CelestialBody>();
-  bodies.forEach(b => bodyMap.set(b.name, b));
-
-  // Find direct link porkchops for each leg
-  const legPorkchops: PorkchopPlotData[] = [];
-  for (let k = 0; k < N - 1; k++) {
-    const srcInst = pathInsts[k];
-    const tgtInst = pathInsts[k + 1];
-    const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
-    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`;
-    const pc = porkchops[linkId];
-    if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) return null;
-    legPorkchops.push(pc);
-  }
-
-  const P0 = legPorkchops[0];
-  const P_last = legPorkchops[legPorkchops.length - 1];
-
-  // Nearest departure row in P0
-  let i0 = 0;
-  let minDiffDep = Infinity;
-  for (let i = 0; i < P0.depDates.length; i++) {
-    const diff = Math.abs(P0.depDates[i] - tDep);
-    if (diff < minDiffDep) {
-      minDiffDep = diff;
-      i0 = i;
-    }
-  }
-
-  // Nearest arrival col in P_last
-  let j_last = 0;
-  let minDiffArr = Infinity;
-  for (let j = 0; j < P_last.arrDates.length; j++) {
-    const diff = Math.abs(P_last.arrDates[j] - tArr);
-    if (diff < minDiffArr) {
-      minDiffArr = diff;
-      j_last = j;
-    }
-  }
-
-  const muCentral = mainBody.stdGravParam || 1.32712440018e20;
-
-  if (N === 3) {
-    const P1 = legPorkchops[1];
-    const flybyInst = pathInsts[1];
-    const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
-    const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
-
-    let bestDv = Infinity;
-    let bestResult: {
-      c3DepA: number;
-      c3ArrB: number;
-      c3DepB: number;
-      c3ArrFinal: number;
-      totalDv: number;
-      flybyDvs: number[];
-      flybyDates: number[];
-    } | null = null;
-
-    // Search across arrival dates at body B in P0
-    for (let j0 = 0; j0 < P0.arrDates.length; j0++) {
-      if (!P0.validMatrix[i0]?.[j0]) continue;
-
-      const tFlyby = P0.arrDates[j0];
-
-      // Find row in P1 closest to tFlyby
-      let i1 = -1;
-      let minDiffFlyby = 86400 * 5; // Within 5-day window
-      for (let i = 0; i < P1.depDates.length; i++) {
-        const diff = Math.abs(P1.depDates[i] - tFlyby);
-        if (diff < minDiffFlyby) {
-          minDiffFlyby = diff;
-          i1 = i;
-        }
-      }
-      if (i1 < 0) continue;
-      if (!P1.validMatrix[i1]?.[j_last]) continue;
-
-      const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
-      const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j_last];
-      if (!vTransArr0 || !vTransDep1) continue;
-
-      const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
-      const vInfIn = vecSub(vTransArr0, stBody.vel);
-      const vInfOut = vecSub(vTransDep1, stBody.vel);
-
-      const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
-      if (flybyEval.flybyMargin < -100000) continue;
-
-      const c3DepA = P0.c3DepMatrix[i0][j0];
-      const c3ArrB = P0.c3ArrMatrix[i0][j0];
-      const c3DepB = P1.c3DepMatrix[i1][j_last];
-      const c3ArrFinal = P1.c3ArrMatrix[i1][j_last];
-      const totDv = flybyEval.poweredDv;
-
-      if (totDv < bestDv) {
-        bestDv = totDv;
-        bestResult = {
-          c3DepA,
-          c3ArrB,
-          c3DepB,
-          c3ArrFinal,
-          totalDv: totDv,
-          flybyDvs: [flybyEval.poweredDv],
-          flybyDates: [tFlyby],
-        };
-      }
-    }
-
-    return bestResult;
-  }
-
-  if (N === 4) {
-    const P1 = legPorkchops[1];
-    const P2 = legPorkchops[2];
-
-    const fb1Inst = pathInsts[1];
-    const fb2Inst = pathInsts[2];
-
-    const fb1Body = bodyMap.get(fb1Inst.bodyName) || mainBody;
-    const fb2Body = bodyMap.get(fb2Inst.bodyName) || mainBody;
-
-    const minFb1Rad = fb1Inst.minFlybyRadius ?? (1.1 * (fb1Body.radius + (fb1Body.atmosphereHeight || 0)));
-    const minFb2Rad = fb2Inst.minFlybyRadius ?? (1.1 * (fb2Body.radius + (fb2Body.atmosphereHeight || 0)));
-
-    let bestDv = Infinity;
-    let bestResult: {
-      c3DepA: number;
-      c3ArrB: number;
-      c3DepB: number;
-      c3ArrC: number;
-      c3DepC: number;
-      c3ArrFinal: number;
-      totalDv: number;
-      flybyDvs: number[];
-      flybyDates: number[];
-    } | null = null;
-
-    for (let j0 = 0; j0 < P0.arrDates.length; j0++) {
-      if (!P0.validMatrix[i0]?.[j0]) continue;
-      const tFb1 = P0.arrDates[j0];
-
-      let i1 = -1;
-      let minDiff1 = 86400 * 5;
-      for (let i = 0; i < P1.depDates.length; i++) {
-        const diff = Math.abs(P1.depDates[i] - tFb1);
-        if (diff < minDiff1) {
-          minDiff1 = diff;
-          i1 = i;
-        }
-      }
-      if (i1 < 0) continue;
-
-      for (let j1 = 0; j1 < P1.arrDates.length; j1++) {
-        if (!P1.validMatrix[i1]?.[j1]) continue;
-        const tFb2 = P1.arrDates[j1];
-
-        let i2 = -1;
-        let minDiff2 = 86400 * 5;
-        for (let i = 0; i < P2.depDates.length; i++) {
-          const diff = Math.abs(P2.depDates[i] - tFb2);
-          if (diff < minDiff2) {
-            minDiff2 = diff;
-            i2 = i;
-          }
-        }
-        if (i2 < 0) continue;
-        if (!P2.validMatrix[i2]?.[j_last]) continue;
-
-        const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
-        const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j1];
-        const vTransArr1 = P1.vTransArrMatrix?.[i1]?.[j1];
-        const vTransDep2 = P2.vTransDepMatrix?.[i2]?.[j_last];
-
-        if (!vTransArr0 || !vTransDep1 || !vTransArr1 || !vTransDep2) continue;
-
-        const stFb1 = getBodyStateAtUT(fb1Body, mainBody, tFb1);
-        const stFb2 = getBodyStateAtUT(fb2Body, mainBody, tFb2);
-
-        const vInfIn1 = vecSub(vTransArr0, stFb1.vel);
-        const vInfOut1 = vecSub(vTransDep1, stFb1.vel);
-        const eval1 = evaluateFlybyAtDate(fb1Body, vInfIn1, vInfOut1, tFb1, minFb1Rad);
-        if (eval1.flybyMargin < -100000) continue;
-
-        const vInfIn2 = vecSub(vTransArr1, stFb2.vel);
-        const vInfOut2 = vecSub(vTransDep2, stFb2.vel);
-        const eval2 = evaluateFlybyAtDate(fb2Body, vInfIn2, vInfOut2, tFb2, minFb2Rad);
-        if (eval2.flybyMargin < -100000) continue;
-
-        const totDv = eval1.poweredDv + eval2.poweredDv;
-
-        if (totDv < bestDv) {
-          bestDv = totDv;
-          bestResult = {
-            c3DepA: P0.c3DepMatrix[i0][j0],
-            c3ArrB: P0.c3ArrMatrix[i0][j0],
-            c3DepB: P1.c3DepMatrix[i1][j1],
-            c3ArrC: P1.c3ArrMatrix[i1][j1],
-            c3DepC: P2.c3DepMatrix[i2][j_last],
-            c3ArrFinal: P2.c3ArrMatrix[i2][j_last],
-            totalDv: totDv,
-            flybyDvs: [eval1.poweredDv, eval2.poweredDv],
-            flybyDates: [tFb1, tFb2],
-          };
-        }
-      }
-    }
-
-    return bestResult;
-  }
-
-  return null;
+export interface ComputeSequencePorkchopOptions {
+  pathInsts: InstanceNode[];
+  bodies: CelestialBody[];
+  mainBody: CelestialBody;
+  links?: DirectionalLink[];
+  porkchops?: Record<string, PorkchopPlotData>;
+  sequencePorkchops?: Record<string, SequencePorkchopData>;
+  onProgress?: ProgressCallback;
+  onPartialUpdate?: (seqPc: SequencePorkchopData) => void;
+  shouldStop?: () => boolean;
+  isFullPath?: boolean;
+  onSubtaskProgress?: (subtask: SubtaskProgressInfo | null) => void;
+  onDirectPorkchopUpdate?: (newPcs: Record<string, PorkchopPlotData>) => void;
+  onSequencePorkchopUpdate?: (subSeqPc: SequencePorkchopData) => void;
 }
 
 /**
  * Unified Sequence Porkchop Plot solver for N-instance sequences (N >= 3).
- * Direct evaluation using precomputed direct transfer porkchops — NO Lambert calculations.
+ * Direct evaluation using precomputed direct transfer porkchops and recursive sub-sequence chains — NO Lambert calculations.
  */
 export async function computeSequencePorkchopPlot(
-  arg1: InstanceNode[] | InstanceNode,
-  arg2: DirectionalLink[] | InstanceNode | CelestialBody[],
-  arg3: CelestialBody[] | InstanceNode | CelestialBody,
-  arg4?: CelestialBody | CelestialBody[] | ProgressCallback,
-  arg5?: CelestialBody | ProgressCallback | ((seqPc: SequencePorkchopData) => void),
-  arg6?: ProgressCallback | ((seqPc: SequencePorkchopData) => void) | (() => boolean),
-  arg7?: ((seqPc: SequencePorkchopData) => void) | (() => boolean) | boolean,
-  arg8?: (() => boolean) | boolean | DirectionalLink[],
-  arg9?: boolean | Record<string, PorkchopPlotData>,
-  arg10?: Record<string, PorkchopPlotData>
+  options: ComputeSequencePorkchopOptions
 ): Promise<SequencePorkchopData> {
-  let pathInsts: InstanceNode[] = [];
-  let links: DirectionalLink[] = [];
-  let bodies: CelestialBody[] = [];
-  let mainBody: CelestialBody;
-  let onProgress: ProgressCallback | undefined;
-  let onPartialUpdate: ((seqPc: SequencePorkchopData) => void) | undefined;
-  let shouldStop: (() => boolean) | undefined;
-  let isFullPath: boolean = false;
-  let porkchops: Record<string, PorkchopPlotData> | undefined;
-
-  if (Array.isArray(arg1)) {
-    pathInsts = arg1;
-    if (Array.isArray(arg3)) {
-      links = Array.isArray(arg2) ? (arg2 as DirectionalLink[]) : [];
-      bodies = arg3 as CelestialBody[];
-      mainBody = arg4 as CelestialBody;
-      onProgress = typeof arg5 === 'function' ? (arg5 as ProgressCallback) : undefined;
-      onPartialUpdate = typeof arg6 === 'function' ? (arg6 as (seqPc: SequencePorkchopData) => void) : undefined;
-      shouldStop = typeof arg7 === 'function' ? (arg7 as () => boolean) : undefined;
-      isFullPath = typeof arg8 === 'boolean' ? arg8 : false;
-      porkchops = (arg9 && typeof arg9 === 'object') ? (arg9 as Record<string, PorkchopPlotData>) : undefined;
-    } else {
-      links = Array.isArray(arg8) ? (arg8 as DirectionalLink[]) : [];
-      bodies = Array.isArray(arg2) ? (arg2 as CelestialBody[]) : [];
-      mainBody = arg3 as CelestialBody;
-      onProgress = typeof arg4 === 'function' ? (arg4 as ProgressCallback) : undefined;
-      onPartialUpdate = typeof arg5 === 'function' ? (arg5 as (seqPc: SequencePorkchopData) => void) : undefined;
-      shouldStop = typeof arg6 === 'function' ? (arg6 as () => boolean) : undefined;
-      isFullPath = typeof arg7 === 'boolean' ? arg7 : false;
-      porkchops = (arg9 && typeof arg9 === 'object') ? (arg9 as Record<string, PorkchopPlotData>) : undefined;
-    }
-  } else {
-    pathInsts = [arg1 as InstanceNode, arg2 as InstanceNode, arg3 as InstanceNode];
-    links = [];
-    bodies = Array.isArray(arg4) ? (arg4 as CelestialBody[]) : [];
-    mainBody = arg5 as CelestialBody;
-    onProgress = typeof arg6 === 'function' ? (arg6 as ProgressCallback) : undefined;
-    onPartialUpdate = typeof arg7 === 'function' ? (arg7 as (seqPc: SequencePorkchopData) => void) : undefined;
-    shouldStop = typeof arg8 === 'function' ? (arg8 as () => boolean) : undefined;
-    isFullPath = typeof arg9 === 'boolean' ? arg9 : false;
-    porkchops = (arg10 && typeof arg10 === 'object') ? (arg10 as Record<string, PorkchopPlotData>) : undefined;
-  }
-
-  if (typeof onProgress !== 'function') onProgress = undefined;
-  if (typeof onPartialUpdate !== 'function') onPartialUpdate = undefined;
-  if (typeof shouldStop !== 'function') shouldStop = undefined;
+  const {
+    pathInsts,
+    bodies,
+    mainBody,
+    links = [],
+    porkchops,
+    sequencePorkchops,
+    onProgress,
+    onPartialUpdate,
+    shouldStop,
+    isFullPath = false,
+    onSubtaskProgress,
+    onDirectPorkchopUpdate,
+    onSequencePorkchopUpdate,
+  } = options;
 
   const N = pathInsts.length;
+  const seqId = `seq-pc-${pathInsts.map(i => i.id).join('-')}`;
+  const seqLabel = pathInsts.map(i => i.bodyName).join(' ➔ ');
   const porkchopsMap: Record<string, PorkchopPlotData> = { ...(porkchops || {}) };
+  const sequencePorkchopsMap: Record<string, SequencePorkchopData> = { ...(sequencePorkchops || {}) };
+
+  // Helper to notify active subtask
+  const reportSubtask = (subtask: SubtaskProgressInfo | null) => {
+    onSubtaskProgress?.(subtask);
+  };
 
   // Step 1: Ensure all direct transfer porkchops exist for each link in pathInsts
   for (let k = 0; k < N - 1; k++) {
@@ -1700,7 +1699,19 @@ export async function computeSequencePorkchopPlot(
 
     let pc = porkchopsMap[linkId];
     if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) {
-      onProgress?.(`Computing Direct Transfer Porkchop for ${srcInst.bodyName} ➔ ${tgtInst.bodyName}...`);
+      const subtaskName = `Direct Transfer (${srcInst.bodyName} ➔ ${tgtInst.bodyName})`;
+      const subInfo: SubtaskProgressInfo = {
+        subtaskId: linkId,
+        subtaskName,
+        subtaskType: 'direct_link',
+        computedSamples: 0,
+        totalSamples: 100,
+        progressPct: 0,
+        statusText: `Computing direct transfer Lambert grid for ${srcInst.bodyName} ➔ ${tgtInst.bodyName}...`,
+        parentTaskId: seqId,
+      };
+      reportSubtask(subInfo);
+      onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
       await yieldUI();
       if (shouldStop?.()) break;
 
@@ -1710,10 +1721,203 @@ export async function computeSequencePorkchopPlot(
         targetInstanceId: tgtInst.id,
       };
 
-      pc = await computePorkchopPlot(dummyLink, srcInst, tgtInst, bodies, mainBody);
+      pc = await computePorkchopPlot(
+        dummyLink,
+        srcInst,
+        tgtInst,
+        bodies,
+        mainBody,
+        (msg) => {
+          const total = pc?.totalSamples || 100;
+          const comp = pc?.computedSamples || 0;
+          const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+          reportSubtask({
+            subtaskId: linkId,
+            subtaskName,
+            subtaskType: 'direct_link',
+            computedSamples: comp,
+            totalSamples: total,
+            progressPct: pct,
+            statusText: msg,
+            parentTaskId: seqId,
+          });
+          onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (${pct}%)`);
+        },
+        (partialPc) => {
+          const total = partialPc.totalSamples || 100;
+          const comp = partialPc.computedSamples || 0;
+          const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+          porkchopsMap[linkId] = partialPc;
+          onDirectPorkchopUpdate?.({ [linkId]: partialPc });
+          reportSubtask({
+            subtaskId: linkId,
+            subtaskName,
+            subtaskType: 'direct_link',
+            computedSamples: comp,
+            totalSamples: total,
+            progressPct: pct,
+            statusText: `Evaluating direct transfer Lambert grid...`,
+            parentTaskId: seqId,
+          });
+        },
+        shouldStop
+      );
       porkchopsMap[linkId] = pc;
+      onDirectPorkchopUpdate?.({ [linkId]: pc });
     }
   }
+
+  // Step 1.5: If N > 3, select sub-chain strategy and compute the required (N-1)-bodies sub-sequence
+  let subChainStrategy: 'prefix' | 'suffix' = 'prefix';
+  if (N > 3) {
+    const prefixPath = pathInsts.slice(0, N - 1);
+    const prefixKey = prefixPath.map(i => i.id).join('-');
+    const prefixSeqId = `seq-pc-${prefixKey}`;
+    const prefixSeq = sequencePorkchopsMap[prefixSeqId] || sequencePorkchopsMap[prefixKey] || Object.values(sequencePorkchopsMap).find(
+      s => s.instanceIds && s.instanceIds.join('-') === prefixKey
+    );
+    const hasPrefix = !!(prefixSeq && prefixSeq.depDates && prefixSeq.depDates.length > 0 && prefixSeq.arrDates && prefixSeq.arrDates.length > 0);
+
+    const suffixPath = pathInsts.slice(1, N);
+    const suffixKey = suffixPath.map(i => i.id).join('-');
+    const suffixSeqId = `seq-pc-${suffixKey}`;
+    const suffixSeq = sequencePorkchopsMap[suffixSeqId] || sequencePorkchopsMap[suffixKey] || Object.values(sequencePorkchopsMap).find(
+      s => s.instanceIds && s.instanceIds.join('-') === suffixKey
+    );
+    const hasSuffix = !!(suffixSeq && suffixSeq.depDates && suffixSeq.depDates.length > 0 && suffixSeq.arrDates && suffixSeq.arrDates.length > 0);
+
+    // =========================================================================
+    // TODO: MASSIVE ARCHITECTURAL IMPROVEMENT NEEDED HERE
+    // When neither sub-chain (prefix vs. suffix) is pre-calculated in cache,
+    // the choice of sub-chain direction should be improved and dynamically chosen
+    // according to the estimated computational cost of each option.
+    // (e.g. comparing the product of date window samples or orbital periods of the
+    // remaining legs: leg (0 -> 1) + suffix (1..N-1) vs. prefix (0..N-2) + leg (N-2 -> N-1)).
+    // Currently, defaulting to 'suffix' (evaluateHigherOrderSequenceTransferAddFirstLeg)
+    // when neither is pre-calculated.
+    // =========================================================================
+    if (hasPrefix && !hasSuffix) {
+      subChainStrategy = 'prefix';
+    } else {
+      // Default to suffix (evaluateHigherOrderSequenceTransferAddFirstLeg) if neither is pre-calculated or if suffix is available
+      subChainStrategy = 'suffix';
+    }
+
+    if (subChainStrategy === 'suffix') {
+      if (!hasSuffix) {
+        const subtaskName = `${suffixPath.length}-Instance Suffix Subsequence (${suffixPath.map(i => i.bodyName).join(' ➔ ')})`;
+        const initSubInfo: SubtaskProgressInfo = {
+          subtaskId: suffixSeqId,
+          subtaskName,
+          subtaskType: 'subsequence',
+          computedSamples: 0,
+          totalSamples: 100,
+          progressPct: 0,
+          statusText: `Computing prerequisite suffix subsequence (${subtaskName})...`,
+          parentTaskId: seqId,
+        };
+        reportSubtask(initSubInfo);
+        onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
+        await yieldUI();
+
+        const subSeq = await computeSequencePorkchopPlot({
+          pathInsts: suffixPath,
+          links,
+          bodies,
+          mainBody,
+          onProgress: (msg) => {
+            onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${msg}`);
+          },
+          onPartialUpdate: (subPartial) => {
+            const total = subPartial.totalSamples || (subPartial.depDates?.length * subPartial.arrDates?.length) || 100;
+            const comp = subPartial.computedSamples || 0;
+            const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+            sequencePorkchopsMap[suffixSeqId] = subPartial;
+            sequencePorkchopsMap[suffixKey] = subPartial;
+            onSequencePorkchopUpdate?.(subPartial);
+            reportSubtask({
+              subtaskId: suffixSeqId,
+              subtaskName,
+              subtaskType: 'subsequence',
+              computedSamples: comp,
+              totalSamples: total,
+              progressPct: pct,
+              statusText: `Evaluating multi-body trajectories and flybys...`,
+              parentTaskId: seqId,
+            });
+          },
+          shouldStop,
+          isFullPath: false,
+          porkchops: porkchopsMap,
+          sequencePorkchops: sequencePorkchopsMap,
+          onSubtaskProgress,
+          onDirectPorkchopUpdate,
+          onSequencePorkchopUpdate,
+        });
+        sequencePorkchopsMap[suffixSeqId] = subSeq;
+        sequencePorkchopsMap[suffixKey] = subSeq;
+        onSequencePorkchopUpdate?.(subSeq);
+      }
+    } else {
+      if (!hasPrefix) {
+        const subtaskName = `${prefixPath.length}-Instance Prefix Subsequence (${prefixPath.map(i => i.bodyName).join(' ➔ ')})`;
+        const initSubInfo: SubtaskProgressInfo = {
+          subtaskId: prefixSeqId,
+          subtaskName,
+          subtaskType: 'subsequence',
+          computedSamples: 0,
+          totalSamples: 100,
+          progressPct: 0,
+          statusText: `Computing prerequisite prefix subsequence (${subtaskName})...`,
+          parentTaskId: seqId,
+        };
+        reportSubtask(initSubInfo);
+        onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
+        await yieldUI();
+
+        const subSeq = await computeSequencePorkchopPlot({
+          pathInsts: prefixPath,
+          links,
+          bodies,
+          mainBody,
+          onProgress: (msg) => {
+            onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${msg}`);
+          },
+          onPartialUpdate: (subPartial) => {
+            const total = subPartial.totalSamples || (subPartial.depDates?.length * subPartial.arrDates?.length) || 100;
+            const comp = subPartial.computedSamples || 0;
+            const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+            sequencePorkchopsMap[prefixSeqId] = subPartial;
+            sequencePorkchopsMap[prefixKey] = subPartial;
+            onSequencePorkchopUpdate?.(subPartial);
+            reportSubtask({
+              subtaskId: prefixSeqId,
+              subtaskName,
+              subtaskType: 'subsequence',
+              computedSamples: comp,
+              totalSamples: total,
+              progressPct: pct,
+              statusText: `Evaluating multi-body trajectories and flybys...`,
+              parentTaskId: seqId,
+            });
+          },
+          shouldStop,
+          isFullPath: false,
+          porkchops: porkchopsMap,
+          sequencePorkchops: sequencePorkchopsMap,
+          onSubtaskProgress,
+          onDirectPorkchopUpdate,
+          onSequencePorkchopUpdate,
+        });
+        sequencePorkchopsMap[prefixSeqId] = subSeq;
+        sequencePorkchopsMap[prefixKey] = subSeq;
+        onSequencePorkchopUpdate?.(subSeq);
+      }
+    }
+  }
+
+  // Clear active subtask as dependencies are finished and main sequence computation begins
+  reportSubtask(null);
 
   const srcInst = pathInsts[0];
   const tgtInst = pathInsts[N - 1];
@@ -1761,8 +1965,7 @@ export async function computeSequencePorkchopPlot(
     dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
   }));
 
-  const seqId = `seq-pc-${pathInsts.map(i => i.id).join('-')}`;
-  const seqLabel = pathInsts.map(i => i.bodyName).join(' ➔ ');
+  const totalPoints = N_DEP * N_ARR;
 
   const seqData: SequencePorkchopData = {
     id: seqId,
@@ -1771,6 +1974,8 @@ export async function computeSequencePorkchopPlot(
     instanceCount: N,
     instanceIds: pathInsts.map(i => i.id),
     bodyNames: pathInsts.map(i => i.bodyName),
+    pathInsts,
+    pathInstances: pathInsts,
     is4Body: N === 4,
     sourceInstanceId: srcInst.id,
     flybyInstanceId: flybyInsts[0]?.id || '',
@@ -1798,9 +2003,16 @@ export async function computeSequencePorkchopPlot(
     validMatrix,
     flybyPoweredDvs,
     flybyDates,
+    computedSamples: 0,
+    totalSamples: totalPoints,
+    activeSubtask: null,
   };
 
+  const profiler = new SequenceTransferProfiler();
+  const computationStartTime = performance.now();
+
   // Emit immediate state so sequence viewer opens instantly
+  seqData.profiling = profiler.getStats(0, 0);
   onPartialUpdate?.({ ...seqData });
 
   const passes = getHierarchicalGridIndices(N_DEP, N_ARR);
@@ -1826,7 +2038,11 @@ export async function computeSequencePorkchopPlot(
       flightTimeMatrix[i][j] = totalDt;
 
       const bestRes = totalDt >= 86400 * (N - 1)
-        ? evaluateSequenceTransferFromDirectPorkchops(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links)
+        ? (N === 3
+            ? evaluateSequenceTransferFromDirectPorkchops(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, profiler)
+            : (subChainStrategy === 'suffix'
+                ? evaluateHigherOrderSequenceTransferAddFirstLeg(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, sequencePorkchopsMap, profiler)
+                : evaluateHigherOrderSequenceTransferAddLastLeg(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, sequencePorkchopsMap, profiler)))
         : null;
 
       if (bestRes) {
@@ -1844,7 +2060,7 @@ export async function computeSequencePorkchopPlot(
         } else if (N === 4) {
           c3ArrBMatrix[i][j] = bestRes.c3ArrB || 0;
           c3DepBMatrix[i][j] = bestRes.c3DepB || 0;
-          if (c3ArrCMatrix) c3ArrCMatrix[i][j] = bestRes.c3ArrC || 0;
+          if (c3ArrCMatrix) c3ArrCMatrix[i][j] = bestRes.c3ArrC ?? bestRes.c3ArrFinal;
           if (c3DepCMatrix) c3DepCMatrix[i][j] = bestRes.c3DepC || 0;
           if (c3ArrDMatrix) c3ArrDMatrix[i][j] = bestRes.c3ArrFinal;
           poweredDvBMatrix[i][j] = bestRes.flybyDvs[0] || 0;
@@ -1882,7 +2098,7 @@ export async function computeSequencePorkchopPlot(
             } else if (N === 4) {
               c3ArrBMatrix[r][c] = bestRes?.c3ArrB || 0;
               c3DepBMatrix[r][c] = bestRes?.c3DepB || 0;
-              if (c3ArrCMatrix) c3ArrCMatrix[r][c] = bestRes?.c3ArrC || 0;
+              if (c3ArrCMatrix) c3ArrCMatrix[r][c] = bestRes?.c3ArrC ?? bestRes?.c3ArrFinal ?? 0;
               if (c3DepCMatrix) c3DepCMatrix[r][c] = bestRes?.c3DepC || 0;
               if (c3ArrDMatrix) c3ArrDMatrix[r][c] = bestRes?.c3ArrFinal;
               poweredDvBMatrix[r][c] = bestRes?.flybyDvs[0] || 0;
@@ -1900,9 +2116,11 @@ export async function computeSequencePorkchopPlot(
       }
 
       const now = performance.now();
-      if (now - lastYieldTime > 100) { // ~0.1Hz update frequency
+      if (now - lastYieldTime > 50) {
         lastYieldTime = now;
-        const totalPoints = N_DEP * N_ARR;
+        seqData.computedSamples = computedPointsCount;
+        seqData.totalSamples = totalPoints;
+        seqData.profiling = profiler.getStats(now - computationStartTime, computedPointsCount);
         const pct = Math.floor((computedPointsCount / totalPoints) * 100);
         onProgress?.(`Computing sequence porkchop plot for ${seqLabel} (${pct}%, ${validCount} valid)...`);
         onPartialUpdate?.({ ...seqData });
@@ -1911,57 +2129,14 @@ export async function computeSequencePorkchopPlot(
     }
   }
 
+  seqData.computedSamples = totalPoints;
+  seqData.totalSamples = totalPoints;
+  seqData.profiling = profiler.getStats(performance.now() - computationStartTime, totalPoints);
   onPartialUpdate?.({ ...seqData });
   return seqData;
 }
 
-export async function compute4BodySequencePorkchopPlot(
-  srcInst: InstanceNode,
-  flyby1Inst: InstanceNode,
-  flyby2Inst: InstanceNode,
-  tgtInst: InstanceNode,
-  bodies: CelestialBody[],
-  mainBody: CelestialBody,
-  onProgress?: ProgressCallback,
-  onPartialUpdate?: (partialSeq: SequencePorkchopData) => void,
-  shouldStop?: () => boolean,
-  isFullPath?: boolean
-): Promise<SequencePorkchopData> {
-  return computeSequencePorkchopPlot(
-    [srcInst, flyby1Inst, flyby2Inst, tgtInst],
-    [],
-    bodies,
-    mainBody,
-    onProgress,
-    onPartialUpdate,
-    shouldStop,
-    isFullPath
-  );
-}
-
-export async function computeNBodySequencePorkchopPlot(
-  pathInsts: InstanceNode[],
-  bodies: CelestialBody[],
-  mainBody: CelestialBody,
-  onProgress?: ProgressCallback,
-  onPartialUpdate?: (seqPc: SequencePorkchopData) => void,
-  shouldStop?: () => boolean,
-  isFullPath?: boolean,
-  links?: DirectionalLink[],
-  porkchops?: Record<string, PorkchopPlotData>
-): Promise<SequencePorkchopData> {
-  return computeSequencePorkchopPlot(
-    pathInsts,
-    links || [],
-    bodies,
-    mainBody,
-    onProgress,
-    onPartialUpdate,
-    shouldStop,
-    isFullPath,
-    porkchops
-  );
-}
+export const computeNBodySequencePorkchopPlot = computeSequencePorkchopPlot;
 
 export type ProgressCallback = (statusMessage: string) => void;
 export type PartialUpdateCallback = (update: {
@@ -2345,12 +2520,15 @@ export async function runSequenceSearch(
     // Auto-compute full paths during initial search execution
     if (cand.isFullPath) {
       if (!sequencePorkchops[cand.id]) {
-        const seqPc = await computeNBodySequencePorkchopPlot(
-          cand.pathInsts,
+        const seqPc = await computeSequencePorkchopPlot({
+          pathInsts: cand.pathInsts,
           bodies,
           mainBody,
+          links: currLinks,
+          porkchops,
+          sequencePorkchops,
           onProgress,
-          (partialSeq) => {
+          onPartialUpdate: (partialSeq) => {
             sequencePorkchops[partialSeq.id] = partialSeq;
             onPartialUpdate?.({
               instances: currInstances,
@@ -2360,8 +2538,8 @@ export async function runSequenceSearch(
             });
           },
           shouldStop,
-          cand.isFullPath
-        );
+          isFullPath: cand.isFullPath,
+        });
         sequencePorkchops[seqPc.id] = seqPc;
       }
     }

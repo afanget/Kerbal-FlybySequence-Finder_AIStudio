@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode } from '../types';
+import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode, SubtaskProgressInfo } from '../types';
 import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
 import { getBodyStateAtUT, getGravitationalParameter, stateToOrbitalElements, Vector3D } from '../physics/kepler';
@@ -33,10 +33,12 @@ interface ResultsTableProps {
   bodies?: CelestialBody[];
   mainBody?: CelestialBody;
   porkchops?: Record<string, PorkchopPlotData>;
+  onPorkchopUpdate?: (newPorkchops: Record<string, PorkchopPlotData>) => void;
   sequencePorkchops?: Record<string, SequencePorkchopData>;
   onOpenSequencePorkchop?: (seqPcId: string) => void;
   onComputeSequencePorkchop?: (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => void;
   computingSeqId?: string | null;
+  activeSubtask?: SubtaskProgressInfo | null;
   links?: DirectionalLink[];
   instances?: InstanceNode[];
 }
@@ -68,10 +70,12 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   bodies = [],
   mainBody,
   porkchops,
+  onPorkchopUpdate,
   sequencePorkchops,
   onOpenSequencePorkchop,
   onComputeSequencePorkchop,
   computingSeqId,
+  activeSubtask,
   links,
   instances,
 }) => {
@@ -93,6 +97,11 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [tisserandProgress, setTisserandProgress] = useState<number>(0);
   const [tisserandStatusText, setTisserandStatusText] = useState<string>('');
 
+  const porkchopsRef = React.useRef(porkchops);
+  useEffect(() => {
+    porkchopsRef.current = porkchops;
+  }, [porkchops]);
+
   useEffect(() => {
     if (!instances || instances.length === 0 || !links || links.length === 0 || !mainBody) {
       setLinkEndRangesMap({});
@@ -112,7 +121,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
       bodies,
       mainBody,
       timeFormatMode,
-      porkchops,
+      porkchopsRef.current,
       (progress, status) => {
         if (isMounted) {
           setTisserandProgress(progress);
@@ -124,6 +133,9 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         setLinkEndRangesMap(res.linkEndRangesMap);
         setSequence3BodyRangesList(res.sequence3BodyRangesList);
         setIsCalculatingTisserandRanges(false);
+        if (onPorkchopUpdate && res.porkchopsMap && Object.keys(res.porkchopsMap).length > 0) {
+          onPorkchopUpdate(res.porkchopsMap);
+        }
       }
     }).catch(err => {
       console.error("Failed to compute Tisserand date ranges:", err);
@@ -135,7 +147,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [instances, links, bodies, mainBody, timeFormatMode, porkchops]);
+  }, [instances, links, bodies, mainBody, timeFormatMode]);
 
   const linkEndRangesList = useMemo(() => {
     return Object.values(linkEndRangesMap);
@@ -200,6 +212,19 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const candidateInstanceCounts = useMemo(() => {
     return Object.keys(groupedCandidatePaths).map(Number).sort((a, b) => a - b);
   }, [groupedCandidatePaths]);
+
+  const activeComputingSeq = useMemo(() => {
+    if (!computingSeqId) return null;
+    return candidateSequencePaths.find(c => c.id === computingSeqId) || null;
+  }, [computingSeqId, candidateSequencePaths]);
+
+  const activeComputingPct = useMemo(() => {
+    if (!computingSeqId || !sequencePorkchops?.[computingSeqId]) return 0;
+    const data = sequencePorkchops[computingSeqId];
+    const total = data.totalSamples ?? 0;
+    const computed = data.computedSamples ?? 0;
+    return total > 0 ? Math.min(100, Math.max(0, Math.round((computed / total) * 100))) : 0;
+  }, [computingSeqId, sequencePorkchops]);
 
   const uniqueSequencePaths = useMemo(() => {
     const set = new Set<string>();
@@ -569,6 +594,56 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         </div>
       )}
 
+      {/* Live Sequence Porkchop Computation Banner (Main Page Progress & Dependency Subtask Subtitle) */}
+      {computingSeqId && activeComputingSeq && (
+        <div className="bg-[#0F172A] border border-[#38BDF8]/50 p-3.5 rounded-lg flex flex-col gap-2 shadow-lg">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-4 h-4 border-2 border-[#38BDF8]/30 border-t-[#38BDF8] rounded-full animate-spin flex-shrink-0" />
+              <div className="min-w-0">
+                <span className="font-semibold uppercase tracking-wider text-[10px] text-[#94A3B8] block">
+                  Computing Sequence Porkchop (Main Task):
+                </span>
+                <span className="font-mono text-xs sm:text-sm text-white font-bold truncate block">
+                  {activeComputingSeq.sequenceLabel} ({activeComputingSeq.instanceCount}-Instance {activeComputingSeq.isFullPath ? 'Full Path' : 'Subsequence'})
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 font-mono font-bold text-[#38BDF8] bg-blue-950/90 px-2.5 py-1 rounded border border-blue-500/40 text-xs shadow-inner">
+              <span>Main Task: {activeComputingPct}%</span>
+            </div>
+          </div>
+
+          {/* Dependency Subtask Progress Subtitle & Bar */}
+          {activeSubtask && (
+            <div className="bg-[#18181B] border border-cyan-500/40 rounded-lg p-2.5 flex flex-col gap-1.5 mt-0.5">
+              <div className="flex items-center justify-between text-xs font-mono">
+                <div className="flex items-center gap-2 text-cyan-300 font-bold truncate">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400 shrink-0" />
+                  <span className="text-slate-400 font-normal uppercase text-[10px] tracking-wider">Dependency Subtask:</span>
+                  <span className="text-cyan-200">{activeSubtask.subtaskName}</span>
+                </div>
+                <span className="text-cyan-200 font-bold bg-cyan-950/90 px-2 py-0.5 rounded border border-cyan-500/40 text-[11px] shrink-0 ml-2">
+                  {activeSubtask.progressPct}%
+                </span>
+              </div>
+              <div className="w-full bg-[#27272A] h-2 rounded-full overflow-hidden border border-[#3F3F46]">
+                <div
+                  className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full transition-all duration-150"
+                  style={{ width: `${activeSubtask.progressPct}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                <span>{activeSubtask.statusText || 'Computing prerequisite transfers...'}</span>
+                {activeSubtask.totalSamples > 0 && (
+                  <span>{activeSubtask.computedSamples} / {activeSubtask.totalSamples} samples</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Pre-Flyby Position & Speed Error Controls */}
       <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2">
@@ -837,12 +912,23 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
             onClick={() => setIsSequencePorkchopsFolded(!isSequencePorkchopsFolded)}
             className="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-bold text-white uppercase tracking-wider bg-[#2D2E33]/40 hover:bg-[#2D2E33] transition cursor-pointer select-none"
           >
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Compass className="w-4 h-4 text-[#38BDF8]" />
               <span>Multi-Instance / X-Instance Sequence Porkchops</span>
               <span className="text-[10px] text-[#94A3B8] font-normal font-mono lowercase">
                 ({candidateSequencePaths.length} sequence path(s) available)
               </span>
+              {activeComputingSeq && (
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-950/85 border border-blue-500/50 text-[10px] font-mono font-bold text-[#38BDF8] shadow-sm ml-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#38BDF8] animate-ping" />
+                  <span>Computing {activeComputingSeq.sequenceLabel}: {activeComputingPct}%</span>
+                  {activeSubtask && (
+                    <span className="text-cyan-300 ml-1 border-l border-blue-500/40 pl-1.5 text-[9px] font-normal">
+                      Subtask ({activeSubtask.subtaskName}): {activeSubtask.progressPct}%
+                    </span>
+                  )}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1 text-[#94A3B8] text-[11px] font-mono font-normal">
               <span>{isSequencePorkchopsFolded ? 'Show / Unfold' : 'Hide / Fold'}</span>
@@ -863,27 +949,54 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                   <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       onClick={() => setSelectedInstanceFilter('ALL')}
-                      className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+                      className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer flex items-center gap-1.5 ${
                         selectedInstanceFilter === 'ALL'
                           ? 'bg-[#38BDF8] text-black font-bold'
                           : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
                       }`}
                     >
-                      All ({candidateSequencePaths.length})
+                      <span>All ({candidateSequencePaths.length})</span>
+                      {activeComputingSeq && (
+                        <span className={`font-bold px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                          selectedInstanceFilter === 'ALL'
+                            ? 'bg-black text-[#38BDF8]'
+                            : 'bg-blue-950/90 text-[#38BDF8] border border-blue-500/50'
+                        }`}>
+                          {activeComputingPct}%
+                        </span>
+                      )}
                     </button>
-                    {candidateInstanceCounts.map(count => (
-                      <button
-                        key={count}
-                        onClick={() => setSelectedInstanceFilter(String(count))}
-                        className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
-                          selectedInstanceFilter === String(count)
-                            ? 'bg-[#38BDF8] text-black font-bold'
-                            : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
-                        }`}
-                      >
-                        {count}-Instance ({groupedCandidatePaths[count]?.length || 0})
-                      </button>
-                    ))}
+                    {candidateInstanceCounts.map(count => {
+                      const countCands = groupedCandidatePaths[count] || [];
+                      const isCountComputing = countCands.some(c => c.id === computingSeqId);
+                      const computingDataForCount = isCountComputing && computingSeqId ? sequencePorkchops?.[computingSeqId] : null;
+                      const countPct = computingDataForCount?.totalSamples && computingDataForCount.totalSamples > 0
+                        ? Math.min(100, Math.max(0, Math.round(((computingDataForCount.computedSamples ?? 0) / computingDataForCount.totalSamples) * 100)))
+                        : 0;
+
+                      return (
+                        <button
+                          key={count}
+                          onClick={() => setSelectedInstanceFilter(String(count))}
+                          className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                            selectedInstanceFilter === String(count)
+                              ? 'bg-[#38BDF8] text-black font-bold'
+                              : 'bg-[#1A1B1E] text-[#94A3B8] hover:text-white border border-[#2D2E33]'
+                          }`}
+                        >
+                          <span>{count}-Instance ({countCands.length})</span>
+                          {isCountComputing && (
+                            <span className={`font-bold px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                              selectedInstanceFilter === String(count)
+                                ? 'bg-black text-[#38BDF8]'
+                                : 'bg-blue-950/90 text-[#38BDF8] border border-blue-500/50'
+                            }`}>
+                              {countPct}%
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -892,12 +1005,25 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                 .filter(count => selectedInstanceFilter === 'ALL' || selectedInstanceFilter === String(count))
                 .map(count => {
                   const cands = groupedCandidatePaths[count] || [];
+                  const isCountComputing = cands.some(c => c.id === computingSeqId);
+                  const computingDataForCount = isCountComputing && computingSeqId ? sequencePorkchops?.[computingSeqId] : null;
+                  const countPct = computingDataForCount?.totalSamples && computingDataForCount.totalSamples > 0
+                    ? Math.min(100, Math.max(0, Math.round(((computingDataForCount.computedSamples ?? 0) / computingDataForCount.totalSamples) * 100)))
+                    : 0;
+
                   return (
                     <div key={count} className="bg-[#1E1F23] p-3 rounded border border-[#2D2E33] flex flex-col gap-2.5 text-xs">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
-                          <Compass className="w-4 h-4 text-[#38BDF8]" />
-                          <span>{count}-Instance Sequence Porkchops</span>
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+                            <Compass className="w-4 h-4 text-[#38BDF8]" />
+                            <span>{count}-Instance Sequence Porkchops</span>
+                          </div>
+                          {isCountComputing && (
+                            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-950/80 border border-blue-500/40 text-[10px] font-mono font-bold text-[#38BDF8] shadow-sm">
+                              <span>Computing ({countPct}%)</span>
+                            </span>
+                          )}
                         </div>
                         <span className="text-[11px] font-mono text-[#94A3B8]">
                           {cands.length} sequence path(s)
@@ -909,6 +1035,13 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                           const isComputed = !!sequencePorkchops?.[cand.id];
                           const isThisComputing = computingSeqId === cand.id;
                           const isFull = cand.isFullPath;
+
+                          const candSeqPc = sequencePorkchops?.[cand.id];
+                          const candTotal = candSeqPc?.totalSamples ?? 0;
+                          const candComputed = candSeqPc?.computedSamples ?? 0;
+                          const candPct = candTotal > 0
+                            ? Math.min(100, Math.max(0, Math.round((candComputed / candTotal) * 100)))
+                            : (isThisComputing ? 0 : (isComputed ? 100 : 0));
 
                           return (
                             <button
@@ -929,11 +1062,19 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                   : isComputed
                                     ? 'bg-purple-950/40 hover:bg-purple-900/50 border-purple-500/50 text-purple-300'
                                     : 'bg-[#18181B] hover:bg-[#27272A] border-purple-600/40 text-purple-400'
-                              }`}
-                              title={isComputed ? `View computed ${isFull ? 'full-path' : 'subsequence'} porkchop plot` : `Compute this ${isFull ? 'full-path' : 'subsequence'} porkchop plot`}
+                              } ${isThisComputing ? 'ring-1 ring-blue-400/50' : ''}`}
+                              title={
+                                isThisComputing
+                                  ? `Computing ${cand.sequenceLabel} (${candPct}% - ${candComputed}/${candTotal} samples)`
+                                  : isComputed
+                                    ? `View computed ${isFull ? 'full-path' : 'subsequence'} porkchop plot`
+                                    : `Compute this ${isFull ? 'full-path' : 'subsequence'} porkchop plot`
+                              }
                             >
                               {isThisComputing ? (
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#60A5FA]" />
+                                <span className="font-mono font-bold text-[#38BDF8] bg-blue-950/90 px-1.5 py-0.5 rounded text-[11px] border border-blue-500/50 shadow-sm">
+                                  {candPct}%
+                                </span>
                               ) : isComputed ? (
                                 <Activity className={`w-3.5 h-3.5 ${isFull ? 'text-cyan-400' : 'text-purple-400'}`} />
                               ) : (
@@ -953,7 +1094,18 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                               )}
 
                               {/* Status Badge */}
-                              {isComputed ? (
+                              {isThisComputing ? (
+                                <div className="flex flex-col items-end gap-0.5">
+                                  <span className="bg-blue-950/90 text-[#38BDF8] text-[9px] px-1.5 py-0.5 rounded border border-blue-500/50 font-bold font-mono flex items-center gap-1 shadow-sm">
+                                    Computing ({candPct}%)
+                                  </span>
+                                  {activeSubtask && (
+                                    <span className="bg-cyan-950/90 text-cyan-300 text-[8px] px-1.5 py-0.2 rounded border border-cyan-500/40 font-mono font-medium truncate max-w-[160px]">
+                                      Sub: {activeSubtask.subtaskName} ({activeSubtask.progressPct}%)
+                                    </span>
+                                  )}
+                                </div>
+                              ) : isComputed ? (
                                 <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.2 rounded border border-emerald-500/30 font-semibold">
                                   Ready
                                 </span>
@@ -963,7 +1115,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                     ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
                                     : 'bg-purple-500/20 text-purple-300 border-purple-500/40'
                                 }`}>
-                                  {isThisComputing ? 'Computing...' : 'Compute'}
+                                  Compute
                                 </span>
                               )}
                             </button>

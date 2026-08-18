@@ -12,6 +12,7 @@ import {
   CanvasGraphConfig,
   PorkchopPlotData,
   SequencePorkchopData,
+  SubtaskProgressInfo,
   FlyableSequenceResult
 } from './types';
 import { PRESET_SOLAR_SYSTEMS } from './data/solarSystems';
@@ -24,11 +25,12 @@ import { SequencePorkchopViewer } from './components/SequencePorkchopViewer';
 import { ResultsTable } from './components/ResultsTable';
 import { TisserandPlot } from './components/TisserandPlot';
 import { AutotestModal } from './components/AutotestModal';
+import { C3DebugModal } from './components/C3DebugModal';
 import {
   runSequenceSearch,
   runSequenceSearchAlt,
   computePorkchopPlot,
-  computeNBodySequencePorkchopPlot,
+  computeSequencePorkchopPlot,
   findAllSubPathsInGraph,
   propagateDateBounds,
   propagateC3Bounds,
@@ -52,10 +54,12 @@ export default function App() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [porkchopModalLinkId, setPorkchopModalLinkId] = useState<string | null>(null);
   const [autotestModalOpen, setAutotestModalOpen] = useState<boolean>(false);
+  const [c3DebugInstanceId, setC3DebugInstanceId] = useState<string | null>(null);
 
   // Results & Search State
   const [porkchops, setPorkchops] = useState<Record<string, PorkchopPlotData>>({});
   const [sequencePorkchops, setSequencePorkchops] = useState<Record<string, SequencePorkchopData>>({});
+  const [activeSubtask, setActiveSubtask] = useState<SubtaskProgressInfo | null>(null);
   const [selectedSeqPorkchopId, setSelectedSeqPorkchopId] = useState<string | null>(null);
   const [results, setResults] = useState<FlyableSequenceResult[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
@@ -140,6 +144,7 @@ export default function App() {
   };
 
   const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => {
+    if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 3) return;
     setComputingSeqId(seqId);
     setSelectedSeqPorkchopId(seqId);
 
@@ -153,6 +158,10 @@ export default function App() {
         id: seqId,
         sequenceLabel: seqLabel,
         instanceCount: pathInsts.length,
+        instanceIds: pathInsts.map(i => i.id),
+        bodyNames: pathInsts.map(i => i.bodyName),
+        pathInsts,
+        pathInstances: pathInsts,
         is4Body: pathInsts.length >= 4,
         isFullPath: !!isFullPath,
         sourceBody: srcBody,
@@ -184,22 +193,46 @@ export default function App() {
 
     try {
       const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
-      const seqPcData = await computeNBodySequencePorkchopPlot(
+      const seqPcData = await computeSequencePorkchopPlot({
         pathInsts,
-        currentSystem.bodies,
+        bodies: currentSystem.bodies,
         mainBody,
-        (msg) => setSearchStatusText(msg),
-        (partialSeq) => {
+        onProgress: (msg) => setSearchStatusText(msg),
+        onPartialUpdate: (partialSeq) => {
           setSequencePorkchops(prev => ({
             ...prev,
             [seqId]: partialSeq
           }));
         },
-        () => stopSearchRef.current,
+        shouldStop: () => stopSearchRef.current,
         isFullPath,
         links,
-        porkchops
-      );
+        porkchops,
+        sequencePorkchops,
+        onSubtaskProgress: (subtask) => {
+          setActiveSubtask(subtask);
+          setSequencePorkchops(prev => {
+            const current = prev[seqId];
+            if (!current) return prev;
+            return {
+              ...prev,
+              [seqId]: {
+                ...current,
+                activeSubtask: subtask
+              }
+            };
+          });
+        },
+        onDirectPorkchopUpdate: (newPcs) => {
+          setPorkchops(prev => ({ ...prev, ...newPcs }));
+        },
+        onSequencePorkchopUpdate: (subSeqPc) => {
+          setSequencePorkchops(prev => ({
+            ...prev,
+            [subSeqPc.id]: subSeqPc
+          }));
+        },
+      });
       setSequencePorkchops(prev => ({
         ...prev,
         [seqId]: seqPcData
@@ -208,6 +241,7 @@ export default function App() {
       console.error('Error computing sequence porkchop:', err);
       alert('Error computing sequence porkchop: ' + err);
     } finally {
+      setActiveSubtask(null);
       setComputingSeqId(null);
     }
   };
@@ -278,6 +312,7 @@ export default function App() {
       setMainBodyName('Sun');
       setTimeFormatMode('ksp');
 
+      const kspDaySec = daysToSeconds(1, 'ksp');
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
@@ -288,7 +323,7 @@ export default function App() {
         {id: 'inst-K3', bodyName: 'Kerbin' , x: 520, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25, isSourceOverride: true},
         {id: 'inst-J',  bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000      , minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
         {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000     , minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
-        {id: 'inst-G',  bodyName: 'Grannus', x: 920, y: 320, minDate: (41-1) * kspYearSec, maxDate: (42-1) * kspYearSec, maxC3: 25, dateSampleCount: 1},
+        {id: 'inst-G',  bodyName: 'Grannus', x: 920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 16, dateSampleCount: 1},
       ];
 
       newLinks = [
@@ -621,6 +656,7 @@ export default function App() {
             onOpenPorkchopModal={(linkId) => {
               handleComputeSingleLinkPorkchop(linkId);
             }}
+            onInspectC3={(instId) => setC3DebugInstanceId(instId)}
           />
         </section>
 
@@ -650,10 +686,12 @@ export default function App() {
             bodies={currentSystem.bodies}
             mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
             porkchops={porkchops}
+            onPorkchopUpdate={(newPorkchops) => setPorkchops(prev => ({ ...prev, ...newPorkchops }))}
             sequencePorkchops={sequencePorkchops}
             onOpenSequencePorkchop={(seqPcId) => setSelectedSeqPorkchopId(seqPcId)}
             onComputeSequencePorkchop={handleComputeSingleSequencePorkchop}
             computingSeqId={computingSeqId}
+            activeSubtask={activeSubtask}
             links={links}
             instances={instances}
           />
@@ -668,6 +706,7 @@ export default function App() {
           timeFormatMode={timeFormatMode}
           onSave={handleUpdateInstance}
           onClose={() => setSelectedInstanceId(null)}
+          onInspectC3={(instId) => setC3DebugInstanceId(instId)}
         />
       )}
 
@@ -706,13 +745,22 @@ export default function App() {
           timeFormatMode={timeFormatMode}
           onClose={() => setSelectedSeqPorkchopId(null)}
           isComputing={computingSeqId === selectedSeqPorkchopId}
+          activeSubtask={activeSubtask}
+          porkchops={porkchops}
+          sequencePorkchops={sequencePorkchops}
+          links={links}
+          instances={instances}
+          bodies={currentSystem.bodies}
+          mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
           onRecomputePorkchop={() => {
             const seqData = sequencePorkchops[selectedSeqPorkchopId];
             if (!seqData) return;
             const candPaths = findAllSubPathsInGraph(links, instances);
             const cand = candPaths.find(c => c.id === selectedSeqPorkchopId);
-            if (cand) {
+            if (cand && cand.pathInsts && cand.pathInsts.length >= 3) {
               handleComputeSingleSequencePorkchop(cand.id, cand.pathInsts, cand.isFullPath);
+            } else if (seqData.pathInsts && seqData.pathInsts.length >= 3) {
+              handleComputeSingleSequencePorkchop(seqData.id, seqData.pathInsts, seqData.isFullPath);
             }
           }}
         />
@@ -723,6 +771,20 @@ export default function App() {
         isOpen={autotestModalOpen}
         onClose={() => setAutotestModalOpen(false)}
       />
+
+      {/* C3 Tisserand Constraint Investigation Debug Modal */}
+      {c3DebugInstanceId && (
+        <C3DebugModal
+          instanceId={c3DebugInstanceId}
+          instances={instances}
+          links={links}
+          bodies={currentSystem.bodies}
+          mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
+          timeFormatMode={timeFormatMode}
+          onUpdateInstance={handleUpdateInstance}
+          onClose={() => setC3DebugInstanceId(null)}
+        />
+      )}
     </div>
   );
 }

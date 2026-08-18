@@ -6,7 +6,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { PorkchopPlotData } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
-import { X, Activity, Layers, Crosshair, RefreshCw, Calendar } from 'lucide-react';
+import { X, Activity, Layers, Crosshair, RefreshCw, Calendar, RotateCcw } from 'lucide-react';
 
 interface PorkchopViewerProps {
   porkchop: PorkchopPlotData;
@@ -31,10 +31,22 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
     val: number;
     c3Dep: number;
     c3Arr: number;
+    dvTotal: number;
     isValid: boolean;
     xPct: number;
     yPct: number;
   } | null>(null);
+
+  // View bounds for click-and-drag box zoom
+  const [viewBounds, setViewBounds] = useState<{
+    iMin: number;
+    iMax: number;
+    jMin: number;
+    jMax: number;
+  } | null>(null);
+
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -42,6 +54,9 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
   const nArr = porkchop.arrDates.length;
   const totalSamples = porkchop.totalSamples ?? (nDep * nArr);
   const computedSamples = porkchop.computedSamples ?? (isComputing ? 0 : totalSamples);
+  const computedPct = totalSamples > 0
+    ? Math.min(100, Math.max(0, Math.round((computedSamples / totalSamples) * 100)))
+    : (isComputing ? 0 : 100);
 
   // Find min & max values for scale mapping (memoized for high performance)
   const { minVal, maxVal, effectiveMin, redCap, logRange } = useMemo(() => {
@@ -146,16 +161,34 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
 
     ctx.clearRect(0, 0, width, height);
 
-    const cellW = width / nDep;
-    const cellH = height / nArr;
+    const curIMin = viewBounds ? viewBounds.iMin : 0;
+    const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+    const curJMin = viewBounds ? viewBounds.jMin : 0;
+    const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
 
-    for (let i = 0; i < nDep; i++) {
-      for (let j = 0; j < nArr; j++) {
+    const rangeI = Math.max(1, curIMax - curIMin + 1);
+    const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+    const startI = Math.max(0, Math.floor(curIMin));
+    const endI = Math.min(nDep - 1, Math.ceil(curIMax));
+    const startJ = Math.max(0, Math.floor(curJMin));
+    const endJ = Math.min(nArr - 1, Math.ceil(curJMax));
+
+    for (let i = startI; i <= endI; i++) {
+      const x1 = ((i - curIMin) / rangeI) * width;
+      const x2 = ((i + 1 - curIMin) / rangeI) * width;
+      const cellW = Math.max(0.5, x2 - x1);
+
+      for (let j = startJ; j <= endJ; j++) {
+        const y1 = height - ((j + 1 - curJMin) / rangeJ) * height;
+        const y2 = height - ((j - curJMin) / rangeJ) * height;
+        const cellH = Math.max(0.5, y2 - y1);
+
         const isValid = porkchop.validMatrix[i]?.[j];
 
         if (!isValid) {
           ctx.fillStyle = '#0F172A'; // Dark background for invalid
-          ctx.fillRect(i * cellW, (nArr - 1 - j) * cellH, cellW + 0.5, cellH + 0.5);
+          ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
           continue;
         }
 
@@ -178,20 +211,66 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
         // HSL Color gradient: Blue (240) -> Cyan (180) -> Green (120) -> Yellow (60) -> Red (0)
         const hue = (1 - norm) * 240;
         ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
-        ctx.fillRect(i * cellW, (nArr - 1 - j) * cellH, cellW + 0.5, cellH + 0.5);
+        ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
       }
     }
-  }, [porkchop, viewMode, minVal, effectiveMin, redCap, logRange, nDep, nArr]);
+
+    // Draw rubber-band box zoom selection rectangle if dragging
+    if (dragStart && dragCurrent) {
+      const bx = Math.min(dragStart.x, dragCurrent.x);
+      const by = Math.min(dragStart.y, dragCurrent.y);
+      const bw = Math.abs(dragCurrent.x - dragStart.x);
+      const bh = Math.abs(dragCurrent.y - dragStart.y);
+
+      ctx.fillStyle = 'rgba(96, 165, 250, 0.25)';
+      ctx.strokeStyle = '#60A5FA';
+      ctx.lineWidth = 2;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeRect(bx, by, bw, bh);
+    }
+  }, [porkchop, viewMode, minVal, effectiveMin, redCap, logRange, nDep, nArr, viewBounds, dragStart, dragCurrent]);
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(canvas.width, ((e.clientX - rect.left) / rect.width) * canvas.width));
+    const y = Math.max(0, Math.min(canvas.height, ((e.clientY - rect.top) / rect.height) * canvas.height));
+
+    setDragStart({ x, y });
+    setDragCurrent({ x, y });
+  };
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const rawX = e.clientX - rect.left;
+    const rawY = e.clientY - rect.top;
 
-    const i = Math.floor((x / rect.width) * nDep);
-    const j = Math.floor((1 - y / rect.height) * nArr);
+    const x = Math.max(0, Math.min(canvas.width, (rawX / rect.width) * canvas.width));
+    const y = Math.max(0, Math.min(canvas.height, (rawY / rect.height) * canvas.height));
+
+    if (dragStart) {
+      setDragCurrent({ x, y });
+    }
+
+    const curIMin = viewBounds ? viewBounds.iMin : 0;
+    const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+    const curJMin = viewBounds ? viewBounds.jMin : 0;
+    const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
+
+    const rangeI = Math.max(1, curIMax - curIMin + 1);
+    const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+    const relX = Math.max(0, Math.min(1, rawX / rect.width));
+    const relY = Math.max(0, Math.min(1, rawY / rect.height));
+
+    const floatI = curIMin + relX * rangeI;
+    const floatJ = curJMin + (1 - relY) * rangeJ;
+
+    const i = Math.max(0, Math.min(nDep - 1, Math.floor(floatI)));
+    const j = Math.max(0, Math.min(nArr - 1, Math.floor(floatJ)));
 
     if (i >= 0 && i < nDep && j >= 0 && j < nArr) {
       const depDate = porkchop.depDates[i];
@@ -201,10 +280,12 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
       const c3Arr = porkchop.c3ArrMatrix[i]?.[j] || 0;
       const isValid = porkchop.validMatrix[i]?.[j] || false;
 
+      const dvTotal = porkchop.dvMatrix[i]?.[j] || 0;
+
       let val = 0;
       if (viewMode === 'c3Dep') val = c3Dep;
       else if (viewMode === 'c3Arr') val = c3Arr;
-      else val = porkchop.dvMatrix[i]?.[j] || 0;
+      else val = dvTotal;
 
       setHoverData({
         depDate,
@@ -213,11 +294,56 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
         val,
         c3Dep,
         c3Arr,
+        dvTotal,
         isValid,
-        xPct: (x / rect.width) * 100,
-        yPct: (y / rect.height) * 100,
+        xPct: relX * 100,
+        yPct: relY * 100,
       });
     }
+  };
+
+  const handleCanvasMouseUp = () => {
+    if (dragStart && dragCurrent && canvasRef.current) {
+      const dx = Math.abs(dragCurrent.x - dragStart.x);
+      const dy = Math.abs(dragCurrent.y - dragStart.y);
+
+      if (dx > 6 && dy > 6) {
+        const canvas = canvasRef.current;
+
+        const x1 = Math.min(dragStart.x, dragCurrent.x);
+        const x2 = Math.max(dragStart.x, dragCurrent.x);
+        const y1 = Math.min(dragStart.y, dragCurrent.y);
+        const y2 = Math.max(dragStart.y, dragCurrent.y);
+
+        const curIMin = viewBounds ? viewBounds.iMin : 0;
+        const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+        const curJMin = viewBounds ? viewBounds.jMin : 0;
+        const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
+
+        const rangeI = Math.max(1, curIMax - curIMin + 1);
+        const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+        const newIMin = curIMin + (x1 / canvas.width) * rangeI;
+        const newIMax = curIMin + (x2 / canvas.width) * rangeI - 1;
+        const newJMin = curJMin + (1 - y2 / canvas.height) * rangeJ;
+        const newJMax = curJMin + (1 - y1 / canvas.height) * rangeJ - 1;
+
+        const iMin = Math.max(0, Math.floor(newIMin));
+        const iMax = Math.min(nDep - 1, Math.max(iMin + 1, Math.ceil(newIMax)));
+        const jMin = Math.max(0, Math.floor(newJMin));
+        const jMax = Math.min(nArr - 1, Math.max(jMin + 1, Math.ceil(newJMax)));
+
+        setViewBounds({
+          iMin,
+          iMax,
+          jMin,
+          jMax,
+        });
+      }
+    }
+
+    setDragStart(null);
+    setDragCurrent(null);
   };
 
   return (
@@ -239,22 +365,28 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
                 disabled={isComputing}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono transition border ${
                   isComputing
-                    ? 'bg-[#38BDF8]/10 text-[#38BDF8] border-[#38BDF8]/30 cursor-wait animate-pulse'
+                    ? 'bg-[#38BDF8]/15 text-[#38BDF8] border-[#38BDF8]/40 cursor-wait'
                     : 'bg-[#25262B] hover:bg-[#334155] border-[#2D2E33] text-[#94A3B8] hover:text-white cursor-pointer'
                 }`}
-                title={isComputing ? `Computing... (${computedSamples}/${totalSamples} samples)` : 'Recompute this single transfer plot'}
+                title={isComputing ? `Computing... (${computedSamples}/${totalSamples} samples - ${computedPct}%)` : 'Recompute this single transfer plot'}
               >
-                <RefreshCw className={`w-3 h-3 ${isComputing ? 'animate-spin text-[#38BDF8]' : ''}`} />
+                {isComputing ? (
+                  <span className="font-bold text-[#38BDF8] bg-[#38BDF8]/20 px-1.5 py-0.5 rounded">
+                    {computedPct}%
+                  </span>
+                ) : (
+                  <RefreshCw className="w-3 h-3" />
+                )}
                 <span>
                   {isComputing
-                    ? `Computing (${computedSamples}/${totalSamples})`
+                    ? `Computing (${computedPct}%)`
                     : 'Recompute'}
                 </span>
               </button>
             ) : isComputing ? (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[#38BDF8]/10 border border-[#38BDF8]/30 text-[#38BDF8] rounded text-[11px] font-mono animate-pulse">
-                <RefreshCw className="w-3 h-3 animate-spin text-[#38BDF8]" />
-                <span>Computing ({computedSamples}/${totalSamples})</span>
+              <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[#38BDF8]/10 border border-[#38BDF8]/30 text-[#38BDF8] rounded text-[11px] font-mono">
+                <span className="font-bold text-[#38BDF8] bg-[#38BDF8]/20 px-1.5 py-0.5 rounded">{computedPct}%</span>
+                <span>Computing ({computedPct}%)</span>
               </span>
             ) : null}
 
@@ -290,14 +422,50 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
         <div className="p-5 flex flex-col md:flex-row gap-5 overflow-y-auto">
           {/* Main Heatmap Canvas */}
           <div className="flex-1 flex flex-col items-center w-full">
+            {/* Top Zoom Control Bar */}
+            <div className="w-full max-w-[510px] flex items-center justify-between text-[11px] text-[#94A3B8] font-mono mb-1.5">
+              <span className="text-[10px] italic">
+                Click & drag box to zoom
+              </span>
+              {viewBounds && (
+                <button
+                  onClick={() => setViewBounds(null)}
+                  className="flex items-center gap-1 px-2 py-0.5 text-[10px] bg-[#60A5FA]/20 hover:bg-[#60A5FA]/30 text-[#60A5FA] rounded border border-[#60A5FA]/40 transition"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset Zoom</span>
+                </button>
+              )}
+            </div>
+
             <div className="w-full max-w-[510px] flex gap-2 items-stretch">
               {/* Y-Axis Legend */}
               <div className="flex flex-col justify-between items-end text-[10px] text-[#94A3B8] font-mono py-0.5 select-none w-20 shrink-0">
-                <span className="text-right truncate text-[10px]">{formatShortUT(porkchop.arrDates[nArr - 1], timeFormatMode)}</span>
+                <span className="text-right truncate text-[10px]">
+                  {formatShortUT(
+                    porkchop.arrDates[
+                      Math.min(
+                        nArr - 1,
+                        Math.max(0, Math.round(viewBounds ? viewBounds.jMax : nArr - 1))
+                      )
+                    ],
+                    timeFormatMode
+                  )}
+                </span>
                 <div className="rotate-[-90deg] whitespace-nowrap uppercase font-serif text-[10px] tracking-wider text-[#60A5FA] my-auto">
                   Arrival Date ➔
                 </div>
-                <span className="text-right truncate text-[10px]">{formatShortUT(porkchop.arrDates[0], timeFormatMode)}</span>
+                <span className="text-right truncate text-[10px]">
+                  {formatShortUT(
+                    porkchop.arrDates[
+                      Math.min(
+                        nArr - 1,
+                        Math.max(0, Math.round(viewBounds ? viewBounds.jMin : 0))
+                      )
+                    ],
+                    timeFormatMode
+                  )}
+                </span>
               </div>
 
               {/* Canvas Container */}
@@ -306,10 +474,24 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
                   ref={canvasRef}
                   width={400}
                   height={400}
+                  onMouseDown={handleCanvasMouseDown}
                   onMouseMove={handleCanvasMouseMove}
-                  onMouseLeave={() => setHoverData(null)}
-                  className="w-full h-full cursor-crosshair"
+                  onMouseUp={handleCanvasMouseUp}
+                  onMouseLeave={() => {
+                    setHoverData(null);
+                    setDragStart(null);
+                    setDragCurrent(null);
+                  }}
+                  className="w-full h-full cursor-crosshair select-none"
                 />
+
+                {/* Live computing indicator */}
+                {isComputing && nDep > 0 && nArr > 0 && (
+                  <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/85 border border-[#38BDF8]/40 text-[10px] font-mono text-[#38BDF8] backdrop-blur-sm shadow-md">
+                    <span className="font-bold bg-[#38BDF8]/20 px-1 py-0.2 rounded">{computedPct}%</span>
+                    <span>Computing...</span>
+                  </div>
+                )}
 
                 {/* Crosshair indicator on hover */}
                 {hoverData && (
@@ -323,9 +505,30 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
 
             {/* X-Axis Labels */}
             <div className="w-full max-w-[510px] flex pl-22 mt-2 text-[10px] text-[#94A3B8] font-mono justify-between items-center">
-              <span>Dep: {formatShortUT(porkchop.depDates[0], timeFormatMode)}</span>
+              <span>
+                Dep:{' '}
+                {formatShortUT(
+                  porkchop.depDates[
+                    Math.min(
+                      nDep - 1,
+                      Math.max(0, Math.round(viewBounds ? viewBounds.iMin : 0))
+                    )
+                  ],
+                  timeFormatMode
+                )}
+              </span>
               <span className="uppercase font-serif text-[10px] tracking-wider text-[#60A5FA]">Departure Date ➔</span>
-              <span>{formatShortUT(porkchop.depDates[nDep - 1], timeFormatMode)}</span>
+              <span>
+                {formatShortUT(
+                  porkchop.depDates[
+                    Math.min(
+                      nDep - 1,
+                      Math.max(0, Math.round(viewBounds ? viewBounds.iMax : nDep - 1))
+                    )
+                  ],
+                  timeFormatMode
+                )}
+              </span>
             </div>
           </div>
 
@@ -344,50 +547,53 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
               </div>
             </div>
 
-            {/* Hover details inspector */}
-            <div className="bg-[#25262B] p-3.5 rounded border border-[#2D2E33] text-xs flex-1 flex flex-col justify-between">
+            {/* Hover details inspector - Fixed height reserved */}
+            <div className="bg-[#25262B] p-3.5 rounded border border-[#2D2E33] text-xs flex-1 flex flex-col justify-between min-h-[210px]">
               <div>
-                <span className="font-serif uppercase tracking-wider text-[11px] text-[#E2E8F0] flex items-center gap-1 mb-2">
-                  <Crosshair className="w-3.5 h-3.5 text-[#60A5FA]" /> Hover Inspector
+                <span className="font-serif uppercase tracking-wider text-[11px] text-[#E2E8F0] flex items-center justify-between mb-2">
+                  <span className="flex items-center gap-1">
+                    <Crosshair className="w-3.5 h-3.5 text-[#60A5FA]" /> Hover Inspector
+                  </span>
+                  <span className="text-[10px] font-mono text-[#94A3B8]">
+                    {hoverData ? (hoverData.isValid ? 'Valid' : 'Infeasible') : 'Hover heatmap'}
+                  </span>
                 </span>
 
-                {hoverData ? (
-                  <div className="space-y-1.5 font-mono text-[11px]">
-                    <div className="flex justify-between">
-                      <span className="text-[#94A3B8]">Dep Date:</span>
-                      <strong className="text-[#60A5FA]">{formatShortUT(hoverData.depDate, timeFormatMode)}</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-[#94A3B8]">Arr Date:</span>
-                      <strong className="text-[#60A5FA]">{formatShortUT(hoverData.arrDate, timeFormatMode)}</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-[#94A3B8]">Flight Duration:</span>
-                      <strong className="text-[#60A5FA]">{formatDuration(hoverData.flightTime, timeFormatMode)}</strong>
-                    </div>
-                    <div className="pt-2 border-t border-[#2D2E33] flex justify-between">
-                      <span className="text-[#94A3B8]">Dep C3:</span>
-                      <strong className="text-[#E2E8F0]">{hoverData.c3Dep.toFixed(2)} km²/s²</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-[#94A3B8]">Arr C3:</span>
-                      <strong className="text-[#E2E8F0]">{hoverData.c3Arr.toFixed(2)} km²/s²</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-[#94A3B8]">Feasibility:</span>
-                      <span className={hoverData.isValid ? 'text-[#60A5FA] font-bold' : 'text-rose-400 font-bold'}>
-                        {hoverData.isValid ? 'Valid' : 'Infeasible'}
-                      </span>
-                    </div>
+                <div className="space-y-1.5 font-mono text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-[#94A3B8]">Dep Date:</span>
+                    <strong className="text-[#60A5FA]">{hoverData ? formatShortUT(hoverData.depDate, timeFormatMode) : '--'}</strong>
                   </div>
-                ) : (
-                  <p className="text-[#64748B] italic text-[11px] mt-2">
-                    Hover your mouse over the porkchop heatmap to inspect exact dates and transfer energies.
-                  </p>
-                )}
+                  <div className="flex justify-between">
+                    <span className="text-[#94A3B8]">Arr Date:</span>
+                    <strong className="text-[#60A5FA]">{hoverData ? formatShortUT(hoverData.arrDate, timeFormatMode) : '--'}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#94A3B8]">Flight Duration:</span>
+                    <strong className="text-[#60A5FA]">{hoverData ? formatDuration(hoverData.flightTime, timeFormatMode) : '--'}</strong>
+                  </div>
+                  <div className="pt-2 border-t border-[#2D2E33] flex justify-between">
+                    <span className="text-[#94A3B8]">Dep C3:</span>
+                    <strong className="text-[#E2E8F0]">{hoverData ? `${hoverData.c3Dep.toFixed(2)} km²/s²` : '--'}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#94A3B8]">Arr C3:</span>
+                    <strong className="text-[#E2E8F0]">{hoverData ? `${hoverData.c3Arr.toFixed(2)} km²/s²` : '--'}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#94A3B8]">Total Δv:</span>
+                    <strong className="text-[#38BDF8] font-bold">{hoverData ? `${hoverData.dvTotal.toFixed(1)} m/s` : '--'}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#94A3B8]">Feasibility:</span>
+                    <span className={hoverData ? (hoverData.isValid ? 'text-[#60A5FA] font-bold' : 'text-rose-400 font-bold') : 'text-[#64748B]'}>
+                      {hoverData ? (hoverData.isValid ? 'Valid' : 'Infeasible') : '--'}
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <div className="mt-4 pt-2 border-t border-[#2D2E33] text-[10px] text-[#94A3B8]">
+              <div className="mt-3 pt-2 border-t border-[#2D2E33] text-[10px] text-[#94A3B8]">
                 Minimum energy transfer: <strong className="text-[#60A5FA] font-mono">{minVal.toFixed(2)} {viewMode === 'dvTotal' ? 'm/s' : 'km²/s²'}</strong>
               </div>
             </div>

@@ -120,6 +120,13 @@ export async function computeLinkGridsAndRangesAsync(
     const depVinfAchieved: number[] = [];
     const arrVinfAchieved: number[] = [];
 
+    const isSrcSource = !links.some(l => l.targetInstanceId === srcInst.id) || !!srcInst.isSourceOverride;
+    const isTgtTarget = !links.some(l => l.sourceInstanceId === tgtInst.id);
+    const minSrcVinfMs = isSrcSource ? 0 : srcEnv.minMs;
+    const minTgtVinfMs = isTgtTarget ? 0 : tgtEnv.minMs;
+    const maxSrcVinfMs = srcInst.computedMaxC3 !== undefined ? Math.sqrt(srcInst.computedMaxC3 * 1e6) : srcEnv.maxMs;
+    const maxTgtVinfMs = tgtInst.computedMaxC3 !== undefined ? Math.sqrt(tgtInst.computedMaxC3 * 1e6) : tgtEnv.maxMs;
+
     // Pure parsing of existing direct porkchop grid
     for (let i = 0; i < N_DEP; i++) {
       for (let j = 0; j < N_ARR; j++) {
@@ -132,15 +139,13 @@ export async function computeLinkGridsAndRangesAsync(
         const vInfDepMag = Math.sqrt(Math.max(0, c3Dep) * 1e6);
         const vInfArrMag = Math.sqrt(Math.max(0, c3Arr) * 1e6);
 
-        const passSrc = (srcInst.maxC3 === undefined || c3Dep <= srcInst.maxC3) &&
-                         (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
+        const passSrc = (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
                          (srcInst.computedMaxC3 === undefined || c3Dep <= srcInst.computedMaxC3 + 0.05) &&
-                         (vInfDepMag >= srcEnv.minMs - 1.0 && vInfDepMag <= srcEnv.maxMs + 10.0);
+                         (vInfDepMag >= minSrcVinfMs - 1.0 && vInfDepMag <= maxSrcVinfMs + 10.0);
 
-        const passTgt = (tgtInst.maxC3 === undefined || c3Arr <= tgtInst.maxC3) &&
-                         (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
+        const passTgt = (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
                          (tgtInst.computedMaxC3 === undefined || c3Arr <= tgtInst.computedMaxC3 + 0.05) &&
-                         (vInfArrMag >= tgtEnv.minMs - 1.0 && vInfArrMag <= tgtEnv.maxMs + 10.0);
+                         (vInfArrMag >= minTgtVinfMs - 1.0 && vInfArrMag <= maxTgtVinfMs + 10.0);
 
         if (passSrc && passTgt) {
           validDepDates.push(depDates[i]);
@@ -233,7 +238,7 @@ export async function compute3BodyConsolidatedRangesAsync(
   );
 
   const subPaths = findAllSubPathsInGraph(links, instances);
-  const sub3Paths = subPaths.filter(sp => sp.pathInsts.length === 3);
+  const sub3Paths = subPaths.filter(sp => sp?.pathInsts && sp.pathInsts.length === 3);
 
   const consolidatedList: Sequence3BodyConsolidatedRange[] = [];
 
@@ -395,6 +400,13 @@ export function computeLinkEndDateRanges(
     const depVinfAchieved: number[] = [];
     const arrVinfAchieved: number[] = [];
 
+    const isSrcSource = !links.some(l => l.targetInstanceId === srcInst.id) || !!srcInst.isSourceOverride;
+    const isTgtTarget = !links.some(l => l.sourceInstanceId === tgtInst.id);
+    const minSrcVinfMs = isSrcSource ? 0 : srcEnv.minMs;
+    const minTgtVinfMs = isTgtTarget ? 0 : tgtEnv.minMs;
+    const maxSrcVinfMs = srcInst.computedMaxC3 !== undefined ? Math.sqrt(srcInst.computedMaxC3 * 1e6) : srcEnv.maxMs;
+    const maxTgtVinfMs = tgtInst.computedMaxC3 !== undefined ? Math.sqrt(tgtInst.computedMaxC3 * 1e6) : tgtEnv.maxMs;
+
     for (let i = 0; i < depDates.length; i++) {
       for (let j = 0; j < arrDates.length; j++) {
         if (!validMatrix[i]?.[j]) continue;
@@ -406,15 +418,13 @@ export function computeLinkEndDateRanges(
         const vInfDepMag = Math.sqrt(Math.max(0, c3Dep) * 1e6);
         const vInfArrMag = Math.sqrt(Math.max(0, c3Arr) * 1e6);
 
-        const passSrc = (srcInst.maxC3 === undefined || c3Dep <= srcInst.maxC3) &&
-                         (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
+        const passSrc = (srcInst.computedMinC3 === undefined || c3Dep >= srcInst.computedMinC3 - 0.05) &&
                          (srcInst.computedMaxC3 === undefined || c3Dep <= srcInst.computedMaxC3 + 0.05) &&
-                         (vInfDepMag >= srcEnv.minMs - 1.0 && vInfDepMag <= srcEnv.maxMs + 10.0);
+                         (vInfDepMag >= minSrcVinfMs - 1.0 && vInfDepMag <= maxSrcVinfMs + 10.0);
 
-        const passTgt = (tgtInst.maxC3 === undefined || c3Arr <= tgtInst.maxC3) &&
-                         (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
+        const passTgt = (tgtInst.computedMinC3 === undefined || c3Arr >= tgtInst.computedMinC3 - 0.05) &&
                          (tgtInst.computedMaxC3 === undefined || c3Arr <= tgtInst.computedMaxC3 + 0.05) &&
-                         (vInfArrMag >= tgtEnv.minMs - 1.0 && vInfArrMag <= tgtEnv.maxMs + 10.0);
+                         (vInfArrMag >= minTgtVinfMs - 1.0 && vInfArrMag <= maxTgtVinfMs + 10.0);
 
         if (passSrc && passTgt) {
           validDepDates.push(depDates[i]);
@@ -465,7 +475,7 @@ export function compute3BodyConsolidatedRanges(
 ): Sequence3BodyConsolidatedRange[] {
   const linkEndRanges = computeLinkEndDateRanges(instances, links, bodies, mainBody, timeFormatMode, porkchops);
   const subPaths = findAllSubPathsInGraph(links, instances);
-  const sub3Paths = subPaths.filter(sp => sp.pathInsts.length === 3);
+  const sub3Paths = subPaths.filter(sp => sp?.pathInsts && sp.pathInsts.length === 3);
 
   const consolidatedList: Sequence3BodyConsolidatedRange[] = [];
 

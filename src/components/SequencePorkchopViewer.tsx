@@ -4,9 +4,18 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { SequencePorkchopData } from '../types';
+import { SequencePorkchopData, PorkchopPlotData, DirectionalLink, CelestialBody, InstanceNode, SubtaskProgressInfo } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
-import { X, Compass, Calendar, RefreshCw } from 'lucide-react';
+import { X, Compass, Calendar, RefreshCw, RotateCcw, ZoomIn, Timer, Activity, ChevronDown, ChevronUp, Cpu, Zap, BarChart2, Layers, Info } from 'lucide-react';
+import { extractFlybyDebugData, FlybyDebugPlotData } from '../utils/flybyDebugPlot';
+import { extractMultiInstanceDebugData, MultiInstanceDebugData } from '../utils/multiInstanceDebug';
+import { FlybyDebugPlotModal } from './FlybyDebugPlotModal';
+import { MultiInstanceDebugModal } from './MultiInstanceDebugModal';
+import {
+  evaluateSequenceTransferFromDirectPorkchops,
+  evaluateHigherOrderSequenceTransferAddLastLeg,
+  evaluateHigherOrderSequenceTransferAddFirstLeg
+} from '../physics/flyby';
 
 interface SequencePorkchopViewerProps {
   seqPorkchop: SequencePorkchopData;
@@ -14,6 +23,13 @@ interface SequencePorkchopViewerProps {
   onClose: () => void;
   onRecomputePorkchop?: () => void;
   isComputing?: boolean;
+  activeSubtask?: SubtaskProgressInfo | null;
+  porkchops?: Record<string, PorkchopPlotData>;
+  sequencePorkchops?: Record<string, SequencePorkchopData>;
+  links?: DirectionalLink[];
+  instances?: InstanceNode[];
+  bodies?: CelestialBody[];
+  mainBody?: CelestialBody;
 }
 
 export type SeqViewTab =
@@ -35,7 +51,15 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   onClose,
   onRecomputePorkchop,
   isComputing,
+  activeSubtask,
+  porkchops,
+  sequencePorkchops,
+  links,
+  instances,
+  bodies,
+  mainBody,
 }) => {
+  const currentSubtask = activeSubtask || seqPorkchop.activeSubtask || null;
   const bodyNames = seqPorkchop.bodyNames && seqPorkchop.bodyNames.length > 0
     ? seqPorkchop.bodyNames
     : seqPorkchop.sequenceLabel.split(/➔|->|→/).map(s => s.trim()).filter(Boolean);
@@ -63,10 +87,51 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     yPct: number;
   } | null>(null);
 
+  const [debugPlotData, setDebugPlotData] = useState<FlybyDebugPlotData | null>(null);
+  const [multiInstanceDebugData, setMultiInstanceDebugData] = useState<MultiInstanceDebugData | null>(null);
+
+  // View bounds for click-and-drag zoom (indices range)
+  const [viewBounds, setViewBounds] = useState<{
+    iMin: number;
+    iMax: number;
+    jMin: number;
+    jMax: number;
+  } | null>(null);
+
+  // Profiling panel fold state
+  const [isProfilingFolded, setIsProfilingFolded] = useState<boolean>(false);
+
+  // Drag selection state for box zoom
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [renderEpoch, setRenderEpoch] = useState<number>(0);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const nDep = seqPorkchop.depDates ? seqPorkchop.depDates.length : 0;
   const nArr = seqPorkchop.arrDates ? seqPorkchop.arrDates.length : 0;
+  const totalSamples = seqPorkchop.totalSamples ?? (nDep * nArr);
+  const computedSamples = useMemo(() => {
+    if (seqPorkchop.computedSamples !== undefined) return seqPorkchop.computedSamples;
+    if (!isComputing && totalSamples > 0) return totalSamples;
+    if (seqPorkchop.validMatrix && nDep > 0 && nArr > 0) {
+      let count = 0;
+      for (let i = 0; i < nDep; i++) {
+        const row = seqPorkchop.validMatrix[i];
+        if (row) {
+          for (let j = 0; j < nArr; j++) {
+            if (row[j] !== undefined) count++;
+          }
+        }
+      }
+      return count;
+    }
+    return 0;
+  }, [seqPorkchop, isComputing, totalSamples, nDep, nArr]);
+
+  const computedPct = totalSamples > 0
+    ? Math.min(100, Math.max(0, Math.round((computedSamples / totalSamples) * 100)))
+    : (isComputing ? 0 : 100);
 
   const getMatrixForTab = (tab: SeqViewTab): number[][] => {
     if (tab === 'totalPoweredDv') return seqPorkchop.totalPoweredDvMatrix || seqPorkchop.poweredDvBMatrix;
@@ -141,6 +206,31 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     };
   }, [seqPorkchop, nDep, nArr]);
 
+  // Compute number of departure dates for which the delta-v cost is <= 1 m/s ("possible departure date for free flyby")
+  const freeFlybyDepDatesCount = useMemo(() => {
+    if (!seqPorkchop || nDep === 0 || nArr === 0) return 0;
+    const dvMatrix = seqPorkchop.totalPoweredDvMatrix || seqPorkchop.poweredDvBMatrix;
+    if (!dvMatrix) return 0;
+
+    let count = 0;
+    for (let i = 0; i < nDep; i++) {
+      let hasFreeFlyby = false;
+      for (let j = 0; j < nArr; j++) {
+        if (seqPorkchop.validMatrix?.[i]?.[j]) {
+          const dv = dvMatrix[i]?.[j];
+          if (dv !== undefined && Number.isFinite(dv) && dv <= 1.0) {
+            hasFreeFlyby = true;
+            break;
+          }
+        }
+      }
+      if (hasFreeFlyby) {
+        count++;
+      }
+    }
+    return count;
+  }, [seqPorkchop, nDep, nArr]);
+
   // Collect valid values for current matrix
   const validValues: number[] = [];
   if (currentMatrix && nDep > 0 && nArr > 0) {
@@ -160,15 +250,16 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
 
   const minVal = validValues.length > 0 ? validValues[0] : 0;
   const maxVal = validValues.length > 0 ? validValues[validValues.length - 1] : 100;
+  const effectiveMin = Math.max(1, minVal);
 
-  // 2nd decile (20th percentile)
-  let decile2 = minVal;
-  if (validValues.length > 0) {
-    const idx20 = Math.min(validValues.length - 1, Math.floor(0.20 * validValues.length));
-    decile2 = validValues[idx20];
+  // 2nd decile (20th percentile) ignoring values below effectiveMin
+  const valuesAboveEffectiveMin = validValues.filter(v => v >= effectiveMin);
+  let decile2 = effectiveMin;
+  if (valuesAboveEffectiveMin.length > 0) {
+    const idx20 = Math.min(valuesAboveEffectiveMin.length - 1, Math.floor(0.20 * valuesAboveEffectiveMin.length));
+    decile2 = valuesAboveEffectiveMin[idx20];
   }
 
-  const effectiveMin = Math.max(10, minVal);
   const capByFactor = effectiveMin * Math.pow(1.1, 16);
   const redCap = Math.max(capByFactor, decile2);
   const logRange = redCap > effectiveMin ? Math.log(redCap / effectiveMin) : 1;
@@ -186,16 +277,34 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     ctx.clearRect(0, 0, width, height);
     if (nDep === 0 || nArr === 0 || !currentMatrix) return;
 
-    const cellW = width / nDep;
-    const cellH = height / nArr;
+    const curIMin = viewBounds ? viewBounds.iMin : 0;
+    const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+    const curJMin = viewBounds ? viewBounds.jMin : 0;
+    const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
 
-    for (let i = 0; i < nDep; i++) {
-      for (let j = 0; j < nArr; j++) {
+    const rangeI = Math.max(1, curIMax - curIMin + 1);
+    const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+    const startI = Math.max(0, Math.floor(curIMin));
+    const endI = Math.min(nDep - 1, Math.ceil(curIMax));
+    const startJ = Math.max(0, Math.floor(curJMin));
+    const endJ = Math.min(nArr - 1, Math.ceil(curJMax));
+
+    for (let i = startI; i <= endI; i++) {
+      const x1 = ((i - curIMin) / rangeI) * width;
+      const x2 = ((i + 1 - curIMin) / rangeI) * width;
+      const cellW = Math.max(0.5, x2 - x1);
+
+      for (let j = startJ; j <= endJ; j++) {
+        const y1 = height - ((j + 1 - curJMin) / rangeJ) * height;
+        const y2 = height - ((j - curJMin) / rangeJ) * height;
+        const cellH = Math.max(0.5, y2 - y1);
+
         const isValid = seqPorkchop.validMatrix[i]?.[j];
 
         if (!isValid) {
           ctx.fillStyle = '#0F172A';
-          ctx.fillRect(i * cellW, (nArr - 1 - j) * cellH, cellW + 0.5, cellH + 0.5);
+          ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
           continue;
         }
 
@@ -213,20 +322,81 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
 
         const hue = (1 - norm) * 240;
         ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
-        ctx.fillRect(i * cellW, (nArr - 1 - j) * cellH, cellW + 0.5, cellH + 0.5);
+        ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
       }
     }
-  }, [seqPorkchop, activeTab, currentMatrix, minVal, maxVal, effectiveMin, redCap, logRange, nDep, nArr]);
+
+    // Draw rubber-band box zoom selection rectangle if dragging
+    if (dragStart && dragCurrent) {
+      const bx = Math.min(dragStart.x, dragCurrent.x);
+      const by = Math.min(dragStart.y, dragCurrent.y);
+      const bw = Math.abs(dragCurrent.x - dragStart.x);
+      const bh = Math.abs(dragCurrent.y - dragStart.y);
+
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
+      ctx.strokeStyle = '#38BDF8';
+      ctx.lineWidth = 2;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeRect(bx, by, bw, bh);
+    }
+  }, [
+    seqPorkchop,
+    activeTab,
+    currentMatrix,
+    minVal,
+    maxVal,
+    effectiveMin,
+    redCap,
+    logRange,
+    nDep,
+    nArr,
+    viewBounds,
+    dragStart,
+    dragCurrent,
+    renderEpoch,
+  ]);
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(canvas.width, ((e.clientX - rect.left) / rect.width) * canvas.width));
+    const y = Math.max(0, Math.min(canvas.height, ((e.clientY - rect.top) / rect.height) * canvas.height));
+
+    setDragStart({ x, y });
+    setDragCurrent({ x, y });
+  };
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const rawX = e.clientX - rect.left;
+    const rawY = e.clientY - rect.top;
 
-    const i = Math.floor((x / rect.width) * nDep);
-    const j = Math.floor((1 - y / rect.height) * nArr);
+    const x = Math.max(0, Math.min(canvas.width, (rawX / rect.width) * canvas.width));
+    const y = Math.max(0, Math.min(canvas.height, (rawY / rect.height) * canvas.height));
+
+    if (dragStart) {
+      setDragCurrent({ x, y });
+    }
+
+    const curIMin = viewBounds ? viewBounds.iMin : 0;
+    const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+    const curJMin = viewBounds ? viewBounds.jMin : 0;
+    const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
+
+    const rangeI = Math.max(1, curIMax - curIMin + 1);
+    const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+    const relX = Math.max(0, Math.min(1, rawX / rect.width));
+    const relY = Math.max(0, Math.min(1, rawY / rect.height));
+
+    const floatI = curIMin + relX * rangeI;
+    const floatJ = curJMin + (1 - relY) * rangeJ;
+
+    const i = Math.max(0, Math.min(nDep - 1, Math.floor(floatI)));
+    const j = Math.max(0, Math.min(nArr - 1, Math.floor(floatJ)));
 
     if (i >= 0 && i < nDep && j >= 0 && j < nArr) {
       const depDate = seqPorkchop.depDates[i];
@@ -293,9 +463,112 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         flybyDvs: flybyDvsList,
         totalPoweredDv,
         isValid,
-        xPct: (x / rect.width) * 100,
-        yPct: (y / rect.height) * 100,
+        xPct: relX * 100,
+        yPct: relY * 100,
       });
+    }
+  };
+
+  const handleCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (dragStart && dragCurrent && canvasRef.current) {
+      const dx = Math.abs(dragCurrent.x - dragStart.x);
+      const dy = Math.abs(dragCurrent.y - dragStart.y);
+
+      // Perform box zoom if drag box is larger than 6x6 pixels
+      if (dx > 6 && dy > 6) {
+        const canvas = canvasRef.current;
+
+        const x1 = Math.min(dragStart.x, dragCurrent.x);
+        const x2 = Math.max(dragStart.x, dragCurrent.x);
+        const y1 = Math.min(dragStart.y, dragCurrent.y);
+        const y2 = Math.max(dragStart.y, dragCurrent.y);
+
+        const curIMin = viewBounds ? viewBounds.iMin : 0;
+        const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+        const curJMin = viewBounds ? viewBounds.jMin : 0;
+        const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
+
+        const rangeI = Math.max(1, curIMax - curIMin + 1);
+        const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+        const newIMin = curIMin + (x1 / canvas.width) * rangeI;
+        const newIMax = curIMin + (x2 / canvas.width) * rangeI - 1;
+        const newJMin = curJMin + (1 - y2 / canvas.height) * rangeJ;
+        const newJMax = curJMin + (1 - y1 / canvas.height) * rangeJ - 1;
+
+        const iMin = Math.max(0, Math.floor(newIMin));
+        const iMax = Math.min(nDep - 1, Math.max(iMin + 1, Math.ceil(newIMax)));
+        const jMin = Math.max(0, Math.floor(newJMin));
+        const jMax = Math.min(nArr - 1, Math.max(jMin + 1, Math.ceil(newJMax)));
+
+        setViewBounds({
+          iMin,
+          iMax,
+          jMin,
+          jMax,
+        });
+      } else {
+        handleCanvasClick(e);
+      }
+    }
+
+    setDragStart(null);
+    setDragCurrent(null);
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !porkchops || nDep === 0 || nArr === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const curIMin = viewBounds ? viewBounds.iMin : 0;
+    const curIMax = viewBounds ? viewBounds.iMax : Math.max(0, nDep - 1);
+    const curJMin = viewBounds ? viewBounds.jMin : 0;
+    const curJMax = viewBounds ? viewBounds.jMax : Math.max(0, nArr - 1);
+
+    const rangeI = Math.max(1, curIMax - curIMin + 1);
+    const rangeJ = Math.max(1, curJMax - curJMin + 1);
+
+    const relX = Math.max(0, Math.min(1, x / rect.width));
+    const relY = Math.max(0, Math.min(1, y / rect.height));
+
+    const floatI = curIMin + relX * rangeI;
+    const floatJ = curJMin + (1 - relY) * rangeJ;
+
+    const i = Math.max(0, Math.min(nDep - 1, Math.floor(floatI)));
+    const j = Math.max(0, Math.min(nArr - 1, Math.floor(floatJ)));
+
+    if (i >= 0 && i < nDep && j >= 0 && j < nArr) {
+      if (instanceCount === 3) {
+        const data = extractFlybyDebugData(
+          seqPorkchop,
+          porkchops,
+          links || [],
+          i,
+          j,
+          bodies,
+          mainBody
+        );
+        if (data) {
+          setDebugPlotData(data);
+        }
+      } else if (instanceCount > 3 && bodies && mainBody) {
+        const multiData = extractMultiInstanceDebugData(
+          seqPorkchop,
+          porkchops,
+          links || [],
+          i,
+          j,
+          bodies,
+          mainBody,
+          sequencePorkchops
+        );
+        if (multiData) {
+          setMultiInstanceDebugData(multiData);
+        }
+      }
     }
   };
 
@@ -368,6 +641,136 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     );
   }
 
+  const resolvedPathInsts = useMemo<InstanceNode[]>(() => {
+    if (seqPorkchop.pathInsts && seqPorkchop.pathInsts.length > 0) {
+      return seqPorkchop.pathInsts;
+    }
+    if (seqPorkchop.pathInstances && seqPorkchop.pathInstances.length > 0) {
+      return seqPorkchop.pathInstances;
+    }
+    if (seqPorkchop.instanceIds && instances && instances.length > 0) {
+      const found = seqPorkchop.instanceIds
+        .map(id => instances.find(i => i.id === id))
+        .filter((i): i is InstanceNode => !!i);
+      if (found.length === seqPorkchop.instanceIds.length) {
+        return found;
+      }
+    }
+    const names = seqPorkchop.bodyNames && seqPorkchop.bodyNames.length >= 3
+      ? seqPorkchop.bodyNames
+      : [seqPorkchop.sourceBody, seqPorkchop.flybyBody || 'Flyby', seqPorkchop.targetBody];
+    const ids = seqPorkchop.instanceIds && seqPorkchop.instanceIds.length === names.length
+      ? seqPorkchop.instanceIds
+      : [seqPorkchop.sourceInstanceId || 'src', seqPorkchop.flybyInstanceId || 'fb', seqPorkchop.targetInstanceId || 'tgt'];
+
+    return names.map((name, idx) => ({
+      id: ids[idx] || `inst-${idx}`,
+      bodyName: name,
+      customName: name,
+      x: 0,
+      y: 0,
+    } as InstanceNode));
+  }, [seqPorkchop, instances]);
+
+  const handleRecomputePointCell = (depIndex: number, arrIndex: number) => {
+    if (!seqPorkchop || !bodies || !mainBody) return;
+
+    const tDep = seqPorkchop.depDates[depIndex];
+    const tArr = seqPorkchop.arrDates[arrIndex];
+
+    const N = resolvedPathInsts.length;
+    let result = null;
+    if (N === 3) {
+      result = evaluateSequenceTransferFromDirectPorkchops(
+        resolvedPathInsts,
+        tDep,
+        tArr,
+        bodies,
+        mainBody,
+        porkchops || {},
+        links || []
+      );
+    } else if (N > 3) {
+      const suffixPath = resolvedPathInsts.slice(1, N);
+      const suffixKey = suffixPath.map(i => i.id).join('-');
+      const suffixSeqId = `seq-pc-${suffixKey}`;
+      const hasSuffix = !!(sequencePorkchops && (sequencePorkchops[suffixSeqId] || sequencePorkchops[suffixKey]));
+
+      const prefixPath = resolvedPathInsts.slice(0, N - 1);
+      const prefixKey = prefixPath.map(i => i.id).join('-');
+      const prefixSeqId = `seq-pc-${prefixKey}`;
+      const hasPrefix = !!(sequencePorkchops && (sequencePorkchops[prefixSeqId] || sequencePorkchops[prefixKey]));
+
+      // =========================================================================
+      // TODO: MASSIVE ARCHITECTURAL IMPROVEMENT NEEDED HERE
+      // When neither sub-chain (prefix vs. suffix) is pre-calculated in cache,
+      // the choice of sub-chain direction should be improved and dynamically chosen
+      // according to the estimated computational cost of each option.
+      // (e.g. comparing the product of date window samples or orbital periods of the
+      // remaining legs: leg (0 -> 1) + suffix (1..N-1) vs. prefix (0..N-2) + leg (N-2 -> N-1)).
+      // Currently, defaulting to 'suffix' (evaluateHigherOrderSequenceTransferAddFirstLeg)
+      // when neither is pre-calculated.
+      // =========================================================================
+      if (hasPrefix && !hasSuffix) {
+        result = evaluateHigherOrderSequenceTransferAddLastLeg(
+          resolvedPathInsts,
+          tDep,
+          tArr,
+          bodies,
+          mainBody,
+          porkchops || {},
+          links || [],
+          sequencePorkchops || {}
+        );
+      } else {
+        result = evaluateHigherOrderSequenceTransferAddFirstLeg(
+          resolvedPathInsts,
+          tDep,
+          tArr,
+          bodies,
+          mainBody,
+          porkchops || {},
+          links || [],
+          sequencePorkchops || {}
+        );
+      }
+    }
+
+    if (result) {
+      if (seqPorkchop.totalPoweredDvMatrix) {
+        seqPorkchop.totalPoweredDvMatrix[depIndex][arrIndex] = result.totalDv;
+      }
+      if (seqPorkchop.poweredDvBMatrix) {
+        seqPorkchop.poweredDvBMatrix[depIndex][arrIndex] = result.flybyDvs[0] ?? 0;
+      }
+      if (seqPorkchop.poweredDvCMatrix && result.flybyDvs.length > 1) {
+        seqPorkchop.poweredDvCMatrix[depIndex][arrIndex] = result.flybyDvs[1];
+      }
+      if (seqPorkchop.c3DepAMatrix) {
+        seqPorkchop.c3DepAMatrix[depIndex][arrIndex] = result.c3DepA;
+      }
+      if (seqPorkchop.c3ArrBMatrix && result.c3ArrB !== undefined) {
+        seqPorkchop.c3ArrBMatrix[depIndex][arrIndex] = result.c3ArrB;
+      }
+      if (seqPorkchop.c3DepBMatrix && result.c3DepB !== undefined) {
+        seqPorkchop.c3DepBMatrix[depIndex][arrIndex] = result.c3DepB;
+      }
+      if (seqPorkchop.c3ArrCMatrix && result.c3ArrC !== undefined) {
+        seqPorkchop.c3ArrCMatrix[depIndex][arrIndex] = result.c3ArrC;
+      }
+      if (seqPorkchop.c3ArrFinalMatrix) {
+        seqPorkchop.c3ArrFinalMatrix[depIndex][arrIndex] = result.c3ArrFinal;
+      }
+      if (seqPorkchop.flybyDateMatrix && result.flybyDates.length > 0) {
+        seqPorkchop.flybyDateMatrix[depIndex][arrIndex] = result.flybyDates[0];
+      }
+      if (seqPorkchop.validMatrix) {
+        seqPorkchop.validMatrix[depIndex][arrIndex] = result.totalDv < 1e6;
+      }
+      setRenderEpoch(e => e + 1);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
       <div className="bg-[#18181B] border border-[#27272A] rounded-xl shadow-2xl max-w-4xl w-full flex flex-col max-h-[96vh] overflow-hidden">
@@ -390,23 +793,72 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                     Subsequence
                   </span>
                 )}
+                <span className="bg-emerald-500/20 text-emerald-300 text-[10px] px-2 py-0.5 rounded border border-emerald-500/30 font-semibold flex items-center gap-1">
+                  <Zap className="w-3 h-3 text-emerald-400" />
+                  <span>Possible departure date for free flyby: <strong>{freeFlybyDepDatesCount}</strong></span>
+                </span>
               </h2>
-              <p className="text-[11px] text-[#A1A1AA]">
-                <span className="text-[#60A5FA] font-semibold">{seqPorkchop.sequenceLabel}</span>
-              </p>
+              <div className="flex flex-col gap-1">
+                <p className="text-[11px] text-[#A1A1AA]">
+                  <span className="text-[#60A5FA] font-semibold">{seqPorkchop.sequenceLabel}</span>
+                </p>
+
+                {/* Subtask dependency progress indicator under main title */}
+                {isComputing && currentSubtask && (
+                  <div className="flex items-center gap-2 mt-0.5 px-2 py-0.5 rounded bg-blue-950/80 border border-blue-500/40 text-[11px] font-mono text-cyan-300 shadow-sm max-w-lg">
+                    <RefreshCw className="w-3 h-3 animate-spin text-cyan-400 shrink-0" />
+                    <span className="text-slate-400 font-semibold text-[10px] uppercase tracking-wider">Dependency:</span>
+                    <span className="truncate text-cyan-200 font-medium">{currentSubtask.subtaskName}</span>
+                    <div className="flex items-center gap-1.5 ml-auto shrink-0 font-bold">
+                      <span className="bg-cyan-900/90 text-cyan-200 px-1.5 py-0.2 rounded text-[10px] border border-cyan-500/30">
+                        {currentSubtask.progressPct}%
+                      </span>
+                      {currentSubtask.totalSamples > 0 && (
+                        <span className="text-[10px] text-slate-400 font-normal">
+                          ({currentSubtask.computedSamples}/{currentSubtask.totalSamples})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {seqPorkchop.profiling && seqPorkchop.profiling.totalComputationTimeMs > 0 && (
+              <button
+                onClick={() => setIsProfilingFolded(prev => !prev)}
+                className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-semibold bg-[#18181B] hover:bg-[#27272A] border border-[#27272A] text-emerald-400 transition cursor-pointer"
+                title="Toggle Method Timing & Block Instrumentation Breakdown panel"
+              >
+                <Timer className="w-3.5 h-3.5 text-emerald-400" />
+                <span>
+                  {seqPorkchop.profiling.totalComputationTimeMs >= 1000
+                    ? `${(seqPorkchop.profiling.totalComputationTimeMs / 1000).toFixed(2)}s`
+                    : `${seqPorkchop.profiling.totalComputationTimeMs.toFixed(0)}ms`}
+                </span>
+                <span className="text-[#71717A] text-[10px]">
+                  ({seqPorkchop.profiling.pointsEvaluated} pts)
+                </span>
+              </button>
+            )}
+
             {onRecomputePorkchop && (
               <button
                 onClick={onRecomputePorkchop}
                 disabled={isComputing}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white transition-all shadow"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-75 text-white transition-all shadow"
                 title="Recompute this specific sequence porkchop plot directly"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isComputing ? 'animate-spin' : ''}`} />
-                {isComputing ? 'Computing...' : 'Recompute Porkchop'}
+                {isComputing ? (
+                  <span className="font-mono font-bold text-[#93C5FD] bg-[#1E40AF] px-1.5 py-0.5 rounded text-[11px]">
+                    {computedPct}%
+                  </span>
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>{isComputing ? `Computing (${computedPct}%)` : 'Recompute Porkchop'}</span>
               </button>
             )}
 
@@ -447,10 +899,26 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         <div className="p-2.5 sm:p-3 flex flex-col gap-2 overflow-y-auto">
           <div className="bg-[#09090B] p-2.5 sm:p-3 rounded-lg border border-[#27272A] flex flex-col items-center w-full">
             
-            {/* Top Title */}
-            <div className="text-[11px] text-[#A1A1AA] mb-1.5 font-mono flex items-center gap-1.5">
-              <Calendar className="w-3.5 h-3.5 text-[#38BDF8]" />
-              Arrival at <span className="text-white font-semibold">{tgtBodyName}</span> vs Departure at <span className="text-white font-semibold">{srcBodyName}</span>
+            {/* Top Title & Zoom Reset Button */}
+            <div className="w-full flex items-center justify-between text-[11px] text-[#A1A1AA] mb-1.5 font-mono">
+              <div className="flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-[#38BDF8]" />
+                Arrival at <span className="text-white font-semibold">{tgtBodyName}</span> vs Departure at <span className="text-white font-semibold">{srcBodyName}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {viewBounds && (
+                  <button
+                    onClick={() => setViewBounds(null)}
+                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] bg-[#2563EB]/20 hover:bg-[#2563EB]/40 text-[#60A5FA] rounded border border-[#2563EB]/40 transition"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset Zoom</span>
+                  </button>
+                )}
+                <span className="text-[10px] text-[#71717A] italic hidden sm:inline">
+                  Click & drag box on heatmap to zoom
+                </span>
+              </div>
             </div>
 
             {/* Canvas Row with Left Y-Axis Legend */}
@@ -461,7 +929,17 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                 <div className="text-right leading-tight">
                   <span className="text-[9px] text-[#71717A] uppercase font-bold block">Arr Max</span>
                   <span className="text-[#38BDF8] font-semibold text-[10px] block truncate">
-                    {nArr > 0 ? formatShortUT(seqPorkchop.arrDates[nArr - 1], timeFormatMode) : '--'}
+                    {nArr > 0
+                      ? formatShortUT(
+                          seqPorkchop.arrDates[
+                            Math.min(
+                              nArr - 1,
+                              Math.max(0, Math.round(viewBounds ? viewBounds.jMax : nArr - 1))
+                            )
+                          ],
+                          timeFormatMode
+                        )
+                      : '--'}
                   </span>
                 </div>
                 
@@ -472,7 +950,17 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                 <div className="text-right leading-tight">
                   <span className="text-[9px] text-[#71717A] uppercase font-bold block">Arr Min</span>
                   <span className="text-[#38BDF8] font-semibold text-[10px] block truncate">
-                    {nArr > 0 ? formatShortUT(seqPorkchop.arrDates[0], timeFormatMode) : '--'}
+                    {nArr > 0
+                      ? formatShortUT(
+                          seqPorkchop.arrDates[
+                            Math.min(
+                              nArr - 1,
+                              Math.max(0, Math.round(viewBounds ? viewBounds.jMin : 0))
+                            )
+                          ],
+                          timeFormatMode
+                        )
+                      : '--'}
                   </span>
                 </div>
               </div>
@@ -483,25 +971,74 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                   ref={canvasRef}
                   width={800}
                   height={400}
+                  onMouseDown={handleCanvasMouseDown}
                   onMouseMove={handleCanvasMouseMove}
-                  onMouseLeave={() => setHoverData(null)}
-                  className="w-full h-full rounded border border-[#27272A] cursor-crosshair object-fill"
+                  onMouseUp={handleCanvasMouseUp}
+                  onMouseLeave={() => {
+                    setHoverData(null);
+                    setDragStart(null);
+                    setDragCurrent(null);
+                  }}
+                  className="w-full h-full rounded border border-[#27272A] cursor-crosshair object-fill select-none"
                 />
 
                 {/* Computing Live Indicator Overlay */}
                 {isComputing && nDep > 0 && nArr > 0 && (
-                  <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2.5 py-1 rounded bg-black/80 border border-blue-500/50 text-[10px] font-mono text-blue-400 backdrop-blur-sm shadow-md animate-pulse">
-                    <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
-                    <span>Computing live...</span>
+                  <div className="absolute top-2 right-2 flex flex-col items-end gap-1 px-2.5 py-1.5 rounded bg-black/90 border border-blue-500/50 text-[11px] font-mono text-blue-400 backdrop-blur-sm shadow-md z-10">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-[#38BDF8] bg-blue-950/80 px-1.5 py-0.5 rounded border border-blue-500/30">
+                        {computedPct}%
+                      </span>
+                      <span>Main Task</span>
+                    </div>
+                    {currentSubtask && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-cyan-300">
+                        <RefreshCw className="w-3 h-3 animate-spin text-cyan-400 shrink-0" />
+                        <span className="truncate max-w-[170px]">Sub: {currentSubtask.subtaskName}</span>
+                        <span className="font-bold text-cyan-200 bg-cyan-950/90 px-1 py-0.2 rounded border border-cyan-500/30">
+                          {currentSubtask.progressPct}%
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Empty / Initial Loading Overlay */}
                 {(nDep === 0 || nArr === 0) && (
-                  <div className="absolute inset-0 bg-[#09090B]/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center rounded border border-[#27272A]">
-                    <RefreshCw className="w-8 h-8 text-[#38BDF8] animate-spin mb-2" />
-                    <span className="text-xs font-mono font-bold text-white">Computing sequence porkchop plot...</span>
-                    <span className="text-[10px] font-mono text-[#94A3B8] mt-1">Evaluating multi-body trajectories and flybys...</span>
+                  <div className="absolute inset-0 bg-[#09090B]/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center rounded border border-[#27272A] z-20">
+                    <div className="text-3xl font-mono font-bold text-[#38BDF8] mb-1">{computedPct}%</div>
+                    <span className="text-xs font-mono font-bold text-white mb-2">
+                      Computing {instanceCount}-Instance Sequence ({seqPorkchop.sequenceLabel})
+                    </span>
+                    {currentSubtask ? (
+                      <div className="w-full max-w-sm bg-[#18181B] border border-blue-500/40 rounded-lg p-3 flex flex-col gap-2 shadow-lg">
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="text-cyan-300 font-bold flex items-center gap-1.5 truncate">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400 shrink-0" />
+                            Dependency: {currentSubtask.subtaskName}
+                          </span>
+                          <span className="text-cyan-200 font-bold bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/30 shrink-0 ml-2">
+                            {currentSubtask.progressPct}%
+                          </span>
+                        </div>
+                        <div className="w-full bg-[#27272A] h-2 rounded-full overflow-hidden border border-[#3F3F46]">
+                          <div
+                            className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full transition-all duration-150"
+                            style={{ width: `${currentSubtask.progressPct}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                          <span>{currentSubtask.statusText || 'Evaluating prerequisite transfers...'}</span>
+                          {currentSubtask.totalSamples > 0 && (
+                            <span>{currentSubtask.computedSamples} / {currentSubtask.totalSamples} samples</span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-[10px] font-mono text-[#94A3B8] mt-1">
+                        Evaluating multi-body trajectories and flybys...
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -523,11 +1060,41 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
 
             {/* Bottom X-Axis Legend Row */}
             <div className="w-full max-w-[680px] pl-20 sm:pl-24 flex items-center justify-between text-[10px] text-[#A1A1AA] font-mono mt-1.5 pt-1 border-t border-[#27272A]">
-              <span>Dep Min: <strong className="text-[#38BDF8]">{nDep > 0 ? formatShortUT(seqPorkchop.depDates[0], timeFormatMode) : '--'}</strong></span>
+              <span>
+                Dep Min:{' '}
+                <strong className="text-[#38BDF8]">
+                  {nDep > 0
+                    ? formatShortUT(
+                        seqPorkchop.depDates[
+                          Math.min(
+                            nDep - 1,
+                            Math.max(0, Math.round(viewBounds ? viewBounds.iMin : 0))
+                          )
+                        ],
+                        timeFormatMode
+                      )
+                    : '--'}
+                </strong>
+              </span>
               <span className="text-slate-300 font-bold uppercase tracking-wider text-[10px]">
                 Departure at {srcBodyName} (X-Axis)
               </span>
-              <span>Dep Max: <strong className="text-[#38BDF8]">{nDep > 0 ? formatShortUT(seqPorkchop.depDates[nDep - 1], timeFormatMode) : '--'}</strong></span>
+              <span>
+                Dep Max:{' '}
+                <strong className="text-[#38BDF8]">
+                  {nDep > 0
+                    ? formatShortUT(
+                        seqPorkchop.depDates[
+                          Math.min(
+                            nDep - 1,
+                            Math.max(0, Math.round(viewBounds ? viewBounds.iMax : nDep - 1))
+                          )
+                        ],
+                        timeFormatMode
+                      )
+                    : '--'}
+                </strong>
+              </span>
             </div>
           </div>
 
@@ -617,7 +1184,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
               </div>
             </div>
 
-            {/* Row 3: Feasible Date Windows */}
+            {/* Row 3: Feasible Date Windows & Free Flyby Dates */}
             <div className="border-t border-[#27272A] pt-1.5 mt-1.5 text-[10px] flex flex-wrap items-center justify-between gap-2 text-[#A1A1AA]">
               <div className="flex items-center gap-1.5 font-semibold text-[#60A5FA]">
                 <Calendar className="w-3 h-3 text-[#60A5FA]" />
@@ -641,11 +1208,207 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
               )}
             </div>
 
+            {/* Row 4: Possible departure date for free flyby */}
+            <div className="border-t border-[#27272A] pt-1.5 mt-1.5 text-[10px] flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 font-semibold text-emerald-400">
+                <Zap className="w-3 h-3 text-emerald-400" />
+                <span>possible departure date for free flyby:</span>
+              </div>
+              <div className="flex items-center gap-2 font-mono text-[10px]">
+                <span className="bg-emerald-950/80 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30">
+                  {freeFlybyDepDatesCount} {freeFlybyDepDatesCount === 1 ? 'date' : 'dates'}
+                </span>
+                <span className="text-[#71717A] text-[9px]">
+                  (Δv cost ≤ 1 m/s out of {nDep} departure samples)
+                </span>
+              </div>
+            </div>
+
           </div>
+
+          {/* Block Timing & Instrumentation Profiling Section */}
+          {seqPorkchop.profiling ? (
+            <div className="bg-[#09090B] border border-[#27272A] rounded-lg p-2.5 font-mono text-[11px] flex flex-col gap-2">
+              {/* Profiling Header */}
+              <div className="flex items-center justify-between border-b border-[#27272A] pb-1.5 text-[10px]">
+                <div className="flex items-center gap-1.5">
+                  <Timer className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-white font-bold uppercase tracking-wider">
+                    Method Block Timing &amp; Performance Instrumentation
+                  </span>
+                  <span className="text-[#71717A] hidden md:inline">
+                    (evaluateSequenceTransferFromDirectPorkchops)
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/40 text-[10px]">
+                    Total Time: {seqPorkchop.profiling.totalComputationTimeMs >= 1000
+                      ? `${(seqPorkchop.profiling.totalComputationTimeMs / 1000).toFixed(2)} s`
+                      : `${seqPorkchop.profiling.totalComputationTimeMs.toFixed(1)} ms`}
+                  </span>
+                  <span className="text-[#94A3B8] text-[10px] hidden sm:inline">
+                    {seqPorkchop.profiling.pointsEvaluated} pts evaluated
+                  </span>
+                  <button
+                    onClick={() => setIsProfilingFolded(prev => !prev)}
+                    className="p-0.5 rounded text-[#A1A1AA] hover:text-white hover:bg-[#27272A] transition"
+                    title={isProfilingFolded ? 'Expand Block Profiling Breakdown' : 'Collapse Block Profiling Breakdown'}
+                  >
+                    {isProfilingFolded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Multi-Segment Proportional Progress Bar */}
+              {seqPorkchop.profiling.blocks && seqPorkchop.profiling.blocks.length > 0 && (
+                <div className="w-full h-2.5 rounded bg-[#18181B] border border-[#27272A] overflow-hidden flex">
+                  {seqPorkchop.profiling.blocks.map((block) => {
+                    const pct = Math.max(0, Math.min(100, block.percentage || 0));
+                    if (pct <= 0) return null;
+                    const blockId = block.id;
+                    const colorClass =
+                      blockId === 'matrix_lookup' ? 'bg-sky-400' :
+                      blockId === 'candidate_pooling' ? 'bg-amber-400' :
+                      blockId === 'sampling_physics' ? 'bg-emerald-400' :
+                      blockId === 'local_minima' ? 'bg-purple-400' :
+                      'bg-blue-500';
+
+                    const timeVal = block.timeMs ?? 0;
+                    return (
+                      <div
+                        key={block.id}
+                        style={{ width: `${pct}%` }}
+                        className={`${colorClass} h-full transition-all duration-300`}
+                        title={`${block.name}: ${timeVal.toFixed(1)} ms (${pct.toFixed(1)}%)`}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Expanded Detailed Block Cards */}
+              {!isProfilingFolded && seqPorkchop.profiling.blocks && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1">
+                  {seqPorkchop.profiling.blocks.map((block, idx) => {
+                    const pct = Math.max(0, Math.min(100, block.percentage || 0));
+                    const blockId = block.id;
+                    const colorBadge =
+                      blockId === 'matrix_lookup' ? 'bg-sky-500/20 text-sky-300 border-sky-500/40' :
+                      blockId === 'candidate_pooling' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' :
+                      blockId === 'sampling_physics' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' :
+                      blockId === 'local_minima' ? 'bg-purple-500/20 text-purple-300 border-purple-500/40' :
+                      'bg-blue-500/20 text-blue-300 border-blue-500/40';
+
+                    const barColor =
+                      blockId === 'matrix_lookup' ? 'bg-sky-400' :
+                      blockId === 'candidate_pooling' ? 'bg-amber-400' :
+                      blockId === 'sampling_physics' ? 'bg-emerald-400' :
+                      blockId === 'local_minima' ? 'bg-purple-400' :
+                      'bg-blue-500';
+
+                    const timeVal = block.timeMs ?? 0;
+                    const avgVal = block.avgTimeUs ?? 0;
+                    const callCount = block.callCount ?? 0;
+
+                    return (
+                      <div
+                        key={block.id}
+                        className="bg-[#18181B] border border-[#27272A] rounded p-2 flex flex-col justify-between gap-1.5 shadow-sm"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={`text-[9px] px-1.5 py-0.2 rounded border font-bold uppercase ${colorBadge}`}>
+                            Step {idx + 1}: {block.name}
+                          </span>
+                          <span className="text-white font-bold text-[10px]">
+                            {pct.toFixed(1)}%
+                          </span>
+                        </div>
+
+                        <p className="text-[9px] text-[#A1A1AA] line-clamp-2 leading-tight">
+                          {block.description}
+                        </p>
+
+                        {/* Progress Bar for Block */}
+                        <div className="w-full h-1 rounded bg-[#27272A] overflow-hidden">
+                          <div
+                            style={{ width: `${pct}%` }}
+                            className={`${barColor} h-full transition-all duration-300`}
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between text-[9px] text-[#71717A] pt-0.5 border-t border-[#27272A]/60">
+                          <span>
+                            Time: <strong className="text-slate-200">{timeVal.toFixed(1)} ms</strong>
+                          </span>
+                          <span>
+                            Avg: <strong className="text-slate-200">
+                              {avgVal >= 1000
+                                ? `${(avgVal / 1000).toFixed(2)} ms`
+                                : `${avgVal.toFixed(1)} µs`}
+                            </strong>
+                          </span>
+                          <span>
+                            Calls: <strong className="text-slate-200">{callCount.toLocaleString()}</strong>
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="bg-[#09090B] border border-[#27272A] rounded-lg p-2.5 font-mono text-[11px] flex items-center justify-between text-[#A1A1AA]">
+              <div className="flex items-center gap-2">
+                <Timer className="w-3.5 h-3.5 text-[#38BDF8]" />
+                <span>Method block timing instrumentation is active. Recompute this porkchop to record live profiling stats.</span>
+              </div>
+              {onRecomputePorkchop && (
+                <button
+                  onClick={onRecomputePorkchop}
+                  disabled={isComputing}
+                  className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-70 text-white transition"
+                >
+                  {isComputing ? 'Profiling...' : 'Recompute to Profile'}
+                </button>
+              )}
+            </div>
+          )}
 
         </div>
 
       </div>
+
+      {/* 3-Instance Flyby Matplotlib Debug Plot Modal */}
+      {debugPlotData && (
+        <FlybyDebugPlotModal
+          initialData={debugPlotData}
+          seqPorkchop={seqPorkchop}
+          porkchops={porkchops}
+          links={links}
+          bodies={bodies}
+          mainBody={mainBody}
+          timeFormatMode={timeFormatMode}
+          onClose={() => setDebugPlotData(null)}
+          onRecomputePoint={handleRecomputePointCell}
+        />
+      )}
+
+      {/* Multi-Instance (N > 3) Debug Table & Inspector Modal */}
+      {multiInstanceDebugData && (
+        <MultiInstanceDebugModal
+          initialData={multiInstanceDebugData}
+          seqPorkchop={seqPorkchop}
+          porkchops={porkchops}
+          links={links}
+          bodies={bodies}
+          mainBody={mainBody}
+          sequencePorkchops={sequencePorkchops}
+          timeFormatMode={timeFormatMode}
+          onClose={() => setMultiInstanceDebugData(null)}
+          onRecomputePoint={handleRecomputePointCell}
+        />
+      )}
     </div>
   );
 };

@@ -24,6 +24,7 @@ interface CanvasGraphProps {
   onRemoveLink: (linkId: string) => void;
   onUpdateInstancePosition: (instanceId: string, x: number, y: number) => void;
   onOpenPorkchopModal: (linkId: string) => void;
+  onInspectC3?: (instanceId: string) => void;
 }
 
 export const CanvasGraph: React.FC<CanvasGraphProps> = ({
@@ -41,6 +42,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
   onRemoveLink,
   onUpdateInstancePosition,
   onOpenPorkchopModal,
+  onInspectC3,
 }) => {
   const [selectedBodyForAdd, setSelectedBodyForAdd] = useState<string>('');
   const [linkSourceId, setLinkSourceId] = useState<string | null>(null);
@@ -232,8 +234,8 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
             const dy = tgt.y - src.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
-            const offsetStart = 45;
-            const offsetEnd = 45;
+            const offsetStart = 55;
+            const offsetEnd = 55;
 
             const startX = src.x + (dx * offsetStart) / (dist || 1);
             const startY = src.y + (dy * offsetStart) / (dist || 1);
@@ -423,7 +425,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
               >
                 {/* Outer Selection Highlight Ring */}
                 <circle
-                  r="42"
+                  r="52"
                   fill="none"
                   stroke={isEditing ? '#60A5FA' : isLinkSource ? '#F59E0B' : isLinkTarget ? '#10B981' : 'transparent'}
                   strokeWidth={isLinkTarget ? "2.5" : "2"}
@@ -433,7 +435,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
 
                 {/* Node Base Circle */}
                 <circle
-                  r="38"
+                  r="48"
                   fill="#18181B"
                   stroke={bodyColor}
                   strokeWidth="2.5"
@@ -442,9 +444,9 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
 
                 {/* Body Name */}
                 <text
-                  y="-14"
+                  y="-18"
                   fill="#F8FAFC"
-                  fontSize="12"
+                  fontSize="12.5"
                   fontWeight="700"
                   textAnchor="middle"
                   className="pointer-events-none select-none tracking-wide"
@@ -454,7 +456,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
 
                 {/* Status Label */}
                 <text
-                  y="-3"
+                  y="-6"
                   fill={statusColor}
                   fontSize="7.5"
                   fontWeight="700"
@@ -466,7 +468,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
 
                 {/* Date Bounds inside Node */}
                 <text
-                  y="10"
+                  y="9"
                   fill="#60A5FA"
                   fontSize="8.5"
                   fontFamily="monospace"
@@ -478,7 +480,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                     : inst.computedMinDate !== undefined
                       ? formatShortUT(inst.computedMinDate, timeFormatMode)
                       : "Any"}
-                  {"-"}
+                  {" - "}
                   {inst.maxDate !== undefined
                     ? formatShortUT(inst.maxDate, timeFormatMode)
                     : inst.computedMaxDate !== undefined
@@ -501,23 +503,45 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                   </text>
                 )}
 
-                {/* Gray C3 Range Indication */}
+                {/* Interactive Clickable Gray C3 Range Indication */}
                 {(inst.computedMinC3 !== undefined || inst.computedMaxC3 !== undefined || inst.maxC3 !== undefined) && (
-                  <text
-                    y="31"
-                    fill="#94A3B8"
-                    fontSize="7.5"
-                    fontFamily="monospace"
-                    textAnchor="middle"
-                    className="pointer-events-none select-none opacity-90"
+                  <g
+                    className="cursor-pointer group"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onInspectC3?.(inst.id);
+                    }}
                   >
-                    C3: {inst.computedMinC3 !== undefined ? inst.computedMinC3.toFixed(1) : "0"}-
-                    {inst.computedMaxC3 !== undefined ? inst.computedMaxC3.toFixed(1) : inst.maxC3 !== undefined ? inst.maxC3.toFixed(1) : "∞"}
-                  </text>
+                    <rect
+                      x="-38"
+                      y="23"
+                      width="76"
+                      height="15"
+                      rx="3.5"
+                      fill="#1E293B"
+                      fillOpacity="0.85"
+                      stroke="#475569"
+                      strokeWidth="0.8"
+                      className="group-hover:fill-[#252B3B] group-hover:stroke-[#60A5FA] group-hover:stroke-width-[1.2] transition"
+                    />
+                    <text
+                      y="33.5"
+                      fill="#94A3B8"
+                      fontSize="7.5"
+                      fontFamily="monospace"
+                      fontWeight="600"
+                      textAnchor="middle"
+                      className="group-hover:fill-[#60A5FA] select-none transition pointer-events-none"
+                    >
+                      C3: {inst.computedMinC3 !== undefined ? inst.computedMinC3.toFixed(1) : "0"}-
+                      {inst.computedMaxC3 !== undefined ? inst.computedMaxC3.toFixed(1) : inst.maxC3 !== undefined ? inst.maxC3.toFixed(1) : "∞"}
+                    </text>
+                    <title>Click to inspect C3 derivation & Tisserand calculation</title>
+                  </g>
                 )}
 
                 {/* Top Border Action: Delete (x) */}
-                <foreignObject x="-10" y="-50" width="20" height="20">
+                <foreignObject x="-10" y="-60" width="20" height="20">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -531,7 +555,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                 </foreignObject>
 
                 {/* Right Border Action: Link (+) */}
-                <foreignObject x="27" y="-12" width="24" height="24">
+                <foreignObject x="37" y="-12" width="24" height="24">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

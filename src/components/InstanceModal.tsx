@@ -14,6 +14,7 @@ interface InstanceModalProps {
   timeFormatMode: 'ksp' | 'earth';
   onSave: (updated: InstanceNode) => void;
   onClose: () => void;
+  onInspectC3?: (instanceId: string) => void;
 }
 
 export const InstanceModal: React.FC<InstanceModalProps> = ({
@@ -22,6 +23,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
   timeFormatMode,
   onSave,
   onClose,
+  onInspectC3,
 }) => {
   const [minDateSec, setMinDateSec] = useState<string>(instance.minDate !== undefined ? String(instance.minDate) : '');
   const [maxDateSec, setMaxDateSec] = useState<string>(instance.maxDate !== undefined ? String(instance.maxDate) : '');
@@ -255,15 +257,27 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                   <Compass className="w-3.5 h-3.5 text-[#60A5FA]" />
                   Max C3 (km²/s²)
                 </label>
-                {maxC3 !== '' && (
-                  <button
-                    type="button"
-                    onClick={() => setMaxC3('')}
-                    className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
-                  >
-                    Unset
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {onInspectC3 && (
+                    <button
+                      type="button"
+                      onClick={() => onInspectC3(instance.id)}
+                      className="text-[10px] text-[#60A5FA] hover:text-[#93C5FD] underline font-mono cursor-pointer"
+                      title="Inspect Tisserand C3 derivation"
+                    >
+                      Inspect C3
+                    </button>
+                  )}
+                  {maxC3 !== '' && (
+                    <button
+                      type="button"
+                      onClick={() => setMaxC3('')}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
+                    >
+                      Unset
+                    </button>
+                  )}
+                </div>
               </div>
               <input
                 type="number"

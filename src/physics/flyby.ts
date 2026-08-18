@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { CelestialBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode } from '../types';
+import { CelestialBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode, SequenceProfilingStats, SequenceBlockTiming, SequencePorkchopData, SequenceTransferData } from '../types';
 import { Vector3D, vecSub, vecMag, vecDot, getGravitationalParameter, getBodyStateAtUT } from './kepler';
 import { solveLambert } from './lambert';
 
@@ -750,3 +750,1418 @@ export function recomputeFlybyDetailsSequentially(
 
   return debugInfos;
 }
+
+export interface SequenceTransferResult {
+  c3DepA: number;
+  c3ArrB?: number;
+  c3DepB?: number;
+  c3ArrC?: number;
+  c3DepC?: number;
+  c3ArrFinal: number;
+  totalDv: number;
+  flybyDvs: number[];
+  flybyDates: number[];
+}
+
+/**
+ * High-resolution profiler accumulating execution time across different logical blocks
+ * inside evaluateSequenceTransferFromDirectPorkchops.
+ */
+export class SequenceTransferProfiler {
+  matrixLookupMs = 0;
+  candidatePoolingMs = 0;
+  samplingAndPhysicsMs = 0;
+  localMinimaSearchMs = 0;
+  continuousOptimizationMs = 0;
+  totalMethodMs = 0;
+  callsCount = 0;
+
+  reset() {
+    this.matrixLookupMs = 0;
+    this.candidatePoolingMs = 0;
+    this.samplingAndPhysicsMs = 0;
+    this.localMinimaSearchMs = 0;
+    this.continuousOptimizationMs = 0;
+    this.totalMethodMs = 0;
+    this.callsCount = 0;
+  }
+
+  getStats(totalComputationTimeMs?: number, pointsEvaluated?: number): SequenceProfilingStats {
+    const methodTotal = this.totalMethodMs || (
+      this.matrixLookupMs +
+      this.candidatePoolingMs +
+      this.samplingAndPhysicsMs +
+      this.localMinimaSearchMs +
+      this.continuousOptimizationMs
+    );
+    const overallTotal = totalComputationTimeMs !== undefined && totalComputationTimeMs > 0 ? totalComputationTimeMs : methodTotal;
+    const calls = Math.max(1, this.callsCount);
+
+    const makeBlock = (id: string, name: string, desc: string, timeMs: number): SequenceBlockTiming => ({
+      id,
+      name,
+      description: desc,
+      timeMs: Math.round(timeMs * 100) / 100,
+      callCount: this.callsCount,
+      avgTimeUs: Math.round((timeMs * 1000 / calls) * 10) / 10,
+      percentage: overallTotal > 0 ? Math.round((timeMs / overallTotal) * 1000) / 10 : 0,
+    });
+
+    const blocks: SequenceBlockTiming[] = [
+      makeBlock(
+        'matrix_lookup',
+        '1. Matrix & Grid Index Lookup',
+        'Direct link extraction, closest departure row and arrival column matching',
+        this.matrixLookupMs
+      ),
+      makeBlock(
+        'candidate_pooling',
+        '2. Candidate Flyby Date Pooling',
+        'Extracting & sorting candidate flyby dates across direct porkchops',
+        this.candidatePoolingMs
+      ),
+      makeBlock(
+        'sampling_physics',
+        '3. Ephemeris & Flyby Physics',
+        'Computing body orbits, v_inf vectors, deflection angles & powered flyby Δv',
+        this.samplingAndPhysicsMs
+      ),
+      makeBlock(
+        'local_minima',
+        '4. Local Minima Detection',
+        'Scanning sampled Δv curves to find optimal candidate flyby basins',
+        this.localMinimaSearchMs
+      ),
+      makeBlock(
+        'continuous_opt',
+        '5. Continuous Optimization',
+        'Bisection search & continuous flyby date refinement with interpolation',
+        this.continuousOptimizationMs
+      ),
+    ];
+
+    return {
+      totalComputationTimeMs: Math.round(overallTotal * 100) / 100,
+      methodTimeMs: Math.round(methodTotal * 100) / 100,
+      callsCount: this.callsCount,
+      pointsEvaluated: pointsEvaluated ?? this.callsCount,
+      blocks,
+      matrixLookupMs: Math.round(this.matrixLookupMs * 100) / 100,
+      candidatePoolingMs: Math.round(this.candidatePoolingMs * 100) / 100,
+      samplingAndPhysicsMs: Math.round(this.samplingAndPhysicsMs * 100) / 100,
+      localMinimaSearchMs: Math.round(this.localMinimaSearchMs * 100) / 100,
+      continuousOptimizationMs: Math.round(this.continuousOptimizationMs * 100) / 100,
+    };
+  }
+}
+
+/**
+ * Fast binary search helper for finding closest timestamp in sorted date array.
+ */
+export function findClosestDateIndex(dates: number[], target: number): number {
+  const len = dates.length;
+  if (len === 0) return -1;
+  if (len === 1) return 0;
+
+  let low = 0;
+  let high = len - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const val = dates[mid];
+    if (val === target) return mid;
+    if (val < target) low = mid + 1;
+    else high = mid - 1;
+  }
+
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+
+  for (let idx = Math.max(0, high - 1); idx <= Math.min(len - 1, low + 1); idx++) {
+    const diff = Math.abs(dates[idx] - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIdx = idx;
+    }
+  }
+  return bestIdx;
+}
+
+export interface DirectPorkchopFlybySample {
+  j0: number;
+  tFlyby: number;
+  c3DepA: number;
+  c3ArrB: number;
+  c3DepB: number;
+  c3ArrFinal: number;
+  deflectionAngleDeg: number;
+  maxDeflectionAngleDeg: number;
+  dv: number;
+  isValid: boolean;
+}
+
+/**
+ * Generates the array of candidate flyby samples across the matching date grid for a 3-instance (single flyby) transfer.
+ */
+export function generateDirectPorkchopFlybySamples(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = [],
+  profiler?: SequenceTransferProfiler
+): DirectPorkchopFlybySample[] | null {
+  if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length !== 3) return null;
+  const N = 3;
+
+  const t0 = profiler ? performance.now() : 0;
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  // Find direct link porkchops for each leg
+  const legPorkchops: PorkchopPlotData[] = [];
+  for (let k = 0; k < N - 1; k++) {
+    const srcInst = pathInsts[k];
+    const tgtInst = pathInsts[k + 1];
+    const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
+    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`;
+    const pc = porkchops[linkId];
+    if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) {
+      if (profiler) profiler.matrixLookupMs += (performance.now() - t0);
+      return null;
+    }
+    legPorkchops.push(pc);
+  }
+
+  const P0 = legPorkchops[0];
+  const P_last = legPorkchops[legPorkchops.length - 1];
+
+  // Nearest departure row in P0
+  let i0 = findClosestDateIndex(P0.depDates, tDep);
+  if (i0 < 0) i0 = 0;
+
+  // Nearest arrival col in P_last
+  let j_last = findClosestDateIndex(P_last.arrDates, tArr);
+  if (j_last < 0) j_last = 0;
+
+  if (profiler) {
+    profiler.matrixLookupMs += (performance.now() - t0);
+  }
+
+  const P1 = legPorkchops[1];
+  const flybyInst = pathInsts[1];
+  const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+  const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+
+  const samples: DirectPorkchopFlybySample[] = [];
+
+  const t2 = profiler ? performance.now() : 0;
+
+  const isDirectGridMatch = P0.arrDates.length === P1.depDates.length &&
+    P0.arrDates.every((val, idx) => val === P1.depDates[idx]);
+
+  if (!isDirectGridMatch) {
+    throw new Error(`Mismatched flyby grid dates between P0.arrDates (${P0.arrDates.length}) and P1.depDates (${P1.depDates.length})`);
+  }
+
+  const numCandidates = P0.arrDates.length;
+  for (let k = 0; k < numCandidates; k++) {
+    const tFlyby = P0.arrDates[k];
+    const j0 = k;
+    const i1 = k;
+
+    const isGridValid = (!P0.validMatrix || !!P0.validMatrix[i0]?.[j0]) && (!P1.validMatrix || !!P1.validMatrix[i1]?.[j_last]);
+
+    const c3Dep0 = P0.c3DepMatrix?.[i0]?.[j0] ?? 0;
+    const c3Arr0 = P0.c3ArrMatrix?.[i0]?.[j0] ?? 0;
+    const c3Dep1 = P1.c3DepMatrix?.[i1]?.[j_last] ?? 0;
+    const c3Arr1 = P1.c3ArrMatrix?.[i1]?.[j_last] ?? 0;
+
+    const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
+    const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j_last];
+
+    if (!vTransArr0 || !vTransDep1 || vecMag(vTransArr0) < 1e-3 || vecMag(vTransDep1) < 1e-3) {
+      samples.push({
+        j0,
+        tFlyby,
+        c3DepA: c3Dep0,
+        c3ArrB: c3Arr0,
+        c3DepB: c3Dep1,
+        c3ArrFinal: c3Arr1,
+        deflectionAngleDeg: 0,
+        maxDeflectionAngleDeg: 0,
+        dv: Infinity,
+        isValid: false,
+      });
+      continue;
+    }
+
+    const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
+    const vInfIn = vecSub(vTransArr0, stBody.vel);
+    const vInfOut = vecSub(vTransDep1, stBody.vel);
+
+    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+    const dvFinite = Number.isFinite(flybyEval.poweredDv);
+
+    samples.push({
+      j0,
+      tFlyby,
+      c3DepA: c3Dep0,
+      c3ArrB: c3Arr0,
+      c3DepB: c3Dep1,
+      c3ArrFinal: c3Arr1,
+      deflectionAngleDeg: flybyEval.deflectionAngleDeg,
+      maxDeflectionAngleDeg: flybyEval.maxDeflectionAngleDeg,
+      dv: dvFinite ? flybyEval.poweredDv : Infinity,
+      isValid: isGridValid && dvFinite && flybyEval.poweredDv < 1e6,
+    });
+  }
+
+  if (profiler) {
+    profiler.candidatePoolingMs += 0;
+    profiler.samplingAndPhysicsMs += (performance.now() - t2);
+  }
+
+  return samples;
+}
+
+/**
+ * Evaluates sequence transfer for a pair of departure/arrival dates using precomputed direct transfer porkchops.
+ * NO Lambert calculations — parses direct transfer porkchop matrices and evaluates flybys with continuous optimization.
+ * Instrumented across 5 distinct execution blocks for live profiling and time tracking.
+ */
+export function evaluateSequenceTransferFromDirectPorkchops(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = [],
+  profiler?: SequenceTransferProfiler
+): SequenceTransferResult | null {
+  const methodStart = profiler ? performance.now() : 0;
+  if (profiler) profiler.callsCount++;
+
+  const samples = generateDirectPorkchopFlybySamples(
+    pathInsts,
+    tDep,
+    tArr,
+    bodies,
+    mainBody,
+    porkchops,
+    links,
+    profiler
+  );
+
+  if (!samples || samples.length === 0) {
+    if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
+    return null;
+  }
+
+  const flybyInst = pathInsts[1];
+  const flybyBody = bodies.find(b => b.name === flybyInst.bodyName) || mainBody;
+  const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const muFlyby = getGravitationalParameter(flybyBody);
+
+  // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
+  const t6 = profiler ? performance.now() : 0;
+
+  // Step 4: Find all local minima in sampled flyby delta-v array and C3 zero-crossings
+  const M = samples.length;
+  const localMinIndices: number[] = [];
+  const rootDates: number[] = [];
+
+  for (let k = 0; k < M; k++) {
+    if (!samples[k].isValid) continue;
+
+    // Check zero-crossing of C3 (unpowered flyby intersection)
+    if (k < M - 1 && samples[k + 1].isValid) {
+      const d1 = samples[k].c3ArrB - samples[k].c3DepB;
+      const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
+      if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
+        const alpha = Math.abs(d1) / (Math.abs(d1) + Math.abs(d2));
+        const tRoot = samples[k].tFlyby + alpha * (samples[k + 1].tFlyby - samples[k].tFlyby);
+        rootDates.push(tRoot);
+      }
+    }
+
+    if (k > 0 && k < M - 1) {
+      if (samples[k - 1].dv >= samples[k].dv && samples[k + 1].dv >= samples[k].dv) {
+        localMinIndices.push(k);
+      }
+    } else if (k === 0) {
+      if (M >= 2 && samples[1].dv >= samples[0].dv) {
+        localMinIndices.push(0);
+      } else if (M === 1) {
+        localMinIndices.push(0);
+      }
+    } else if (k === M - 1) {
+      if (M >= 2 && samples[M - 2].dv >= samples[M - 1].dv) {
+        localMinIndices.push(M - 1);
+      }
+    }
+  }
+
+  // Fallback: if no strict local minimum, use global minimum sample
+  if (localMinIndices.length === 0 && rootDates.length === 0) {
+    let minK = 0;
+    let minVal = Infinity;
+    for (let k = 0; k < M; k++) {
+      if (samples[k].isValid && samples[k].dv < minVal) {
+        minVal = samples[k].dv;
+        minK = k;
+      }
+    }
+    localMinIndices.push(minK);
+  }
+
+  if (profiler) {
+    profiler.localMinimaSearchMs += (performance.now() - t6);
+  }
+
+  // --- BLOCK 5: Continuous Optimization ---
+  const t8 = profiler ? performance.now() : 0;
+
+  const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
+
+  // Continuous evaluator using linear interpolation of sample curves
+  const evalExtrapolatedAtDate = (t: number) => {
+    let s = 0;
+    while (s < M - 2 && samples[s + 1].tFlyby <= t) {
+      s++;
+    }
+
+    const p1 = samples[s];
+    const p2 = samples[Math.min(M - 1, s + 1)];
+    const dt = p2.tFlyby - p1.tFlyby;
+    const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlyby) / dt)) : 0;
+
+    const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
+    const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
+    const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
+    const c3ArrFinal = interp(p1.c3ArrFinal, p2.c3ArrFinal, alpha);
+    const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
+    const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
+
+    let totalDv = 0;
+    if (c3ArrB >= 0 && c3DepB >= 0) {
+      const vInfInMag = Math.sqrt(c3ArrB * 1e6);
+      const vInfOutMag = Math.sqrt(c3DepB * 1e6);
+
+      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
+      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
+
+      let excessAngle = 0;
+      if (deflectionAngleDeg > maxDeflectionAngleDeg) {
+        excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
+      }
+
+      if (excessAngle > 1e-5) {
+        totalDv = Math.sqrt(
+          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
+        );
+      } else {
+        totalDv = Math.abs(vpOut - vpIn);
+      }
+
+      const deltaC3 = Math.abs(c3ArrB - c3DepB);
+      if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
+        totalDv = 0;
+      }
+    }
+
+    return {
+      c3DepA,
+      c3ArrB,
+      c3DepB,
+      c3ArrFinal,
+      totalDv,
+      flybyDvs: [totalDv],
+      flybyDates: [t],
+    };
+  };
+
+  let bestResult: SequenceTransferResult | null = null;
+  let bestOverallDv = Infinity;
+
+  // First, test exact C3 zero-crossings
+  for (const tRoot of rootDates) {
+    const res = evalExtrapolatedAtDate(tRoot);
+    if (res.totalDv < bestOverallDv) {
+      bestOverallDv = res.totalDv;
+      bestResult = res;
+    }
+    if (res.totalDv < 1.0) {
+      if (profiler) {
+        profiler.continuousOptimizationMs += (performance.now() - t8);
+        profiler.totalMethodMs += (performance.now() - methodStart);
+      }
+      return res;
+    }
+  }
+
+  // Step 5: Dichotomic (bisection) search for each local minimum
+  for (const candIndex of localMinIndices) {
+    let a = candIndex > 0 ? samples[candIndex - 1].tFlyby : samples[0].tFlyby;
+    let b = candIndex < M - 1 ? samples[candIndex + 1].tFlyby : samples[M - 1].tFlyby;
+
+    const datePrecision = 864; // 1% of a day (864 seconds)
+    let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+
+    let iter = 0;
+    while (b - a > datePrecision && iter < 30) {
+      iter++;
+      const delta = (b - a) * 0.001;
+      const mid = (a + b) / 2;
+      const m1 = mid - delta;
+      const m2 = mid + delta;
+
+      const res1 = evalExtrapolatedAtDate(m1);
+      const res2 = evalExtrapolatedAtDate(m2);
+
+      if (res1.totalDv < currentBest.totalDv) currentBest = res1;
+      if (res2.totalDv < currentBest.totalDv) currentBest = res2;
+
+      // Stop early if dv < 1 m/s (perfect unpowered flyby)
+      if (res1.totalDv < 1.0 || res2.totalDv < 1.0) {
+        break;
+      }
+
+      if (res1.totalDv < res2.totalDv) {
+        b = m2;
+      } else {
+        a = m1;
+      }
+    }
+
+    if (currentBest.totalDv < 1.0) {
+      if (profiler) {
+        profiler.continuousOptimizationMs += (performance.now() - t8);
+        profiler.totalMethodMs += (performance.now() - methodStart);
+      }
+      return currentBest;
+    }
+
+    if (currentBest.totalDv < bestOverallDv) {
+      bestOverallDv = currentBest.totalDv;
+      bestResult = currentBest;
+    }
+  }
+
+  if (profiler) {
+    profiler.continuousOptimizationMs += (performance.now() - t8);
+    profiler.totalMethodMs += (performance.now() - methodStart);
+  }
+  return bestResult;
+}
+
+export interface HigherOrderFlybySample {
+  j0: number;
+  tFlyby: number;
+  c3DepA: number;
+  c3ArrB: number;
+  c3DepB: number;
+  c3ArrFinal: number;
+  deflectionAngleDeg: number;
+  maxDeflectionAngleDeg: number;
+  currentDv: number;
+  priorCost: number;
+  totalDv: number;
+  priorFlybyDates: number[];
+  priorFlybyDvs: number[];
+  isValid: boolean;
+}
+
+/**
+ * Generates the array of candidate flyby samples across the matching date grid for AddLastLeg (N > 3).
+ */
+export function generateHigherOrderAddLastLegFlybySamples(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = [],
+  sequencePorkchops: Record<string, SequencePorkchopData> = {},
+  profiler?: SequenceTransferProfiler
+): HigherOrderFlybySample[] | null {
+  if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 4) return null;
+  const N = pathInsts.length;
+
+  const t0 = profiler ? performance.now() : 0;
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  // Find the (N-1)-bodies sub-sequence
+  const subPath = pathInsts.slice(0, N - 1);
+  const subSeqKey = subPath.map(i => i.id).join('-');
+  const subSeqId = `seq-pc-${subSeqKey}`;
+  const subSeq = sequencePorkchops[subSeqId] || sequencePorkchops[subSeqKey] || Object.values(sequencePorkchops).find(
+    s => s.instanceIds && s.instanceIds.join('-') === subSeqKey
+  );
+
+  if (!subSeq || !subSeq.depDates || !subSeq.arrDates || subSeq.depDates.length === 0 || subSeq.arrDates.length === 0) {
+    if (profiler) profiler.matrixLookupMs += (performance.now() - t0);
+    return null;
+  }
+
+  // Find direct link porkchop for the final leg: Inst_{N-2} -> Inst_{N-1}
+  const fbInst = pathInsts[N - 2];
+  const tgtInst = pathInsts[N - 1];
+  const linkLast = links.find(l => l.sourceInstanceId === fbInst.id && l.targetInstanceId === tgtInst.id);
+  const linkLastId = linkLast?.id || `link-${fbInst.id}-${tgtInst.id}`;
+  const P_last = porkchops[linkLastId] || (linkLast ? porkchops[linkLast.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === fbInst.bodyName && p.targetBody === tgtInst.bodyName);
+
+  if (!P_last || !P_last.c3DepMatrix || P_last.c3DepMatrix.length === 0) {
+    if (profiler) profiler.matrixLookupMs += (performance.now() - t0);
+    return null;
+  }
+
+  // Find direct link porkchop for the inbound leg to fbInst: Inst_{N-3} -> Inst_{N-2}
+  const prevInst = pathInsts[N - 3];
+  const linkPrev = links.find(l => l.sourceInstanceId === prevInst.id && l.targetInstanceId === fbInst.id);
+  const linkPrevId = linkPrev?.id || `link-${prevInst.id}-${fbInst.id}`;
+  const P_prevLeg = porkchops[linkPrevId] || (linkPrev ? porkchops[linkPrev.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === prevInst.bodyName && p.targetBody === fbInst.bodyName);
+
+  // Nearest departure row in subSeq (Inst_0 departure)
+  let i0 = findClosestDateIndex(subSeq.depDates, tDep);
+  if (i0 < 0) i0 = 0;
+
+  // Nearest arrival col in P_last (Inst_{N-1} arrival)
+  let j_last = findClosestDateIndex(P_last.arrDates, tArr);
+  if (j_last < 0) j_last = 0;
+
+  const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
+  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+
+  if (profiler) {
+    profiler.matrixLookupMs += (performance.now() - t0);
+  }
+
+  const samples: HigherOrderFlybySample[] = [];
+
+  // --- BLOCK 2 & 3: Candidate Sampling & Ephemeris / Physics ---
+  const t2 = profiler ? performance.now() : 0;
+
+  const isDirectGridMatch = subSeq.arrDates.length === P_last.depDates.length &&
+    subSeq.arrDates.every((val, idx) => val === P_last.depDates[idx]);
+
+  if (!isDirectGridMatch) {
+    throw new Error(`Mismatched flyby grid dates between subSeq.arrDates (${subSeq.arrDates.length}) and P_last.depDates (${P_last.depDates.length})`);
+  }
+
+  const numCandidates = subSeq.arrDates.length;
+  for (let k = 0; k < numCandidates; k++) {
+    const tFlyby = subSeq.arrDates[k];
+    const j0 = k;
+    const i1 = k;
+
+    const isGridValid = (!subSeq.validMatrix || !!subSeq.validMatrix[i0]?.[j0]) && (!P_last.validMatrix || !!P_last.validMatrix[i1]?.[j_last]);
+
+    const c3DepA = subSeq.c3DepAMatrix?.[i0]?.[j0] ?? 0;
+    const rawC3ArrIn = subSeq.c3ArrFinalMatrix?.[i0]?.[j0] ?? subSeq.c3ArrDMatrix?.[i0]?.[j0] ?? subSeq.c3ArrCMatrix?.[i0]?.[j0] ?? subSeq.c3ArrBMatrix?.[i0]?.[j0] ?? 0;
+    const priorCost = subSeq.totalPoweredDvMatrix?.[i0]?.[j0] ?? subSeq.poweredDvBMatrix?.[i0]?.[j0] ?? 0;
+
+    const c3DepOut = P_last.c3DepMatrix?.[i1]?.[j_last] ?? 0;
+    const c3ArrFinal = P_last.c3ArrMatrix?.[i1]?.[j_last] ?? 0;
+    const vTransDep = P_last.vTransDepMatrix?.[i1]?.[j_last];
+
+    // Extract prior flyby dates & DVs
+    const priorFlybyDates: number[] = subSeq.flybyDates && subSeq.flybyDates.length > 0
+      ? subSeq.flybyDates.map(fd => fd.dateMatrix?.[i0]?.[j0] || 0)
+      : [subSeq.flybyDateMatrix?.[i0]?.[j0] || 0];
+
+    const priorFlybyDvs: number[] = subSeq.flybyPoweredDvs && subSeq.flybyPoweredDvs.length > 0
+      ? subSeq.flybyPoweredDvs.map(fd => fd.poweredDvMatrix?.[i0]?.[j0] || 0)
+      : [subSeq.poweredDvBMatrix?.[i0]?.[j0] || 0];
+
+    // Obtain inbound velocity vector vTransArr entering flybyBody
+    let vTransArr: Vector3D | undefined;
+    let c3ArrIn: number | undefined = rawC3ArrIn;
+    if (P_prevLeg && P_prevLeg.vTransArrMatrix) {
+      const prevFbDate = priorFlybyDates[priorFlybyDates.length - 1] || 0;
+      const i_prev = prevFbDate ? findClosestDateIndex(P_prevLeg.depDates, prevFbDate) : 0;
+      const j_prev = k;
+      if (i_prev >= 0 && j_prev >= 0) {
+        const vt = P_prevLeg.vTransArrMatrix[i_prev]?.[j_prev];
+        if (vt && vecMag(vt) > 1e-3 && Number.isFinite(P_prevLeg.c3ArrMatrix?.[i_prev]?.[j_prev])) {
+          vTransArr = vt;
+          c3ArrIn = P_prevLeg.c3ArrMatrix[i_prev][j_prev];
+        }
+      }
+    }
+
+    if (!vTransArr) {
+      const prevFbDate = priorFlybyDates[priorFlybyDates.length - 1] || 0;
+      const dtPrev = tFlyby - prevFbDate;
+      if (dtPrev > 0) {
+        const prevBody = bodyMap.get(prevInst.bodyName) || mainBody;
+        const stPrev = getBodyStateAtUT(prevBody, mainBody, prevFbDate);
+        const stFlyby = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
+        const muCentral = getGravitationalParameter(mainBody);
+        const lambRes = solveLambert(stPrev.pos, stFlyby.pos, dtPrev, muCentral, true);
+        if (lambRes && lambRes.isValid && lambRes.v2 && vecMag(lambRes.v2) > 1e-3) {
+          vTransArr = lambRes.v2;
+          const vInfInMag = vecMag(vecSub(lambRes.v2, stFlyby.vel));
+          c3ArrIn = (vInfInMag * vInfInMag) / 1e6;
+        }
+      }
+    }
+
+    if (!vTransArr || !vTransDep || vecMag(vTransArr) < 1e-3 || vecMag(vTransDep) < 1e-3) {
+      samples.push({
+        j0,
+        tFlyby,
+        c3DepA,
+        c3ArrB: c3ArrIn ?? 0,
+        c3DepB: c3DepOut,
+        c3ArrFinal,
+        deflectionAngleDeg: 0,
+        maxDeflectionAngleDeg: 0,
+        currentDv: Infinity,
+        priorCost,
+        totalDv: Infinity,
+        priorFlybyDates,
+        priorFlybyDvs,
+        isValid: false,
+      });
+      continue;
+    }
+
+    const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
+    const vInfIn = vecSub(vTransArr, stBody.vel);
+    const vInfOut = vecSub(vTransDep, stBody.vel);
+    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+
+    const c3ArrInSmooth = c3ArrIn ?? ((vecMag(vInfIn) ** 2) / 1e6);
+    const c3DepOutSmooth = c3DepOut ?? ((vecMag(vInfOut) ** 2) / 1e6);
+
+    const dvFinite = Number.isFinite(flybyEval.poweredDv);
+    const totalDv = dvFinite && Number.isFinite(priorCost) ? priorCost + flybyEval.poweredDv : Infinity;
+
+    samples.push({
+      j0,
+      tFlyby,
+      c3DepA,
+      c3ArrB: c3ArrInSmooth,
+      c3DepB: c3DepOutSmooth,
+      c3ArrFinal,
+      deflectionAngleDeg: flybyEval.deflectionAngleDeg,
+      maxDeflectionAngleDeg: flybyEval.maxDeflectionAngleDeg,
+      currentDv: dvFinite ? flybyEval.poweredDv : Infinity,
+      priorCost,
+      totalDv,
+      priorFlybyDates,
+      priorFlybyDvs,
+      isValid: isGridValid && dvFinite && Number.isFinite(totalDv) && totalDv < 1e6,
+    });
+  }
+
+  if (profiler) {
+    profiler.candidatePoolingMs += 0;
+    profiler.samplingAndPhysicsMs += (performance.now() - t2);
+  }
+
+  return samples;
+}
+
+/**
+ * Evaluates sequence transfer for higher-order sequences (N > 3) by adding a LAST leg (Inst_{N-2} -> Inst_{N-1})
+ * to an existing (N-1)-bodies prefix sequence ([Inst_0, ..., Inst_{N-2}]).
+ * The transfer cost and arrival C3 at the last flyby body are retrieved from the prefix SequenceTransferData.
+ * Continuous optimization and bisection are performed at the last flyby body.
+ */
+export function evaluateHigherOrderSequenceTransferAddLastLeg(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = [],
+  sequencePorkchops: Record<string, SequencePorkchopData> = {},
+  profiler?: SequenceTransferProfiler
+): SequenceTransferResult | null {
+  const methodStart = profiler ? performance.now() : 0;
+  if (profiler) profiler.callsCount++;
+
+  const samples = generateHigherOrderAddLastLegFlybySamples(
+    pathInsts,
+    tDep,
+    tArr,
+    bodies,
+    mainBody,
+    porkchops,
+    links,
+    sequencePorkchops,
+    profiler
+  );
+
+  if (!samples || samples.length === 0) {
+    if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
+    return null;
+  }
+
+  const N = pathInsts.length;
+  const fbInst = pathInsts[N - 2];
+  const flybyBody = bodies.find(b => b.name === fbInst.bodyName) || mainBody;
+  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const muFlyby = getGravitationalParameter(flybyBody);
+
+  // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
+  const t6 = profiler ? performance.now() : 0;
+
+  const M = samples.length;
+  const localMinIndices: number[] = [];
+  const rootDates: number[] = [];
+
+  for (let k = 0; k < M; k++) {
+    if (!samples[k].isValid) continue;
+
+    // Check zero-crossing of C3 (unpowered flyby intersection)
+    if (k < M - 1 && samples[k + 1].isValid) {
+      const d1 = samples[k].c3ArrB - samples[k].c3DepB;
+      const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
+      if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
+        const alpha = Math.abs(d1) / (Math.abs(d1) + Math.abs(d2));
+        const tRoot = samples[k].tFlyby + alpha * (samples[k + 1].tFlyby - samples[k].tFlyby);
+        rootDates.push(tRoot);
+      }
+    }
+
+    if (k > 0 && k < M - 1) {
+      if (samples[k - 1].totalDv >= samples[k].totalDv && samples[k + 1].totalDv >= samples[k].totalDv) {
+        localMinIndices.push(k);
+      }
+    } else if (k === 0) {
+      if (M >= 2 && samples[1].totalDv >= samples[0].totalDv) {
+        localMinIndices.push(0);
+      } else if (M === 1) {
+        localMinIndices.push(0);
+      }
+    } else if (k === M - 1) {
+      if (M >= 2 && samples[M - 2].totalDv >= samples[M - 1].totalDv) {
+        localMinIndices.push(M - 1);
+      }
+    }
+  }
+
+  if (localMinIndices.length === 0 && rootDates.length === 0) {
+    let minK = 0;
+    let minVal = Infinity;
+    for (let k = 0; k < M; k++) {
+      if (samples[k].isValid && samples[k].totalDv < minVal) {
+        minVal = samples[k].totalDv;
+        minK = k;
+      }
+    }
+    localMinIndices.push(minK);
+  }
+
+  if (profiler) {
+    profiler.localMinimaSearchMs += (performance.now() - t6);
+  }
+
+  // --- BLOCK 5: Continuous Optimization ---
+  const t8 = profiler ? performance.now() : 0;
+
+  const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
+
+  const evalExtrapolatedAtDate = (t: number) => {
+    let s = 0;
+    while (s < M - 2 && samples[s + 1].tFlyby <= t) {
+      s++;
+    }
+
+    const p1 = samples[s];
+    const p2 = samples[Math.min(M - 1, s + 1)];
+    const dt = p2.tFlyby - p1.tFlyby;
+    const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlyby) / dt)) : 0;
+
+    const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
+    const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
+    const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
+    const c3ArrFinal = interp(p1.c3ArrFinal, p2.c3ArrFinal, alpha);
+    const priorCost = interp(p1.priorCost, p2.priorCost, alpha);
+    const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
+    const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
+
+    let currentFlybyDv = 0;
+    if (c3ArrB >= 0 && c3DepB >= 0) {
+      const vInfInMag = Math.sqrt(c3ArrB * 1e6);
+      const vInfOutMag = Math.sqrt(c3DepB * 1e6);
+
+      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
+      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
+
+      let excessAngle = 0;
+      if (deflectionAngleDeg > maxDeflectionAngleDeg) {
+        excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
+      }
+
+      if (excessAngle > 1e-5) {
+        currentFlybyDv = Math.sqrt(
+          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
+        );
+      } else {
+        currentFlybyDv = Math.abs(vpOut - vpIn);
+      }
+
+      const deltaC3 = Math.abs(c3ArrB - c3DepB);
+      if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
+        currentFlybyDv = 0;
+      }
+    }
+
+    const totalDv = priorCost + currentFlybyDv;
+
+    const interpPriorFlybyDates = p1.priorFlybyDates.map((d1, idx) => {
+      const d2 = p2.priorFlybyDates[idx] ?? d1;
+      return interp(d1, d2, alpha);
+    });
+    const interpPriorFlybyDvs = p1.priorFlybyDvs.map((dv1, idx) => {
+      const dv2 = p2.priorFlybyDvs[idx] ?? dv1;
+      return interp(dv1, dv2, alpha);
+    });
+
+    return {
+      c3DepA,
+      c3ArrB,
+      c3DepB,
+      c3ArrFinal,
+      totalDv,
+      flybyDvs: [...interpPriorFlybyDvs, currentFlybyDv],
+      flybyDates: [...interpPriorFlybyDates, t],
+    };
+  };
+
+  let bestResult: SequenceTransferResult | null = null;
+  let bestOverallDv = Infinity;
+
+  // First, test exact C3 zero-crossings
+  for (const tRoot of rootDates) {
+    const res = evalExtrapolatedAtDate(tRoot);
+    if (res.totalDv < bestOverallDv) {
+      bestOverallDv = res.totalDv;
+      bestResult = res;
+    }
+    if (res.flybyDvs[res.flybyDvs.length - 1] < 1.0) {
+      if (profiler) {
+        profiler.continuousOptimizationMs += (performance.now() - t8);
+        profiler.totalMethodMs += (performance.now() - methodStart);
+      }
+      return res;
+    }
+  }
+
+  for (const candIndex of localMinIndices) {
+    let a = candIndex > 0 ? samples[candIndex - 1].tFlyby : samples[0].tFlyby;
+    let b = candIndex < M - 1 ? samples[candIndex + 1].tFlyby : samples[M - 1].tFlyby;
+
+    const datePrecision = 864;
+    let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+
+    let iter = 0;
+    while (b - a > datePrecision && iter < 30) {
+      iter++;
+      const delta = (b - a) * 0.001;
+      const mid = (a + b) / 2;
+      const m1 = mid - delta;
+      const m2 = mid + delta;
+
+      const res1 = evalExtrapolatedAtDate(m1);
+      const res2 = evalExtrapolatedAtDate(m2);
+
+      if (res1.totalDv < currentBest.totalDv) currentBest = res1;
+      if (res2.totalDv < currentBest.totalDv) currentBest = res2;
+
+      if (res1.flybyDvs[res1.flybyDvs.length - 1] < 1.0 || res2.flybyDvs[res2.flybyDvs.length - 1] < 1.0) {
+        break;
+      }
+
+      if (res1.totalDv < res2.totalDv) {
+        b = m2;
+      } else {
+        a = m1;
+      }
+    }
+
+    if (currentBest.flybyDvs[currentBest.flybyDvs.length - 1] < 1.0) {
+      if (profiler) {
+        profiler.continuousOptimizationMs += (performance.now() - t8);
+        profiler.totalMethodMs += (performance.now() - methodStart);
+      }
+      return currentBest;
+    }
+
+    if (currentBest.totalDv < bestOverallDv) {
+      bestOverallDv = currentBest.totalDv;
+      bestResult = currentBest;
+    }
+  }
+
+  if (profiler) {
+    profiler.continuousOptimizationMs += (performance.now() - t8);
+    profiler.totalMethodMs += (performance.now() - methodStart);
+  }
+  return bestResult;
+}
+
+export interface HigherOrderFirstLegFlybySample {
+  j_first: number;
+  i_suffix: number;
+  tFlyby: number;
+  c3DepA: number;
+  c3ArrB: number;
+  c3DepB: number;
+  c3ArrFinal: number;
+  deflectionAngleDeg: number;
+  maxDeflectionAngleDeg: number;
+  currentDv: number;
+  suffixCost: number;
+  totalDv: number;
+  suffixFlybyDates: number[];
+  suffixFlybyDvs: number[];
+  isValid: boolean;
+}
+
+/**
+ * Generates the array of candidate flyby samples across the matching date grid for AddFirstLeg (N > 3).
+ */
+export function generateHigherOrderAddFirstLegFlybySamples(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = [],
+  sequencePorkchops: Record<string, SequencePorkchopData> = {},
+  profiler?: SequenceTransferProfiler
+): HigherOrderFirstLegFlybySample[] | null {
+  if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 4) return null;
+  const N = pathInsts.length;
+
+  const t0 = profiler ? performance.now() : 0;
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+
+  // Find the (N-1)-bodies suffix sub-sequence: Inst_1 -> ... -> Inst_{N-1}
+  const suffixPath = pathInsts.slice(1, N);
+  const suffixKey = suffixPath.map(i => i.id).join('-');
+  const suffixSeqId = `seq-pc-${suffixKey}`;
+  const suffixSeq = sequencePorkchops[suffixSeqId] || sequencePorkchops[suffixKey] || Object.values(sequencePorkchops).find(
+    s => s.instanceIds && s.instanceIds.join('-') === suffixKey
+  );
+
+  if (!suffixSeq || !suffixSeq.depDates || !suffixSeq.arrDates || suffixSeq.depDates.length === 0 || suffixSeq.arrDates.length === 0) {
+    if (profiler) profiler.matrixLookupMs += (performance.now() - t0);
+    return null;
+  }
+
+  // Find direct link porkchop for the initial leg: Inst_0 -> Inst_1
+  const srcInst = pathInsts[0];
+  const fbInst = pathInsts[1];
+  const linkFirst = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === fbInst.id);
+  const linkFirstId = linkFirst?.id || `link-${srcInst.id}-${fbInst.id}`;
+  const P_first = porkchops[linkFirstId] || (linkFirst ? porkchops[linkFirst.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === srcInst.bodyName && p.targetBody === fbInst.bodyName);
+
+  if (!P_first || !P_first.c3ArrMatrix || P_first.c3ArrMatrix.length === 0) {
+    if (profiler) profiler.matrixLookupMs += (performance.now() - t0);
+    return null;
+  }
+
+  // Find direct link porkchop for the outbound leg from fbInst: Inst_1 -> Inst_2
+  const nextInst = pathInsts[2];
+  const linkNext = links.find(l => l.sourceInstanceId === fbInst.id && l.targetInstanceId === nextInst.id);
+  const linkNextId = linkNext?.id || `link-${fbInst.id}-${nextInst.id}`;
+  const P_nextLeg = porkchops[linkNextId] || (linkNext ? porkchops[linkNext.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === fbInst.bodyName && p.targetBody === nextInst.bodyName);
+
+  // Nearest departure row in P_first (Inst_0 departure)
+  let i_first = findClosestDateIndex(P_first.depDates, tDep);
+  if (i_first < 0) i_first = 0;
+
+  // Nearest arrival col in suffixSeq (Inst_{N-1} arrival)
+  let j_suffix = findClosestDateIndex(suffixSeq.arrDates, tArr);
+  if (j_suffix < 0) j_suffix = 0;
+
+  const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
+  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+
+  if (profiler) {
+    profiler.matrixLookupMs += (performance.now() - t0);
+  }
+
+  const samples: HigherOrderFirstLegFlybySample[] = [];
+
+  // --- BLOCK 2 & 3: Candidate Sampling & Ephemeris / Physics ---
+  const t2 = profiler ? performance.now() : 0;
+
+  const isDirectGridMatch = P_first.arrDates.length === suffixSeq.depDates.length &&
+    P_first.arrDates.every((val, idx) => val === suffixSeq.depDates[idx]);
+
+  if (!isDirectGridMatch) {
+    throw new Error(`Mismatched flyby grid dates between P_first.arrDates (${P_first.arrDates.length}) and suffixSeq.depDates (${suffixSeq.depDates.length})`);
+  }
+
+  const numCandidates = P_first.arrDates.length;
+  for (let k = 0; k < numCandidates; k++) {
+    const tFlyby = P_first.arrDates[k];
+    const j0 = k;
+    const i1 = k;
+
+    const isGridValid = (!P_first.validMatrix || !!P_first.validMatrix[i_first]?.[j0]) && (!suffixSeq.validMatrix || !!suffixSeq.validMatrix[i1]?.[j_suffix]);
+
+    const c3DepA = P_first.c3DepMatrix?.[i_first]?.[j0] ?? 0;
+    const c3ArrIn = P_first.c3ArrMatrix?.[i_first]?.[j0] ?? 0;
+    const vTransArr: Vector3D | undefined = P_first.vTransArrMatrix?.[i_first]?.[j0];
+
+    const rawC3DepOut = suffixSeq.c3DepAMatrix?.[i1]?.[j_suffix] ?? 0;
+    const c3ArrFinal = suffixSeq.c3ArrFinalMatrix?.[i1]?.[j_suffix] ?? suffixSeq.c3ArrDMatrix?.[i1]?.[j_suffix] ?? suffixSeq.c3ArrCMatrix?.[i1]?.[j_suffix] ?? 0;
+    const suffixCost = suffixSeq.totalPoweredDvMatrix?.[i1]?.[j_suffix] ?? suffixSeq.poweredDvBMatrix?.[i1]?.[j_suffix] ?? 0;
+
+    // Extract suffix flyby dates & DVs (for Inst_2, ..., Inst_{N-2})
+    const suffixFlybyDates: number[] = suffixSeq.flybyDates && suffixSeq.flybyDates.length > 0
+      ? suffixSeq.flybyDates.map(fd => fd.dateMatrix?.[i1]?.[j_suffix] || 0)
+      : (suffixSeq.flybyDateMatrix ? [suffixSeq.flybyDateMatrix[i1]?.[j_suffix] || 0] : []);
+
+    const suffixFlybyDvs: number[] = suffixSeq.flybyPoweredDvs && suffixSeq.flybyPoweredDvs.length > 0
+      ? suffixSeq.flybyPoweredDvs.map(fd => fd.poweredDvMatrix?.[i1]?.[j_suffix] || 0)
+      : (suffixSeq.poweredDvBMatrix ? [suffixSeq.poweredDvBMatrix[i1]?.[j_suffix] || 0] : []);
+
+    // Obtain outbound velocity vector vTransDep exiting flybyBody (Inst_1)
+    let vTransDep: Vector3D | undefined;
+    let c3DepOut: number | undefined = rawC3DepOut;
+    if (P_nextLeg && P_nextLeg.vTransDepMatrix) {
+      const nextFbDate = suffixFlybyDates[0] || (suffixSeq.arrDates[j_suffix] || 0);
+      const i_next = k; // Direct index on P_nextLeg.depDates (same instance)
+      const j_next = nextFbDate ? findClosestDateIndex(P_nextLeg.arrDates, nextFbDate) : 0;
+      if (i_next >= 0 && j_next >= 0) {
+        const vt = P_nextLeg.vTransDepMatrix[i_next]?.[j_next];
+        if (vt && vecMag(vt) > 1e-3 && Number.isFinite(P_nextLeg.c3DepMatrix?.[i_next]?.[j_next])) {
+          vTransDep = vt;
+          c3DepOut = P_nextLeg.c3DepMatrix[i_next][j_next];
+        }
+      }
+    }
+
+    if (!vTransDep) {
+      const nextFbDate = suffixFlybyDates[0] || (suffixSeq.arrDates[j_suffix] || 0);
+      const dtNext = nextFbDate - tFlyby;
+      if (dtNext > 0) {
+        const nextBody = bodyMap.get(nextInst.bodyName) || mainBody;
+        const stFlyby = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
+        const stNext = getBodyStateAtUT(nextBody, mainBody, nextFbDate);
+        const muCentral = getGravitationalParameter(mainBody);
+        const lambRes = solveLambert(stFlyby.pos, stNext.pos, dtNext, muCentral, true);
+        if (lambRes && lambRes.isValid && lambRes.v1 && vecMag(lambRes.v1) > 1e-3) {
+          vTransDep = lambRes.v1;
+          const vInfOutMag = vecMag(vecSub(lambRes.v1, stFlyby.vel));
+          c3DepOut = (vInfOutMag * vInfOutMag) / 1e6;
+        }
+      }
+    }
+
+    if (!vTransArr || !vTransDep || vecMag(vTransArr) < 1e-3 || vecMag(vTransDep) < 1e-3) {
+      samples.push({
+        j_first: j0,
+        i_suffix: i1,
+        tFlyby,
+        c3DepA,
+        c3ArrB: c3ArrIn,
+        c3DepB: c3DepOut ?? 0,
+        c3ArrFinal,
+        deflectionAngleDeg: 0,
+        maxDeflectionAngleDeg: 0,
+        currentDv: Infinity,
+        suffixCost,
+        totalDv: Infinity,
+        suffixFlybyDates,
+        suffixFlybyDvs,
+        isValid: false,
+      });
+      continue;
+    }
+
+    const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
+    const vInfIn = vecSub(vTransArr, stBody.vel);
+    const vInfOut = vecSub(vTransDep, stBody.vel);
+    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+
+    const c3ArrInSmooth = c3ArrIn ?? ((vecMag(vInfIn) ** 2) / 1e6);
+    const c3DepOutSmooth = c3DepOut ?? ((vecMag(vInfOut) ** 2) / 1e6);
+
+    const dvFinite = Number.isFinite(flybyEval.poweredDv);
+    const totalDv = dvFinite && Number.isFinite(suffixCost) ? suffixCost + flybyEval.poweredDv : Infinity;
+
+    samples.push({
+      j_first: j0,
+      i_suffix: i1,
+      tFlyby,
+      c3DepA,
+      c3ArrB: c3ArrInSmooth,
+      c3DepB: c3DepOutSmooth,
+      c3ArrFinal,
+      deflectionAngleDeg: flybyEval.deflectionAngleDeg,
+      maxDeflectionAngleDeg: flybyEval.maxDeflectionAngleDeg,
+      currentDv: dvFinite ? flybyEval.poweredDv : Infinity,
+      suffixCost,
+      totalDv,
+      suffixFlybyDates,
+      suffixFlybyDvs,
+      isValid: isGridValid && dvFinite && Number.isFinite(totalDv) && totalDv < 1e6,
+    });
+  }
+
+  if (profiler) {
+    profiler.candidatePoolingMs += 0;
+    profiler.samplingAndPhysicsMs += (performance.now() - t2);
+  }
+
+  return samples;
+}
+
+/**
+ * Evaluates sequence transfer for higher-order sequences (N > 3) by adding a FIRST leg (Inst_0 -> Inst_1)
+ * to an existing (N-1)-bodies suffix sequence ([Inst_1, ..., Inst_{N-1}]).
+ * The transfer cost and departure C3 at the first flyby body are retrieved from the suffix SequenceTransferData.
+ * Continuous optimization and bisection are performed at the first flyby body (Inst_1).
+ */
+export function evaluateHigherOrderSequenceTransferAddFirstLeg(
+  pathInsts: InstanceNode[],
+  tDep: number,
+  tArr: number,
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  porkchops: Record<string, PorkchopPlotData> = {},
+  links: DirectionalLink[] = [],
+  sequencePorkchops: Record<string, SequencePorkchopData> = {},
+  profiler?: SequenceTransferProfiler
+): SequenceTransferResult | null {
+  const methodStart = profiler ? performance.now() : 0;
+  if (profiler) profiler.callsCount++;
+
+  const samples = generateHigherOrderAddFirstLegFlybySamples(
+    pathInsts,
+    tDep,
+    tArr,
+    bodies,
+    mainBody,
+    porkchops,
+    links,
+    sequencePorkchops,
+    profiler
+  );
+
+  if (!samples || samples.length === 0) {
+    if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
+    return null;
+  }
+
+  const fbInst = pathInsts[1];
+  const flybyBody = bodies.find(b => b.name === fbInst.bodyName) || mainBody;
+  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const muFlyby = getGravitationalParameter(flybyBody);
+
+  // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
+  const t6 = profiler ? performance.now() : 0;
+
+  const M = samples.length;
+  const localMinIndices: number[] = [];
+  const rootDates: number[] = [];
+
+  for (let k = 0; k < M; k++) {
+    if (!samples[k].isValid) continue;
+
+    // Check zero-crossing of C3 (unpowered flyby intersection)
+    if (k < M - 1 && samples[k + 1].isValid) {
+      const d1 = samples[k].c3ArrB - samples[k].c3DepB;
+      const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
+      if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
+        const alpha = Math.abs(d1) / (Math.abs(d1) + Math.abs(d2));
+        const tRoot = samples[k].tFlyby + alpha * (samples[k + 1].tFlyby - samples[k].tFlyby);
+        rootDates.push(tRoot);
+      }
+    }
+
+    if (k > 0 && k < M - 1) {
+      if (samples[k - 1].totalDv >= samples[k].totalDv && samples[k + 1].totalDv >= samples[k].totalDv) {
+        localMinIndices.push(k);
+      }
+    } else if (k === 0) {
+      if (M >= 2 && samples[1].totalDv >= samples[0].totalDv) {
+        localMinIndices.push(0);
+      } else if (M === 1) {
+        localMinIndices.push(0);
+      }
+    } else if (k === M - 1) {
+      if (M >= 2 && samples[M - 2].totalDv >= samples[M - 1].totalDv) {
+        localMinIndices.push(M - 1);
+      }
+    }
+  }
+
+  if (localMinIndices.length === 0 && rootDates.length === 0) {
+    let minK = 0;
+    let minVal = Infinity;
+    for (let k = 0; k < M; k++) {
+      if (samples[k].isValid && samples[k].totalDv < minVal) {
+        minVal = samples[k].totalDv;
+        minK = k;
+      }
+    }
+    localMinIndices.push(minK);
+  }
+
+  if (profiler) {
+    profiler.localMinimaSearchMs += (performance.now() - t6);
+  }
+
+  // --- BLOCK 5: Continuous Optimization ---
+  const t8 = profiler ? performance.now() : 0;
+
+  const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
+
+  const evalExtrapolatedAtDate = (t: number) => {
+    let s = 0;
+    while (s < M - 2 && samples[s + 1].tFlyby <= t) {
+      s++;
+    }
+
+    const p1 = samples[s];
+    const p2 = samples[Math.min(M - 1, s + 1)];
+    const dt = p2.tFlyby - p1.tFlyby;
+    const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlyby) / dt)) : 0;
+
+    const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
+    const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
+    const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
+    const c3ArrFinal = interp(p1.c3ArrFinal, p2.c3ArrFinal, alpha);
+    const suffixCost = interp(p1.suffixCost, p2.suffixCost, alpha);
+    const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
+    const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
+
+    let currentFlybyDv = 0;
+    if (c3ArrB >= 0 && c3DepB >= 0) {
+      const vInfInMag = Math.sqrt(c3ArrB * 1e6);
+      const vInfOutMag = Math.sqrt(c3DepB * 1e6);
+
+      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
+      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
+
+      let excessAngle = 0;
+      if (deflectionAngleDeg > maxDeflectionAngleDeg) {
+        excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
+      }
+
+      if (excessAngle > 1e-5) {
+        currentFlybyDv = Math.sqrt(
+          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
+        );
+      } else {
+        currentFlybyDv = Math.abs(vpOut - vpIn);
+      }
+
+      const deltaC3 = Math.abs(c3ArrB - c3DepB);
+      if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
+        currentFlybyDv = 0;
+      }
+    }
+
+    const totalDv = suffixCost + currentFlybyDv;
+
+    const interpSuffixFlybyDates = p1.suffixFlybyDates.map((d1, idx) => {
+      const d2 = p2.suffixFlybyDates[idx] ?? d1;
+      return interp(d1, d2, alpha);
+    });
+    const interpSuffixFlybyDvs = p1.suffixFlybyDvs.map((dv1, idx) => {
+      const dv2 = p2.suffixFlybyDvs[idx] ?? dv1;
+      return interp(dv1, dv2, alpha);
+    });
+
+    return {
+      c3DepA,
+      c3ArrB,
+      c3DepB,
+      c3ArrFinal,
+      totalDv,
+      flybyDvs: [currentFlybyDv, ...interpSuffixFlybyDvs],
+      flybyDates: [t, ...interpSuffixFlybyDates],
+    };
+  };
+
+  let bestResult: SequenceTransferResult | null = null;
+  let bestOverallDv = Infinity;
+
+  // First, test exact C3 zero-crossings
+  for (const tRoot of rootDates) {
+    const res = evalExtrapolatedAtDate(tRoot);
+    if (res.totalDv < bestOverallDv) {
+      bestOverallDv = res.totalDv;
+      bestResult = res;
+    }
+    if (res.flybyDvs[0] < 1.0) {
+      if (profiler) {
+        profiler.continuousOptimizationMs += (performance.now() - t8);
+        profiler.totalMethodMs += (performance.now() - methodStart);
+      }
+      return res;
+    }
+  }
+
+  for (const candIndex of localMinIndices) {
+    let a = candIndex > 0 ? samples[candIndex - 1].tFlyby : samples[0].tFlyby;
+    let b = candIndex < M - 1 ? samples[candIndex + 1].tFlyby : samples[M - 1].tFlyby;
+
+    const datePrecision = 864;
+    let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+
+    let iter = 0;
+    while (b - a > datePrecision && iter < 30) {
+      iter++;
+      const delta = (b - a) * 0.001;
+      const mid = (a + b) / 2;
+      const m1 = mid - delta;
+      const m2 = mid + delta;
+
+      const res1 = evalExtrapolatedAtDate(m1);
+      const res2 = evalExtrapolatedAtDate(m2);
+
+      if (res1.totalDv < currentBest.totalDv) currentBest = res1;
+      if (res2.totalDv < currentBest.totalDv) currentBest = res2;
+
+      if (res1.flybyDvs[0] < 1.0 || res2.flybyDvs[0] < 1.0) {
+        break;
+      }
+
+      if (res1.totalDv < res2.totalDv) {
+        b = m2;
+      } else {
+        a = m1;
+      }
+    }
+
+    if (currentBest.flybyDvs[0] < 1.0) {
+      if (profiler) {
+        profiler.continuousOptimizationMs += (performance.now() - t8);
+        profiler.totalMethodMs += (performance.now() - methodStart);
+      }
+      return currentBest;
+    }
+
+    if (currentBest.totalDv < bestOverallDv) {
+      bestOverallDv = currentBest.totalDv;
+      bestResult = currentBest;
+    }
+  }
+
+  if (profiler) {
+    profiler.continuousOptimizationMs += (performance.now() - t8);
+    profiler.totalMethodMs += (performance.now() - methodStart);
+  }
+  return bestResult;
+}
+

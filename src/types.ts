@@ -142,6 +142,8 @@ export interface SequencePorkchopData {
   instanceCount?: number;
   instanceIds?: string[];
   bodyNames?: string[];
+  pathInsts?: InstanceNode[];
+  pathInstances?: InstanceNode[];
   is4Body?: boolean;
   sourceInstanceId?: string;
   flybyInstanceId?: string;
@@ -177,6 +179,46 @@ export interface SequencePorkchopData {
   flyby2DateMatrix?: number[][];
   flightTimeMatrix: number[][];
   validMatrix: boolean[][];
+  computedSamples?: number;
+  totalSamples?: number;
+  activeSubtask?: SubtaskProgressInfo | null;
+  profiling?: SequenceProfilingStats;
+}
+
+export interface SubtaskProgressInfo {
+  subtaskId: string;
+  subtaskName: string;
+  subtaskType: 'direct_link' | 'subsequence' | 'search_step';
+  computedSamples: number;
+  totalSamples: number;
+  progressPct: number;
+  statusText?: string;
+  parentTaskId?: string;
+}
+
+export type SequenceTransferData = SequencePorkchopData;
+
+export interface SequenceBlockTiming {
+  id: string;
+  name: string;
+  description: string;
+  timeMs: number;
+  callCount: number;
+  avgTimeUs: number; // in microseconds
+  percentage: number;
+}
+
+export interface SequenceProfilingStats {
+  totalComputationTimeMs: number;
+  methodTimeMs: number;
+  callsCount: number;
+  pointsEvaluated: number;
+  blocks: SequenceBlockTiming[];
+  matrixLookupMs: number;
+  candidatePoolingMs: number;
+  samplingAndPhysicsMs: number;
+  localMinimaSearchMs: number;
+  continuousOptimizationMs: number;
 }
 
 export interface FlybyDetail {
