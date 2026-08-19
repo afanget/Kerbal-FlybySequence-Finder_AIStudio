@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { CelestialBody, SolarSystem } from '../types';
+import { CelestialBody, OrbitalBody, SolarSystem } from '../types';
 
 export function normalizeColor(colorStr?: string): string {
   if (!colorStr) return "rgba(100,150,220,1)";
@@ -27,25 +27,50 @@ export function normalizeColor(colorStr?: string): string {
   return colorStr;
 }
 
-// 1. STOCK KSP SOLAR SYSTEM BODIES
-export const STOCK_KSP_BODIES: CelestialBody[] = [
+export function getCelestialBodyByName(solarSystem: SolarSystem, name: string): CelestialBody {
+  if (solarSystem.mainBody.name === name) return solarSystem.mainBody;
+  return solarSystem.bodies.find(body => body.name === name)!;
+}
+
+export function getOrbitalBodyByName(solarSystem: SolarSystem, name: string): OrbitalBody {
+  return solarSystem.bodies.find(body => body.name === name)!;
+}
+
+/**
+ * Helper to compute minimum safe flyby altitude above body surface (m).
+ */
+export function getMinFlybyAlt(body: CelestialBody, minFlybyAlt?: number): number {
+  if (minFlybyAlt !== undefined) return minFlybyAlt;
+  const bareMinimum = (body.atmosphereHeight || body.maxTerrainHeight || 0);
+  return Math.max(bareMinimum + 10000, bareMinimum * 1.1); // take 10 km or 10% margin, whichever is larger, above atmosphere or terrain
+}
+
+/**
+ * Helper to compute minimum safe flyby radius (m).
+ */
+export function getMinFlybyRadius(body: CelestialBody, minFlybyAlt?: number): number {
+  return body.radius + getMinFlybyAlt(body, minFlybyAlt);
+}
+
+export const KSP_SUN: CelestialBody = 
   {
-    flightGlobalsIndex: 0,
     name: "Sun",
     radius: 261600000,
     atmosphereHeight: 600000,
+    maxTerrainHeight: 0,
     stdGravParam: 1172332800000000000,
     rotationPeriod: 432000,
     color: "rgba(254,198,20,1)",
     templateName: "Sun"
-  },
+  };
+
+// 1. STOCK KSP SOLAR SYSTEM BODIES
+export const STOCK_KSP_BODIES: OrbitalBody[] = [
   {
-    flightGlobalsIndex: 4,
     name: "Moho",
     radius: 250000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 6818,
-    geeASL: 0.2750939495138503,
-    mass: 2.5263314e21,
     stdGravParam: 168609380000,
     rotationPeriod: 1210000,
     initialRotation: 190,
@@ -61,13 +86,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Moho"
   },
   {
-    flightGlobalsIndex: 5,
     name: "Eve",
     radius: 700000,
     maxTerrainHeight: 7541,
     atmosphereHeight: 90000,
-    geeASL: 1.700580770004361,
-    mass: 1.224398e23,
     stdGravParam: 8171730229211,
     rotationPeriod: 80500,
     semiMajorAxis: 9832684544,
@@ -82,12 +104,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Eve"
   },
   {
-    flightGlobalsIndex: 13,
     name: "Gilly",
     radius: 13000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 6401,
-    geeASL: 0.005001707903980263,
-    mass: 124203630000000000,
     stdGravParam: 8289449.8,
     rotationPeriod: 28255,
     initialRotation: 5,
@@ -103,13 +123,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Gilly"
   },
   {
-    flightGlobalsIndex: 1,
     name: "Kerbin",
     radius: 600000,
     maxTerrainHeight: 6768,
     atmosphereHeight: 70000,
-    geeASL: 1.0003416049313476,
-    mass: 5.2915158e22,
     stdGravParam: 3531600000000,
     rotationPeriod: 21549.42518309,
     initialRotation: 90,
@@ -125,12 +142,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Kerbin"
   },
   {
-    flightGlobalsIndex: 2,
     name: "Mun",
     radius: 200000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 7059,
-    geeASL: 0.16605670132002265,
-    mass: 975990660000000000000,
     stdGravParam: 65138398000,
     tidallyLocked: "true",
     rotationPeriod: 138984.376574476,
@@ -147,12 +162,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 3,
     name: "Minmus",
     radius: 60000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 5724,
-    geeASL: 0.05001708024656738,
-    mass: 26457580000000000000,
     stdGravParam: 1765800000,
     rotationPeriod: 40400,
     initialRotation: 230,
@@ -168,13 +181,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Minmus"
   },
   {
-    flightGlobalsIndex: 6,
     name: "Duna",
     radius: 320000,
     maxTerrainHeight: 8268,
     atmosphereHeight: 50000,
-    geeASL: 0.30010249143757045,
-    mass: 4.515427e21,
     stdGravParam: 301363211975,
     rotationPeriod: 65517.859375,
     initialRotation: 90,
@@ -190,13 +200,11 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Duna"
   },
   {
-    flightGlobalsIndex: 7,
     name: "Ike",
     radius: 130000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 12738,
-    geeASL: 0.11203826578613468,
     tidallyLocked: "true",
-    mass: 278216150000000000000,
     stdGravParam: 18568369000,
     soi: 1049598.9,
     rotationPeriod: 65517.859375,
@@ -212,12 +220,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Ike"
   },
   {
-    flightGlobalsIndex: 15,
     name: "Dres",
     radius: 138000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 5670,
-    geeASL: 0.11503928670891597,
-    mass: 321909370000000000000,
     stdGravParam: 21484489000,
     rotationPeriod: 34800,
     initialRotation: 25,
@@ -233,12 +239,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Dres"
   },
   {
-    flightGlobalsIndex: 8,
     name: "Jool",
     radius: 6000000,
     atmosphereHeight: 200000,
-    geeASL: 0.8002732839450781,
-    mass: 4.2332127e24,
+    maxTerrainHeight: 0,
     stdGravParam: 282528004209995,
     rotationPeriod: 36000,
     semiMajorAxis: 68773560320,
@@ -253,13 +257,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Jool"
   },
   {
-    flightGlobalsIndex: 9,
     name: "Laythe",
     radius: 500000,
     maxTerrainHeight: 6079,
     atmosphereHeight: 50000,
-    geeASL: 0.8002732839450781,
-    mass: 2.9397311e22,
     stdGravParam: 1962000000000,
     tidallyLocked: "true",
     rotationPeriod: 52980.87905938,
@@ -276,12 +277,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Laythe"
   },
   {
-    flightGlobalsIndex: 10,
     name: "Vall",
     radius: 300000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 7985,
-    geeASL: 0.23508027715886667,
-    mass: 3.1087655e21,
     stdGravParam: 207481500000,
     tidallyLocked: "true",
     rotationPeriod: 105962.088893924,
@@ -297,12 +296,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Vall"
   },
   {
-    flightGlobalsIndex: 12,
     name: "Tylo",
     radius: 600000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 12904,
-    geeASL: 0.8002732839450781,
-    mass: 4.2332127e22,
     stdGravParam: 2825280000000,
     tidallyLocked: "true",
     rotationPeriod: 211926.35802123,
@@ -318,12 +315,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Tylo"
   },
   {
-    flightGlobalsIndex: 11,
     name: "Bop",
     radius: 65000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 21757,
-    geeASL: 0.06002049388235136,
-    mass: 37261090000000000000,
     stdGravParam: 2486834900,
     tidallyLocked: "true",
     rotationPeriod: 544507.428516654,
@@ -340,12 +335,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Bop"
   },
   {
-    flightGlobalsIndex: 14,
     name: "Pol",
     radius: 44000,
+    atmosphereHeight: 0,
     maxTerrainHeight: 4891,
-    geeASL: 0.03801298098739121,
-    mass: 10813507000000000000,
     stdGravParam: 721702080,
     tidallyLocked: "true",
     rotationPeriod: 901902.623531173,
@@ -362,12 +355,10 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
     templateName: "Pol"
   },
   {
-    flightGlobalsIndex: 16,
     name: "Eeloo",
     radius: 210000,
-    maxTerrainHeight: 3797,
     atmosphereHeight: 0,
-    mass: 1.1149224e21,
+    maxTerrainHeight: 3797,
     stdGravParam: 74410815000,
     rotationPeriod: 19460,
     initialRotation: 25,
@@ -385,12 +376,12 @@ export const STOCK_KSP_BODIES: CelestialBody[] = [
 ];
 
 // 2. OUTER PLANET MOD (OPM) BODIES
-export const OPM_EXTRA_BODIES: CelestialBody[] = [
+export const OPM_EXTRA_BODIES: OrbitalBody[] = [
   {
     name: "Sarnus",
     radius: 5300000,
     atmosphereHeight: 580000,
-    geeASL: 0.298,
+    maxTerrainHeight: 0,
     stdGravParam: 82089701953000,
     rotationPeriod: 28500,
     initialRotation: 0,
@@ -408,7 +399,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Hale",
     radius: 6000,
-    geeASL: 0.0023,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 8100000,
     soi: 41000,
     tidallyLocked: "True",
@@ -427,7 +419,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Ovok",
     radius: 26000,
-    geeASL: 0.002,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 133000000,
     soi: 94000,
     tidallyLocked: "True",
@@ -447,12 +440,16 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
     name: "Eeloo (OPM)",
     radius: 210000,
     atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 74410815000,
     tidallyLocked: "True",
     semiMajorAxis: 19105978,
     eccentricity: 0.0034,
     inclination: 2.3,
+    argOfPeriapsis: 260,
     ascNodeLongitude: 55,
+    meanAnomalyEpoch: 3.14,
+    epoch: 0,
     color: "rgba(220,220,220,1)",
     referenceBody: "Sarnus",
     templateName: "Eeloo"
@@ -460,7 +457,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Slate",
     radius: 540000,
-    geeASL: 0.692,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 1980000000000,
     tidallyLocked: "True",
     semiMajorAxis: 42592946,
@@ -478,7 +476,7 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
     name: "Tekto",
     radius: 280000,
     atmosphereHeight: 95000,
-    geeASL: 0.2503,
+    maxTerrainHeight: 0,
     stdGravParam: 192000000000,
     tidallyLocked: "True",
     semiMajorAxis: 97355304,
@@ -496,7 +494,7 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
     name: "Urlum",
     radius: 2177000,
     atmosphereHeight: 325000,
-    geeASL: 0.257,
+    maxTerrainHeight: 0,
     stdGravParam: 11944573769627,
     rotationPeriod: 41000,
     initialRotation: 0,
@@ -514,7 +512,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Polta",
     radius: 220000,
-    geeASL: 0.19,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 90000000000,
     tidallyLocked: "True",
     semiMajorAxis: 11727895,
@@ -531,7 +530,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Priax",
     radius: 74000,
-    geeASL: 0.063,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 3400000000,
     tidallyLocked: "True",
     initialRotation: 30,
@@ -549,7 +549,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Wal",
     radius: 370000,
-    geeASL: 0.37,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 490000000000,
     tidallyLocked: "True",
     semiMajorAxis: 67553668,
@@ -566,7 +567,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Tal",
     radius: 22000,
-    geeASL: 0.045,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 210000000,
     tidallyLocked: "True",
     rotationPeriod: 36134.589375,
@@ -586,7 +588,7 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
     name: "Neidon",
     radius: 2145000,
     atmosphereHeight: 260000,
-    geeASL: 0.314,
+    maxTerrainHeight: 0,
     stdGravParam: 14167881530303,
     rotationPeriod: 40250,
     initialRotation: 0,
@@ -605,7 +607,7 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
     name: "Thatmo",
     radius: 286000,
     atmosphereHeight: 35000,
-    geeASL: 0.232,
+    maxTerrainHeight: 0,
     stdGravParam: 185000000000,
     tidallyLocked: "True",
     initialRotation: 0,
@@ -623,7 +625,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Nissee",
     radius: 30000,
-    geeASL: 0.045,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 390000000,
     rotationPeriod: 27924.8723,
     initialRotation: 0,
@@ -641,7 +644,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Plock",
     radius: 189000,
-    geeASL: 0.148,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 52000000000,
     rotationPeriod: 106309.606989054,
     semiMajorAxis: 535833706086,
@@ -658,7 +662,8 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
   {
     name: "Karen",
     radius: 85050,
-    geeASL: 0.066,
+      atmosphereHeight: 0,
+      maxTerrainHeight: 0,
     stdGravParam: 4700000000,
     tidallyLocked: "True",
     semiMajorAxis: 2457800,
@@ -675,13 +680,12 @@ export const OPM_EXTRA_BODIES: CelestialBody[] = [
 ];
 
 // 3. GRANNUS EXTRA BODIES
-export const GRANNUS_EXTRA_BODIES: CelestialBody[] = [
+export const GRANNUS_EXTRA_BODIES: OrbitalBody[] = [
   {
     name: "Grannus",
     radius: 30170000,
     atmosphereHeight: 400000,
-    geeASL: 16580.06118,
-    mass: 9.55529e27,
+    maxTerrainHeight: 0,
     stdGravParam: 637337551692008972,
     rotationPeriod: 1296000,
     semiMajorAxis: 2000000000000,
@@ -700,8 +704,7 @@ export const GRANNUS_EXTRA_BODIES: CelestialBody[] = [
     name: "Sirona",
     radius: 3000000,
     atmosphereHeight: 540000,
-    geeASL: 7.042983338,
-    mass: 1.32324e24,
+    maxTerrainHeight: 0,
     stdGravParam: 88259850000000,
     rotationPeriod: 57600,
     semiMajorAxis: 11900000000,
@@ -718,18 +721,22 @@ export const GRANNUS_EXTRA_BODIES: CelestialBody[] = [
 ];
 
 // 4. REAL SOLAR SYSTEM (RSS) BODIES
-export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
+export const REAL_SUN: CelestialBody = 
   {
     name: "Sun",
     radius: 696342000,
+    maxTerrainHeight: 0,
+    atmosphereHeight: 0,
     stdGravParam: 1.3271244004193938e20,
     color: "rgba(254,198,20,1)",
     templateName: "Sun"
-  },
+  };
+export const REAL_SOLAR_SYSTEM_BODIES: OrbitalBody[] = [
   {
-    flightGlobalsIndex: 2,
     name: "Mercury",
     radius: 2439700,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 2.203178e13,
     rotationPeriod: 5067031.68,
     initialRotation: 0,
@@ -745,10 +752,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 3,
     name: "Venus",
     radius: 6049000,
     atmosphereHeight: 145000,
+    maxTerrainHeight: 0,
     stdGravParam: 3.24858592e14,
     rotationPeriod: -20996797.016381,
     initialRotation: 0,
@@ -764,10 +771,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Duna"
   },
   {
-    flightGlobalsIndex: 1,
     name: "Earth",
     radius: 6371000,
     atmosphereHeight: 140000,
+    maxTerrainHeight: 0,
     stdGravParam: 3.9860043543609598e14,
     rotationPeriod: 86164.098903691,
     initialRotation: 100.1833,
@@ -783,9 +790,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Kerbin"
   },
   {
-    flightGlobalsIndex: 10,
     name: "Moon",
     radius: 1737100,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 4.9028000661637961e12,
     tidallyLocked: "true",
     rotationPeriod: 2360584.68479999,
@@ -802,10 +810,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 11,
     name: "Mars",
     radius: 3375800,
     atmosphereHeight: 125000,
+    maxTerrainHeight: 0,
     stdGravParam: 4.282837362069909e13,
     rotationPeriod: 88642.6848,
     initialRotation: 25,
@@ -821,9 +829,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Duna"
   },
   {
-    flightGlobalsIndex: 7,
     name: "Phobos",
     radius: 7250,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 7.087546066894452e5,
     tidallyLocked: "true",
     rotationPeriod: 27553.843872,
@@ -840,9 +849,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Bop"
   },
   {
-    flightGlobalsIndex: 12,
     name: "Deimos",
     radius: 5456,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 9.615569648120313e4,
     tidallyLocked: "true",
     rotationPeriod: 109123.2,
@@ -859,9 +869,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Bop"
   },
   {
-    flightGlobalsIndex: 60,
     name: "Vesta",
     radius: 262700,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 1.72882449693e10,
     rotationPeriod: 19231.2,
     initialRotation: 0,
@@ -877,9 +888,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 50,
     name: "Ceres",
     radius: 473000,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 6.26325e10,
     rotationPeriod: 32666.4,
     initialRotation: 0,
@@ -895,10 +907,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 5,
     name: "Jupiter",
     radius: 69373000,
     atmosphereHeight: 1550000,
+    maxTerrainHeight: 0,
     stdGravParam: 1.266865349218e17,
     rotationPeriod: 35730,
     initialRotation: 25,
@@ -914,9 +926,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Jool"
   },
   {
-    flightGlobalsIndex: 8,
     name: "Io",
     radius: 1811300,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 5.959916033410404e12,
     tidallyLocked: "true",
     semiMajorAxis: 422018294.5236953,
@@ -931,9 +944,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Moho"
   },
   {
-    flightGlobalsIndex: 9,
     name: "Europa",
     radius: 1550800,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 3.202738774922892e12,
     tidallyLocked: "true",
     semiMajorAxis: 671253637.5417169,
@@ -948,9 +962,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 13,
     name: "Ganymede",
     radius: 2624100,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 9.887834453334144e12,
     tidallyLocked: "true",
     semiMajorAxis: 1070823468.894524,
@@ -965,9 +980,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 4,
     name: "Callisto",
     radius: 2409300,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 7.179289361397270e12,
     tidallyLocked: "true",
     semiMajorAxis: 1883812366.573522,
@@ -982,10 +998,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Moho"
   },
   {
-    flightGlobalsIndex: 14,
     name: "Saturn",
     radius: 57216000,
     atmosphereHeight: 2000000,
+    maxTerrainHeight: 0,
     stdGravParam: 3.793120749865224e16,
     rotationPeriod: 38052,
     initialRotation: 0,
@@ -1001,9 +1017,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Jool"
   },
   {
-    flightGlobalsIndex: 15,
     name: "Mimas",
     radius: 198200,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 2.503524e9,
     tidallyLocked: "true",
     rotationPeriod: 81388.8,
@@ -1020,9 +1037,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 16,
     name: "Enceladus",
     radius: 252100,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 7.211454165826e9,
     tidallyLocked: "true",
     rotationPeriod: 118386.8352,
@@ -1039,9 +1057,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 17,
     name: "Tethys",
     radius: 531100,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 4.121107782641e10,
     tidallyLocked: "true",
     rotationPeriod: 163106.0928,
@@ -1058,9 +1077,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 18,
     name: "Dione",
     radius: 561400,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 7.311636648732e10,
     tidallyLocked: "true",
     rotationPeriod: 236469.456,
@@ -1077,9 +1097,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 19,
     name: "Rhea",
     radius: 763800,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 1.539424643535e11,
     tidallyLocked: "True",
     rotationPeriod: 390373.5168,
@@ -1096,10 +1117,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 6,
     name: "Titan",
     radius: 2573300,
     atmosphereHeight: 600000,
+    maxTerrainHeight: 0,
     stdGravParam: 8.9778648e12,
     tidallyLocked: "true",
     rotationPeriod: 1377648,
@@ -1116,9 +1137,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Laythe"
   },
   {
-    flightGlobalsIndex: 20,
     name: "Iapetus",
     radius: 734500,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 1.205120887033e11,
     tidallyLocked: "true",
     rotationPeriod: 6853377.6,
@@ -1135,10 +1157,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 21,
     name: "Uranus",
     radius: 24702000,
     atmosphereHeight: 1400000,
+    maxTerrainHeight: 0,
     stdGravParam: 5.793951322279009e15,
     rotationPeriod: 62063.712,
     initialRotation: 0,
@@ -1154,9 +1176,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Jool"
   },
   {
-    flightGlobalsIndex: 91,
     name: "Miranda",
     radius: 235700,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 4.319516899232100e9,
     tidallyLocked: "true",
     initialRotation: 0,
@@ -1172,9 +1195,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 92,
     name: "Ariel",
     radius: 578900,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 8.346344431770477e10,
     tidallyLocked: "true",
     initialRotation: 0,
@@ -1190,9 +1214,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 93,
     name: "Umbriel",
     radius: 584700,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 8.509338094489388e10,
     initialRotation: 0,
     semiMajorAxis: 265992360.127656,
@@ -1207,9 +1232,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 94,
     name: "Titania",
     radius: 788900,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 2.269437003741248e11,
     tidallyLocked: "true",
     initialRotation: 0,
@@ -1225,9 +1251,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 95,
     name: "Oberon",
     radius: 761400,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 2.053234302535623e11,
     tidallyLocked: "true",
     initialRotation: 0,
@@ -1243,10 +1270,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Eeloo"
   },
   {
-    flightGlobalsIndex: 22,
     name: "Neptune",
     radius: 24085000,
     atmosphereHeight: 1250000,
+    maxTerrainHeight: 0,
     stdGravParam: 6.835099502439672e15,
     rotationPeriod: 58000.32,
     initialRotation: 0,
@@ -1262,10 +1289,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Jool"
   },
   {
-    flightGlobalsIndex: 23,
     name: "Triton",
     radius: 1353400,
     atmosphereHeight: 110000,
+    maxTerrainHeight: 0,
     stdGravParam: 1.427598140725034e12,
     tidallyLocked: "true",
     rotationPeriod: 507773,
@@ -1282,10 +1309,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 24,
     name: "Pluto",
     radius: 1187000,
     atmosphereHeight: 110000,
+    maxTerrainHeight: 0,
     stdGravParam: 8.696138177608748e11,
     rotationPeriod: 551856.672,
     initialRotation: 0,
@@ -1301,9 +1328,10 @@ export const REAL_SOLAR_SYSTEM_BODIES: CelestialBody[] = [
     templateName: "Mun"
   },
   {
-    flightGlobalsIndex: 25,
     name: "Charon",
     radius: 603500,
+    atmosphereHeight: 0,
+    maxTerrainHeight: 0,
     stdGravParam: 1.058799888601881e11,
     tidallyLocked: "true",
     rotationPeriod: 551856.70656,
@@ -1326,12 +1354,14 @@ export const PRESET_SOLAR_SYSTEMS: SolarSystem[] = [
     id: "stock_ksp",
     name: "Stock KSP",
     description: "Standard Kerbal Space Program solar system (Sun, Moho, Eve, Kerbin, Duna, Dres, Jool, Eeloo and their moons).",
+    mainBody: KSP_SUN,
     bodies: STOCK_KSP_BODIES.map(b => ({ ...b, color: normalizeColor(b.color) }))
   },
   {
     id: "outer_planet_mod",
     name: "Outer Planet Mod (Stock + OPM)",
     description: "Expanded Kerbal solar system adding gas giants Sarnus, Urlum, Neidon, and dwarf planet Plock.",
+    mainBody: KSP_SUN,
     bodies: [
       ...STOCK_KSP_BODIES.filter(b => b.name !== "Eeloo"),
       ...OPM_EXTRA_BODIES
@@ -1341,12 +1371,14 @@ export const PRESET_SOLAR_SYSTEMS: SolarSystem[] = [
     id: "real_solar_system",
     name: "Real Solar System (RSS)",
     description: "Real-scale Solar System including Earth, Moon, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto and their major moons.",
+    mainBody: REAL_SUN,
     bodies: REAL_SOLAR_SYSTEM_BODIES.map(b => ({ ...b, color: normalizeColor(b.color) }))
   },
   {
     id: "stock_opm_grannus",
     name: "Stock + OPM + Grannus",
     description: "Full system including Stock KSP, Outer Planets Mod, and the companion red dwarf star system Grannus.",
+    mainBody: KSP_SUN,
     bodies: [
       ...STOCK_KSP_BODIES.filter(b => b.name !== "Eeloo"),
       ...OPM_EXTRA_BODIES,

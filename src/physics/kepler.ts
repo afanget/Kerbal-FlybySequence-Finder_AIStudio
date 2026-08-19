@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { CelestialBody } from '../types';
+import { CelestialBody, OrbitalBody } from '../types';
 
 export interface Vector3D {
   x: number;
@@ -14,20 +14,6 @@ export interface Vector3D {
 export interface StateVector {
   pos: Vector3D; // position in meters
   vel: Vector3D; // velocity in m/s
-}
-
-/**
- * Calculates standard gravitational parameter (mu) in m^3 / s^2
- */
-export function getGravitationalParameter(body: CelestialBody): number {
-  if (body.stdGravParam && body.stdGravParam > 0) {
-    return body.stdGravParam;
-  }
-  if (body.mass && body.mass > 0) {
-    // G = 6.67430e-11
-    return 6.67430e-11 * body.mass;
-  }
-  return 1;
 }
 
 /**
@@ -86,16 +72,16 @@ export function solveHyperbolicKeplerEquation(M: number, e: number): number {
 /**
  * Converts a CelestialBody definition into OrbitalElements
  */
-export function bodyToOrbitalElements(body: CelestialBody): OrbitalElements {
+export function bodyToOrbitalElements(body: OrbitalBody): OrbitalElements {
   return {
-    semiMajorAxis: body.semiMajorAxis || 1e9,
-    eccentricity: body.eccentricity || 0,
-    inclination: ((body.inclination || 0) * Math.PI) / 180,
-    ascNodeLongitude: ((body.ascNodeLongitude || 0) * Math.PI) / 180,
-    argOfPeriapsis: ((body.argOfPeriapsis || 0) * Math.PI) / 180,
-    meanAnomalyEpoch: body.meanAnomalyEpoch || 0,
-    trueAnomalyEpoch: 0,
-    epoch: body.epoch || 0
+    semiMajorAxis: body.semiMajorAxis,
+    eccentricity: body.eccentricity,
+    inclination: (body.inclination * Math.PI) / 180,
+    ascNodeLongitude: (body.ascNodeLongitude * Math.PI) / 180,
+    argOfPeriapsis: (body.argOfPeriapsis * Math.PI) / 180,
+    meanAnomalyEpoch: body.meanAnomalyEpoch,
+    trueAnomalyEpoch: 0, // TODO
+    epoch: body.epoch
   };
 }
 
@@ -204,19 +190,17 @@ export function getStateFromOrbitalElements(
  * Computes 3D position and velocity vectors of a body at given Universal Time (t).
  * Position is relative to parent central body in meters; velocity is in m/s.
  */
-export function getBodyStateAtUT(body: CelestialBody, mainBody: CelestialBody, ut: number): StateVector {
-  const muCentral = getGravitationalParameter(mainBody);
+export function getBodyStateAtUT(body: OrbitalBody, mainBody: CelestialBody, ut: number): StateVector {
   const elements = bodyToOrbitalElements(body);
-  return getStateFromOrbitalElements(elements, muCentral, ut);
+  return getStateFromOrbitalElements(elements, mainBody.stdGravParam, ut);
 }
 
 /**
  * Orbital period in seconds T = 2 * pi * sqrt(a^3 / mu)
  */
-export function getOrbitalPeriod(body: CelestialBody, mainBody: CelestialBody): number {
-  const mu = getGravitationalParameter(mainBody);
-  const a = body.semiMajorAxis || 1e9;
-  return 2 * Math.PI * Math.sqrt(Math.pow(a, 3) / mu);
+export function getOrbitalPeriod(body: OrbitalBody, mainBody: CelestialBody): number {
+  const a = body.semiMajorAxis;
+  return 2 * Math.PI * Math.sqrt(Math.pow(a, 3) / mainBody.stdGravParam);
 }
 
 // Vector 3D algebra helpers

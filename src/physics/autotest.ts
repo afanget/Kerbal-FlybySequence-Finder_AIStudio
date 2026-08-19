@@ -11,13 +11,13 @@ import {
   vecSub,
   vecMag,
   getBodyStateAtUT,
-  getGravitationalParameter,
   getOrbitalPeriod
 } from './kepler';
 import { solveLambert } from './lambert';
 import { evaluateFlybyAtDate, matchUnpoweredFlyby } from './flyby';
-import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
+import { getOrbitalBodyByName, PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
+import { CelestialBody, OrbitalBody, SolarSystem } from '../types';
 
 export interface AutotestCaseResult {
   caseId: string;
@@ -375,14 +375,14 @@ export interface KEJGAutotestSuiteResult {
  * Grannus: Y41 D192
  */
 export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number; t4?: number }): KEJGStep1Result {
-  const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
-  const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
-  const kerbin = stockOpmGrannus.bodies.find(b => b.name === 'Kerbin')!;
-  const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve')!;
-  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Jool')!;
-  const grannus = stockOpmGrannus.bodies.find(b => b.name === 'Grannus')!;
+  const stockOpmGrannus : SolarSystem = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus')!;
+  const sun : CelestialBody = stockOpmGrannus.mainBody;
+  const kerbin : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Kerbin');
+  const eve : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Eve');
+  const jool : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Jool');
+  const grannus : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Grannus');
 
-  const muSun = getGravitationalParameter(sun);
+  const muSun = sun.stdGravParam;
 
   const t1 = customUTs?.t1 ?? parseKSPTimeToUT( 6, 150, 0, 0, 0, 'ksp');
   const t2 = customUTs?.t2 ?? parseKSPTimeToUT(10, 142, 0, 0, 0, 'ksp');
@@ -402,7 +402,7 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
   const c3Dep1 = vInfDep1Mag * vInfDep1Mag;
 
   // LKO 100km ejection
-  const muKerbin = getGravitationalParameter(kerbin);
+  const muKerbin = kerbin.stdGravParam;
   const rLko = kerbin.radius + 100000;
   const vCircLko = Math.sqrt(muKerbin / rLko);
   const vInjLko = Math.sqrt(vInfDep1Mag * vInfDep1Mag + (2 * muKerbin) / rLko);
@@ -519,13 +519,13 @@ export function runKEJGStep1(customUTs?: { t1?: number; t2?: number; t3?: number
  */
 export async function runKEJGStep2(customUTs?: { t1?: number; t2?: number; t3?: number; t4?: number }): Promise<KEJGStep2Result> {
   const SAMPLE_PER_PERIOD = 64;
-  const stockOpmGrannus = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
-  const sun = stockOpmGrannus.bodies.find(b => b.name === 'Sun')!;
-  const kerbin = stockOpmGrannus.bodies.find(b => b.name === 'Kerbin')!;
-  const eve = stockOpmGrannus.bodies.find(b => b.name === 'Eve')!;
-  const jool = stockOpmGrannus.bodies.find(b => b.name === 'Jool')!;
-  const grannus = stockOpmGrannus.bodies.find(b => b.name === 'Grannus')!;
-  const muSun = getGravitationalParameter(sun);
+  const stockOpmGrannus : SolarSystem = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus')!;
+  const sun : CelestialBody = stockOpmGrannus.mainBody;
+  const kerbin : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Kerbin');
+  const eve : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Eve');
+  const jool : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Jool');
+  const grannus : OrbitalBody = getOrbitalBodyByName(stockOpmGrannus, 'Grannus');
+  const muSun = sun.stdGravParam;
 
   const t1 = customUTs?.t1 ?? parseKSPTimeToUT(6, 150, 0, 0, 0, 'ksp');
   const tEveStep1 = customUTs?.t2 ?? parseKSPTimeToUT(10, 142, 0, 0, 0, 'ksp');

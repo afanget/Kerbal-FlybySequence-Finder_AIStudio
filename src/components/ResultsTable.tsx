@@ -4,10 +4,10 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode, SubtaskProgressInfo } from '../types';
+import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, OrbitalBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode, SubtaskProgressInfo } from '../types';
 import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
-import { getBodyStateAtUT, getGravitationalParameter, stateToOrbitalElements, Vector3D } from '../physics/kepler';
+import { getBodyStateAtUT, stateToOrbitalElements, Vector3D } from '../physics/kepler';
 import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath } from '../physics/solver';
 import { compute3BodyConsolidatedRangesAsync, LinkEndDateRanges, Sequence3BodyConsolidatedRange } from '../physics/tisserandRanges';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
@@ -31,7 +31,7 @@ interface ResultsTableProps {
   onClearResults?: () => void;
   isSearching: boolean;
   searchStatusText?: string;
-  bodies?: CelestialBody[];
+  bodies?: OrbitalBody[];
   mainBody?: CelestialBody;
   porkchops?: Record<string, PorkchopPlotData>;
   onPorkchopUpdate?: (newPorkchops: Record<string, PorkchopPlotData>) => void;
@@ -349,7 +349,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     return results.map(seq => {
       let updatedTotalStochDv = 0;
       const updatedFlybys = seq.flybys.map(f => {
-        const body = bodies.find(b => b.name === f.bodyName);
+        const body : CelestialBody = bodies.find(b => b.name === f.bodyName)!;
         const newStochDv = computeStochasticDvForFlyby(f, body, altErrMeters, velErrMs);
         updatedTotalStochDv += newStochDv;
         return {
@@ -1748,18 +1748,16 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                 </span>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                   {seq.transfers.map((tr, tIdx) => {
-                                    const depBodyName = seq.bodyNames[tIdx] || 'Departure';
-                                    const arrBodyName = seq.bodyNames[tIdx + 1] || 'Arrival';
+                                    const depBodyName = seq.bodyNames[tIdx];
+                                    const arrBodyName = seq.bodyNames[tIdx + 1];
 
-                                    const depBody = bodies.find(b => b.name === depBodyName) || mainBody || { name: depBodyName, radius: 100000 };
-                                    const mBody = mainBody || { name: 'Sun', stdGravParam: 1.1723328e18, radius: 261600000 };
-                                    const muCentral = getGravitationalParameter(mBody);
+                                    const depBody = bodies.find(b => b.name === depBodyName)!;
 
                                     const depState = getBodyStateAtUT(depBody, mBody, tr.depDate);
                                     const vTransDepVec: Vector3D = { x: tr.vTransDep[0], y: tr.vTransDep[1], z: tr.vTransDep[2] };
 
-                                    const elem = stateToOrbitalElements(depState.pos, vTransDepVec, muCentral, tr.depDate);
-                                    const periodSec = 2 * Math.PI * Math.sqrt(Math.pow(Math.abs(elem.semiMajorAxis), 3) / Math.max(1, muCentral));
+                                    const elem = stateToOrbitalElements(depState.pos, vTransDepVec, mainBody.stdGravParam, tr.depDate);
+                                    const periodSec = 2 * Math.PI * Math.sqrt(Math.pow(Math.abs(elem.semiMajorAxis), 3) / Math.max(1, mainBody.stdGravParam));
 
                                     const periapsisRadiusM = elem.semiMajorAxis * (1 - elem.eccentricity);
 

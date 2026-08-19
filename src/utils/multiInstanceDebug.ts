@@ -8,10 +8,10 @@ import {
   PorkchopPlotData,
   DirectionalLink,
   CelestialBody,
+  OrbitalBody,
   InstanceNode,
 } from '../types';
 import {
-  getGravitationalParameter,
   getBodyStateAtUT,
   vecSub,
   vecMag,
@@ -20,7 +20,6 @@ import {
 } from '../physics/kepler';
 import { solveLambert } from '../physics/lambert';
 import {
-  getMinFlybyAlt,
   evaluateFlybyAtDate,
   evaluateHigherOrderSequenceTransferAddLastLeg,
   evaluateHigherOrderSequenceTransferAddFirstLeg,
@@ -33,6 +32,7 @@ import {
   FlybyDebugPlotData,
   findClosestIndex,
 } from './flybyDebugPlot';
+import { getMinFlybyAlt } from '../data/solarSystems';
 
 export interface PivotCandidateSample {
   sampleIndex: number;
@@ -112,7 +112,7 @@ export function extractHigherOrderAlgorithmInfo(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -264,7 +264,7 @@ export function extractMultiInstanceDebugData(
   links: DirectionalLink[],
   clickDepIndex: number,
   clickArrIndex: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   sequencePorkchops?: Record<string, SequencePorkchopData>
 ): MultiInstanceDebugData | null {
@@ -299,7 +299,7 @@ export function extractMultiInstanceDebugData(
   const N = pathInsts.length;
   if (N <= 3) return null;
 
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   // Determine sub-chain strategy
@@ -352,193 +352,193 @@ export function extractMultiInstanceDebugData(
       const currInst = pathInsts[k];
       const nextInst = pathInsts[k + 1];
 
-      const prevBody = bodyMap.get(prevInst.bodyName);
-      const currBody = bodyMap.get(currInst.bodyName);
-      const nextBody = bodyMap.get(nextInst.bodyName);
+      const currBody = bodyMap.get(currInst.bodyName)!;
 
       const tPrev = fullDates[k - 1];
       const tCurr = fullDates[k];
       const tNext = fullDates[k + 1];
 
-    const mu = currBody ? getGravitationalParameter(currBody) : 0;
-    const R = currBody?.radius || 100000;
-    const minAlt = currBody ? getMinFlybyAlt(currBody) : 10000;
-    const rpMin = R + minAlt;
+      const mu = currBody.stdGravParam;
+      const R = currBody.radius;
+      const minAlt = getMinFlybyAlt(currBody);
+      const rpMin = R + minAlt;
 
-    // Find direct porkchops for leg 1 (prev -> curr) and leg 2 (curr -> next)
-    const link1 = links.find(l => l.sourceInstanceId === prevInst.id && l.targetInstanceId === currInst.id);
-    const link1Id = link1?.id || `link-${prevInst.id}-${currInst.id}`;
-    const pc1 = porkchops[link1Id] || (link1 ? porkchops[link1.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === prevInst.bodyName && p.targetBody === currInst.bodyName);
+      // Find direct porkchops for leg 1 (prev -> curr) and leg 2 (curr -> next)
+      const link1 = links.find(l => l.sourceInstanceId === prevInst.id && l.targetInstanceId === currInst.id);
+      const link1Id = link1?.id || `link-${prevInst.id}-${currInst.id}`;
+      const pc1 = porkchops[link1Id] || (link1 ? porkchops[link1.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === prevInst.bodyName && p.targetBody === currInst.bodyName);
 
-    const link2 = links.find(l => l.sourceInstanceId === currInst.id && l.targetInstanceId === nextInst.id);
-    const link2Id = link2?.id || `link-${currInst.id}-${nextInst.id}`;
-    const pc2 = porkchops[link2Id] || (link2 ? porkchops[link2.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === currInst.bodyName && p.targetBody === nextInst.bodyName);
+      const link2 = links.find(l => l.sourceInstanceId === currInst.id && l.targetInstanceId === nextInst.id);
+      const link2Id = link2?.id || `link-${currInst.id}-${nextInst.id}`;
+      const pc2 = porkchops[link2Id] || (link2 ? porkchops[link2.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === currInst.bodyName && p.targetBody === nextInst.bodyName);
 
-    let c3Arr = 0;
-    let c3Dep = 0;
-    let vInfIn: Vector3D = { x: 0, y: 0, z: 0 };
-    let vInfOut: Vector3D = { x: 0, y: 0, z: 0 };
-    let hasValidLeg1 = false;
-    let hasValidLeg2 = false;
+      let c3Arr = 0;
+      let c3Dep = 0;
+      let vInfIn: Vector3D = { x: 0, y: 0, z: 0 };
+      let vInfOut: Vector3D = { x: 0, y: 0, z: 0 };
+      let hasValidLeg1 = false;
+      let hasValidLeg2 = false;
 
-    const bodyState = currBody ? getBodyStateAtUT(currBody, mainBody, tCurr) : { pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 } };
+      const bodyState = currBody ? getBodyStateAtUT(currBody, mainBody, tCurr) : { pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 } };
 
-    if (pc1 && pc1.depDates && pc1.arrDates) {
-      const i1 = findClosestIndex(pc1.depDates, tPrev);
-      const j1 = findClosestIndex(pc1.arrDates, tCurr);
-      const rawC3 = pc1.c3ArrMatrix?.[i1]?.[j1];
-      const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
-      if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid1 || valid1[i1]?.[j1])) {
-        c3Arr = rawC3;
-        hasValidLeg1 = true;
-        if (pc1.vTransArrMatrix?.[i1]?.[j1] && vecMag(pc1.vTransArrMatrix[i1][j1]) > 1e-3) {
-          vInfIn = vecSub(pc1.vTransArrMatrix[i1][j1], bodyState.vel);
+      if (pc1 && pc1.depDates && pc1.arrDates) {
+        const i1 = findClosestIndex(pc1.depDates, tPrev);
+        const j1 = findClosestIndex(pc1.arrDates, tCurr);
+        const rawC3 = pc1.c3ArrMatrix?.[i1]?.[j1];
+        const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
+        if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid1 || valid1[i1]?.[j1])) {
+          c3Arr = rawC3;
+          hasValidLeg1 = true;
+          if (pc1.vTransArrMatrix?.[i1]?.[j1] && vecMag(pc1.vTransArrMatrix[i1][j1]) > 1e-3) {
+            vInfIn = vecSub(pc1.vTransArrMatrix[i1][j1], bodyState.vel);
+          } else {
+            const vMag = Math.sqrt(c3Arr * 1e6);
+            vInfIn = { x: vMag, y: 0, z: 0 };
+          }
         } else {
-          const vMag = Math.sqrt(c3Arr * 1e6);
-          vInfIn = { x: vMag, y: 0, z: 0 };
-        }
-      } else {
-        c3Arr = Infinity;
-      }
-    }
-
-    if (pc2 && pc2.depDates && pc2.arrDates) {
-      const i2 = findClosestIndex(pc2.depDates, tCurr);
-      const j2 = findClosestIndex(pc2.arrDates, tNext);
-      const rawC3 = pc2.c3DepMatrix?.[i2]?.[j2];
-      const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
-      if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid2 || valid2[i2]?.[j2])) {
-        c3Dep = rawC3;
-        hasValidLeg2 = true;
-        if (pc2.vTransDepMatrix?.[i2]?.[j2] && vecMag(pc2.vTransDepMatrix[i2][j2]) > 1e-3) {
-          vInfOut = vecSub(pc2.vTransDepMatrix[i2][j2], bodyState.vel);
-        } else {
-          const vMag = Math.sqrt(c3Dep * 1e6);
-          vInfOut = { x: vMag, y: 0, z: 0 };
-        }
-      } else {
-        c3Dep = Infinity;
-      }
-    }
-
-    const vInMag = hasValidLeg1 ? vecMag(vInfIn) : 0;
-    const vOutMag = hasValidLeg2 ? vecMag(vInfOut) : 0;
-
-    // Deflection needed
-    let deflectionNeededDeg = 0;
-    if (hasValidLeg1 && hasValidLeg2 && vInMag > 1e-3 && vOutMag > 1e-3) {
-      const cosDelta = Math.max(-1, Math.min(1, vecDot(vInfIn, vInfOut) / (vInMag * vOutMag)));
-      deflectionNeededDeg = (Math.acos(cosDelta) * 180) / Math.PI;
-    }
-
-    // Max deflection for min(arrC3, depC3)
-    let deflectionMaxDeg = 0;
-    let vMinMag = 0;
-    if (hasValidLeg1 && hasValidLeg2 && Number.isFinite(c3Arr) && Number.isFinite(c3Dep)) {
-      const minC3 = Math.max(0, Math.min(c3Arr, c3Dep));
-      vMinMag = Math.sqrt(minC3 * 1e6);
-      const eMin = 1 + (rpMin * vMinMag * vMinMag) / Math.max(1, mu);
-      const maxDefRad = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / eMin)));
-      deflectionMaxDeg = (maxDefRad * 180) / Math.PI;
-    }
-
-    // Delta-V from result or computed from excess angle
-    let dvMps = result?.flybyDvs?.[k - 1] ?? 0;
-    if (!Number.isFinite(dvMps)) {
-      dvMps = Infinity;
-    }
-    if (!result || (!Number.isFinite(dvMps) && hasValidLeg1 && hasValidLeg2)) {
-      if (hasValidLeg1 && hasValidLeg2 && c3Arr > 0 && c3Dep > 0) {
-        const vpIn = Math.sqrt(vInMag * vInMag + (2 * mu) / rpMin);
-        const vpOut = Math.sqrt(vOutMag * vOutMag + (2 * mu) / rpMin);
-        const excessAngle = Math.max(0, (deflectionNeededDeg - deflectionMaxDeg) * (Math.PI / 180));
-        if (excessAngle > 1e-5) {
-          dvMps = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
-        } else {
-          dvMps = Math.abs(vpOut - vpIn);
-        }
-        if (Math.abs(c3Arr - c3Dep) < 0.0001 && deflectionNeededDeg <= deflectionMaxDeg + 0.1) {
-          dvMps = 0;
+          c3Arr = Infinity;
         }
       }
+
+      if (pc2 && pc2.depDates && pc2.arrDates) {
+        const i2 = findClosestIndex(pc2.depDates, tCurr);
+        const j2 = findClosestIndex(pc2.arrDates, tNext);
+        const rawC3 = pc2.c3DepMatrix?.[i2]?.[j2];
+        const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
+        if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid2 || valid2[i2]?.[j2])) {
+          c3Dep = rawC3;
+          hasValidLeg2 = true;
+          if (pc2.vTransDepMatrix?.[i2]?.[j2] && vecMag(pc2.vTransDepMatrix[i2][j2]) > 1e-3) {
+            vInfOut = vecSub(pc2.vTransDepMatrix[i2][j2], bodyState.vel);
+          } else {
+            const vMag = Math.sqrt(c3Dep * 1e6);
+            vInfOut = { x: vMag, y: 0, z: 0 };
+          }
+        } else {
+          c3Dep = Infinity;
+        }
+      }
+
+      const vInMag = hasValidLeg1 ? vecMag(vInfIn) : 0;
+      const vOutMag = hasValidLeg2 ? vecMag(vInfOut) : 0;
+
+      // Deflection needed
+      let deflectionNeededDeg = 0;
+      if (hasValidLeg1 && hasValidLeg2 && vInMag > 1e-3 && vOutMag > 1e-3) {
+        const cosDelta = Math.max(-1, Math.min(1, vecDot(vInfIn, vInfOut) / (vInMag * vOutMag)));
+        deflectionNeededDeg = (Math.acos(cosDelta) * 180) / Math.PI;
+      }
+
+      // Max deflection for min(arrC3, depC3)
+      let deflectionMaxDeg = 0;
+      let vMinMag = 0;
+      if (hasValidLeg1 && hasValidLeg2 && Number.isFinite(c3Arr) && Number.isFinite(c3Dep)) {
+        const minC3 = Math.max(0, Math.min(c3Arr, c3Dep));
+        vMinMag = Math.sqrt(minC3 * 1e6);
+        const eMin = 1 + (rpMin * vMinMag * vMinMag) / Math.max(1, mu);
+        const maxDefRad = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / eMin)));
+        deflectionMaxDeg = (maxDefRad * 180) / Math.PI;
+      }
+
+      // Delta-V from result or computed from excess angle
+      let dvMps = result?.flybyDvs?.[k - 1] ?? 0;
+      if (!Number.isFinite(dvMps)) {
+        dvMps = Infinity;
+      }
+      if (!result || (!Number.isFinite(dvMps) && hasValidLeg1 && hasValidLeg2)) {
+        if (hasValidLeg1 && hasValidLeg2 && c3Arr > 0 && c3Dep > 0) {
+          const vpIn = Math.sqrt(vInMag * vInMag + (2 * mu) / rpMin);
+          const vpOut = Math.sqrt(vOutMag * vOutMag + (2 * mu) / rpMin);
+          const excessAngle = Math.max(0, (deflectionNeededDeg - deflectionMaxDeg) * (Math.PI / 180));
+          if (excessAngle > 1e-5) {
+            dvMps = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
+          } else {
+            dvMps = Math.abs(vpOut - vpIn);
+          }
+          if (Math.abs(c3Arr - c3Dep) < 0.0001 && deflectionNeededDeg <= deflectionMaxDeg + 0.1) {
+            dvMps = 0;
+          }
+        }
+      }
+
+      // Periapsis altitude
+      const sinHalf = Math.sin((deflectionNeededDeg * Math.PI) / 360);
+      let rp = rpMin;
+      if (sinHalf > 1e-6 && vMinMag > 1e-3) {
+        rp = Math.max(rpMin, (mu / (vMinMag * vMinMag)) * (1 / sinHalf - 1));
+      }
+      const periapsisAltKm = (rp - R) / 1000;
+
+      // Generate 3-instance debug data for this sub-system [prevInst, currInst, nextInst]
+      let sub3DebugData: FlybyDebugPlotData | null = null;
+      if (pc1 && pc2) {
+        const sub3Seq: SequencePorkchopData = {
+          id: `seq-pc-${prevInst.id}-${currInst.id}-${nextInst.id}`,
+          sequenceLabel: `${prevInst.bodyName} ➔ ${currInst.bodyName} ➔ ${nextInst.bodyName}`,
+          isFullPath: false,
+          instanceCount: 3,
+          instanceIds: [prevInst.id, currInst.id, nextInst.id],
+          bodyNames: [prevInst.bodyName, currInst.bodyName, nextInst.bodyName],
+          pathInsts: [prevInst, currInst, nextInst],
+          sourceInstanceId: prevInst.id,
+          targetInstanceId: nextInst.id,
+          sourceBody: prevInst.bodyName,
+          flybyBody: currInst.bodyName,
+          targetBody: nextInst.bodyName,
+          depDates: pc1.depDates,
+          arrDates: pc2.arrDates,
+          flybys: {
+            flybyBodyName: currBody.name,
+            instanceId: currInst.id,
+            poweredDvMatrix: [],
+            c3ArrMatrix: [],
+            c3DepMatrix: [],
+            dateMatrix: [],
+          },
+          flightTimeMatrix: [],
+          physicalValidMatrix: [],
+          constraintValidMatrix: [],
+          totalPoweredDvMatrix: [],
+          c3DepMatrix: [],
+          c3ArrMatrix: [],
+        };
+
+        const clickI_sub = findClosestIndex(pc1.depDates, tPrev);
+        const clickJ_sub = findClosestIndex(pc2.arrDates, tNext);
+
+        sub3DebugData = extractFlybyDebugData(
+          sub3Seq,
+          porkchops,
+          links,
+          clickI_sub,
+          clickJ_sub,
+          bodies,
+          mainBody
+        );
+      }
+
+      rows.push({
+        flybyIndex: k,
+        instanceIndex: k,
+        instanceId: currInst.id,
+        instanceName: currInst.label || currInst.bodyName,
+        bodyName: currInst.bodyName,
+        flybyDate: tCurr,
+        prevBodyName: prevInst.bodyName,
+        nextBodyName: nextInst.bodyName,
+        prevFlybyOrDepDate: tPrev,
+        nextFlybyOrArrDate: tNext,
+        c3Arr,
+        c3Dep,
+        deflectionNeededDeg,
+        deflectionMaxDeg,
+        dvMps,
+        isUnpowered: dvMps < 1.0,
+        periapsisAltKm,
+        minSafeAltKm: minAlt / 1000,
+        sub3DebugData,
+      });
     }
-
-    // Periapsis altitude
-    const sinHalf = Math.sin((deflectionNeededDeg * Math.PI) / 360);
-    let rp = rpMin;
-    if (sinHalf > 1e-6 && vMinMag > 1e-3) {
-      rp = Math.max(rpMin, (mu / (vMinMag * vMinMag)) * (1 / sinHalf - 1));
-    }
-    const periapsisAltKm = (rp - R) / 1000;
-
-    // Generate 3-instance debug data for this sub-system [prevInst, currInst, nextInst]
-    let sub3DebugData: FlybyDebugPlotData | null = null;
-    if (pc1 && pc2) {
-      const sub3Seq: SequencePorkchopData = {
-        id: `seq-pc-${prevInst.id}-${currInst.id}-${nextInst.id}`,
-        sequenceLabel: `${prevInst.bodyName} ➔ ${currInst.bodyName} ➔ ${nextInst.bodyName}`,
-        isFullPath: false,
-        instanceCount: 3,
-        instanceIds: [prevInst.id, currInst.id, nextInst.id],
-        bodyNames: [prevInst.bodyName, currInst.bodyName, nextInst.bodyName],
-        pathInsts: [prevInst, currInst, nextInst],
-        sourceInstanceId: prevInst.id,
-        flybyInstanceId: currInst.id,
-        targetInstanceId: nextInst.id,
-        sourceBody: prevInst.bodyName,
-        flybyBody: currInst.bodyName,
-        targetBody: nextInst.bodyName,
-        depDates: pc1.depDates,
-        arrDates: pc2.arrDates,
-        flightTimeMatrix: [],
-        physicalValidMatrix: [],
-        constraintValidMatrix: [],
-        totalPoweredDvMatrix: [],
-        c3DepAMatrix: [],
-        c3ArrBMatrix: [],
-        c3DepBMatrix: [],
-        c3ArrCMatrix: [],
-        c3ArrFinalMatrix: [],
-        poweredDvBMatrix: [],
-        flybyDateMatrix: [],
-      };
-
-      const clickI_sub = findClosestIndex(pc1.depDates, tPrev);
-      const clickJ_sub = findClosestIndex(pc2.arrDates, tNext);
-
-      sub3DebugData = extractFlybyDebugData(
-        sub3Seq,
-        porkchops,
-        links,
-        clickI_sub,
-        clickJ_sub,
-        bodies,
-        mainBody
-      );
-    }
-
-    rows.push({
-      flybyIndex: k,
-      instanceIndex: k,
-      instanceId: currInst.id,
-      instanceName: currInst.label || currInst.bodyName,
-      bodyName: currInst.bodyName,
-      flybyDate: tCurr,
-      prevBodyName: prevInst.bodyName,
-      nextBodyName: nextInst.bodyName,
-      prevFlybyOrDepDate: tPrev,
-      nextFlybyOrArrDate: tNext,
-      c3Arr,
-      c3Dep,
-      deflectionNeededDeg,
-      deflectionMaxDeg,
-      dvMps,
-      isUnpowered: dvMps < 1.0,
-      periapsisAltKm,
-      minSafeAltKm: minAlt / 1000,
-      sub3DebugData,
-    });
-  }
   }
 
   const algorithmInfo = extractHigherOrderAlgorithmInfo(
@@ -580,7 +580,7 @@ export function extractMultiInstanceDebugData(
 export function evaluateMultiInstanceForDates(
   pathInsts: InstanceNode[],
   customDates: number[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = []
@@ -592,12 +592,12 @@ export function evaluateMultiInstanceForDates(
   totalFlightTime: number;
 } {
   const N = pathInsts.length;
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   const tDep = customDates[0];
   const tArr = customDates[N - 1];
-  const muCentral = getGravitationalParameter(mainBody);
+  const muCentral = mainBody.stdGravParam;
 
   const rows: MultiInstanceFlybyRow[] = [];
 
@@ -606,18 +606,13 @@ export function evaluateMultiInstanceForDates(
     const currInst = pathInsts[k];
     const nextInst = pathInsts[k + 1];
 
-    const prevBody = bodyMap.get(prevInst.bodyName) || mainBody;
-    const currBody = bodyMap.get(currInst.bodyName) || mainBody;
-    const nextBody = bodyMap.get(nextInst.bodyName) || mainBody;
+    const prevBody = bodyMap.get(prevInst.bodyName)!;
+    const currBody = bodyMap.get(currInst.bodyName)!;
+    const nextBody = bodyMap.get(nextInst.bodyName)!;
 
     const tPrev = customDates[k - 1];
     const tCurr = customDates[k];
     const tNext = customDates[k + 1];
-
-    const mu = currBody ? getGravitationalParameter(currBody) : 0;
-    const R = currBody?.radius || 100000;
-    const minAlt = currBody ? getMinFlybyAlt(currBody, currInst.minFlybyAltitude) : 10000;
-    const rpMin = R + minAlt;
 
     // Direct link lookups
     const link1 = links.find(l => l.sourceInstanceId === prevInst.id && l.targetInstanceId === currInst.id);
@@ -744,15 +739,15 @@ export function evaluateMultiInstanceForDates(
       dvMps: Number.isFinite(flybyEval.poweredDv) ? flybyEval.poweredDv : Infinity,
       isUnpowered: flybyEval.isUnpowered || flybyEval.poweredDv < 1.0,
       periapsisAltKm: flybyEval.periapsisAlt / 1000,
-      minSafeAltKm: minAlt / 1000,
+      minSafeAltKm: getMinFlybyAlt(currBody, currInst.minFlybyAltitude) / 1000,
       sub3DebugData,
     });
   }
 
   // Calculate departure C3 from source body
   let c3DepSource = 0;
-  const srcBody = bodyMap.get(pathInsts[0].bodyName) || mainBody;
-  const fb1Body = bodyMap.get(pathInsts[1].bodyName) || mainBody;
+  const srcBody = bodyMap.get(pathInsts[0].bodyName)!;
+  const fb1Body = bodyMap.get(pathInsts[1].bodyName)!;
   const dt0 = customDates[1] - customDates[0];
   if (dt0 > 0) {
     const st0 = getBodyStateAtUT(srcBody, mainBody, customDates[0]);
@@ -766,8 +761,8 @@ export function evaluateMultiInstanceForDates(
 
   // Calculate arrival C3 at target body
   let c3ArrTarget = 0;
-  const fbN2Body = bodyMap.get(pathInsts[N - 2].bodyName) || mainBody;
-  const tgtBody = bodyMap.get(pathInsts[N - 1].bodyName) || mainBody;
+  const fbN2Body = bodyMap.get(pathInsts[N - 2].bodyName)!;
+  const tgtBody = bodyMap.get(pathInsts[N - 1].bodyName)!;
   const dtLast = customDates[N - 1] - customDates[N - 2];
   if (dtLast > 0) {
     const stN2 = getBodyStateAtUT(fbN2Body, mainBody, customDates[N - 2]);
@@ -798,7 +793,7 @@ export function optimizeFlybyDateDichotomic(
   pathInsts: InstanceNode[],
   currentDates: number[],
   flybyIndex: number, // 1 to N-2
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = []
@@ -918,7 +913,7 @@ export function optimizeFlybyDateDichotomic(
 export function optimizeAllFlybyDates(
   pathInsts: InstanceNode[],
   currentDates: number[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = []

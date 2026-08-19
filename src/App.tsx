@@ -13,9 +13,10 @@ import {
   PorkchopPlotData,
   SequencePorkchopData,
   SubtaskProgressInfo,
-  FlyableSequenceResult
+  FlyableSequenceResult,
+  OrbitalBody
 } from './types';
-import { PRESET_SOLAR_SYSTEMS } from './data/solarSystems';
+import { getCelestialBodyByName, PRESET_SOLAR_SYSTEMS } from './data/solarSystems';
 import { HeaderSelector } from './components/HeaderSelector';
 import { CanvasGraph } from './components/CanvasGraph';
 import { InstanceModal } from './components/InstanceModal';
@@ -118,7 +119,7 @@ export default function App() {
     await new Promise(resolve => setTimeout(resolve, 0));
 
     try {
-      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
       const pcData = await computePorkchopPlot(
         link,
         srcInstance,
@@ -164,29 +165,22 @@ export default function App() {
         bodyNames: pathInsts.map(i => i.bodyName),
         pathInsts,
         pathInstances: pathInsts,
-        is4Body: pathInsts.length >= 4,
         isFullPath: !!isFullPath,
+        sourceInstanceId: pathInsts[0].id,
+        targetInstanceId: pathInsts[pathInsts.length - 1].id,
         sourceBody: srcBody,
         targetBody: tgtBody,
         depDates: [],
         arrDates: [],
-        c3DepAMatrix: [],
-        c3ArrBMatrix: [],
-        c3DepBMatrix: [],
-        c3ArrCMatrix: [],
-        c3DepCMatrix: [],
-        c3ArrDMatrix: [],
-        c3ArrFinalMatrix: [],
-        poweredDvBMatrix: [],
-        poweredDvCMatrix: [],
+        c3DepMatrix: [],
+        c3ArrMatrix: [],
         totalPoweredDvMatrix: [],
-        flybyDateMatrix: [],
-        flyby2DateMatrix: [],
+        flybys: [],
         flightTimeMatrix: [],
         physicalValidMatrix: [],
         constraintValidMatrix: [],
-        flybyPoweredDvs: [],
-        flybyDates: [],
+        computedSamples: 0,
+        totalSamples: 0,
       };
       setSequencePorkchops(prev => ({
         ...prev,
@@ -195,7 +189,7 @@ export default function App() {
     }
 
     try {
-      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
       const seqPcData = await computeSequencePorkchopPlot({
         pathInsts,
         bodies: currentSystem.bodies,
@@ -263,7 +257,7 @@ export default function App() {
   // Auto-propagate date bounds & candidate sample counts whenever instances/links change outside active search
   useEffect(() => {
     if (isSearching || instances.length === 0 || links.length === 0) return;
-    const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+    const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
 
     let updatedInsts = propagateDateBounds(instances, links);
     let updatedLnks = generateLinkEndDates(updatedInsts, links, currentSystem.bodies, mainBody);
@@ -538,7 +532,7 @@ export default function App() {
     setSearchStatusText('Initializing trajectory search...');
 
     try {
-      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
       const res = await runSequenceSearch(
         instances,
         links,
@@ -579,7 +573,7 @@ export default function App() {
     setSearchStatusText('Initializing alternative trajectory search (direct optimizer)...');
 
     try {
-      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
       const res = await runSequenceSearchAlt(
         instances,
         links,
@@ -629,7 +623,7 @@ export default function App() {
     setSearchStatusText('Preparing full-path sequence porkchops...');
 
     try {
-      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
       const activeSequencePorkchops: Record<string, SequencePorkchopData> = { ...sequencePorkchops };
       const activePorkchops: Record<string, PorkchopPlotData> = { ...porkchops };
 
@@ -727,11 +721,11 @@ export default function App() {
   };
 
   const activeInstance = instances.find(i => i.id === selectedInstanceId);
-  const activeInstanceBody = activeInstance ? currentSystem.bodies.find(b => b.name === activeInstance.bodyName) : undefined;
+  const activeInstanceBody : OrbitalBody | undefined = activeInstance ? currentSystem.bodies.find(b => b.name === activeInstance.bodyName) : undefined;
 
   const activeLink = links.find(l => l.id === selectedLinkId);
-  const activeLinkSource = activeLink ? instances.find(i => i.id === activeLink.sourceInstanceId) : undefined;
-  const activeLinkTarget = activeLink ? instances.find(i => i.id === activeLink.targetInstanceId) : undefined;
+  const activeLinkSource : InstanceNode | undefined = activeLink ? instances.find(i => i.id === activeLink.sourceInstanceId) : undefined;
+  const activeLinkTarget : InstanceNode | undefined = activeLink ? instances.find(i => i.id === activeLink.targetInstanceId) : undefined;
 
   const activePorkchop = porkchopModalLinkId ? porkchops[porkchopModalLinkId] : undefined;
 
@@ -752,7 +746,7 @@ export default function App() {
         currentSystem={currentSystem}
         onSelectSystem={(sys) => {
           setCurrentSystem(sys);
-          const defaultMain = sys.bodies.find(b => !b.referenceBody || b.name === 'Sun') || sys.bodies[0];
+          const defaultMain : CelestialBody = getCelestialBodyByName(sys, 'Sun');
           setMainBodyName(defaultMain.name);
         }}
         mainBodyName={mainBodyName}
@@ -802,7 +796,7 @@ export default function App() {
             instances={instances}
             links={links}
             bodies={currentSystem.bodies}
-            mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
+            mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
             results={results}
           />
         </section>
@@ -821,7 +815,7 @@ export default function App() {
             isSearching={isSearching}
             searchStatusText={searchStatusText}
             bodies={currentSystem.bodies}
-            mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
+            mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
             porkchops={porkchops}
             onPorkchopUpdate={(newPorkchops) => setPorkchops(prev => ({ ...prev, ...newPorkchops }))}
             sequencePorkchops={sequencePorkchops}
@@ -888,7 +882,7 @@ export default function App() {
           links={links}
           instances={instances}
           bodies={currentSystem.bodies}
-          mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
+          mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
           onRecomputePorkchop={() => {
             const seqData = sequencePorkchops[selectedSeqPorkchopId];
             if (!seqData) return;
@@ -916,7 +910,7 @@ export default function App() {
           instances={instances}
           links={links}
           bodies={currentSystem.bodies}
-          mainBody={currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0]}
+          mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
           timeFormatMode={timeFormatMode}
           onUpdateInstance={handleUpdateInstance}
           onClose={() => setC3DebugInstanceId(null)}

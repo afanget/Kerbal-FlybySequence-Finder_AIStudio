@@ -4,10 +4,9 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { FlyableSequenceResult, CelestialBody } from '../types';
+import { FlyableSequenceResult, CelestialBody, OrbitalBody } from '../types';
 import {
   getBodyStateAtUT,
-  getGravitationalParameter,
   stateToOrbitalElements,
   getPositionFromOrbitalElements,
   solveKeplerEquation,
@@ -21,10 +20,11 @@ import {
 import { solveLambert } from '../physics/lambert';
 import { formatUT, formatShortUT, formatDuration, daysToSeconds } from '../utils/timeFormat';
 import { Play, Pause, RotateCcw, ZoomIn, ZoomOut, Maximize2, Sparkles, Navigation, Bug, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
+import { getMinFlybyRadius } from '../data/solarSystems';
 
 interface SolarSystemTrajectoryViewProps {
   sequence: FlyableSequenceResult;
-  bodies: CelestialBody[];
+  bodies: OrbitalBody[];
   mainBody: CelestialBody;
   timeFormatMode: 'ksp' | 'earth';
 }
@@ -113,7 +113,7 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
   const [currentUt, setCurrentUt] = useState<number>(sequence.depDate);
   const animRef = useRef<number | null>(null);
 
-  const muCentral = getGravitationalParameter(mainBody);
+  const muCentral = mainBody.stdGravParam;
 
   // Collect all unique bodies involved in sequence + major planets orbiting mainBody
   const sequenceBodyNames = sequence.bodyNames;
@@ -141,7 +141,7 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
       const dt = tr.arrDate - tr.depDate;
       if (dt <= 0) return;
 
-      const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
+      const minAllowedRadius = getMinFlybyRadius(mainBody, undefined);
       const lambertSol = solveLambert(sourceStateAtDep.pos, targetStateAtArr.pos, dt, muCentral, true, minAllowedRadius);
 
       // Departure velocity vector in central frame (use stored solver vector if available)

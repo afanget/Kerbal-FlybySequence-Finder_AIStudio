@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { InstanceNode, DirectionalLink, CelestialBody, PorkchopPlotData } from '../types';
+import { InstanceNode, DirectionalLink, OrbitalBody, PorkchopPlotData } from '../types';
 import { isInstanceSource, isInstanceTarget } from '../physics/solver';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import { Plus, Trash2, ArrowRight, Settings2, Info, Eye, Sliders } from 'lucide-react';
@@ -12,7 +12,7 @@ import { Plus, Trash2, ArrowRight, Settings2, Info, Eye, Sliders } from 'lucide-
 interface CanvasGraphProps {
   instances: InstanceNode[];
   links: DirectionalLink[];
-  availableBodies: CelestialBody[];
+  availableBodies: OrbitalBody[];
   timeFormatMode: 'ksp' | 'earth';
   selectedLinkId: string | null;
   onSelectLink: (linkId: string | null) => void;

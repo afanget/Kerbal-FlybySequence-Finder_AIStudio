@@ -4,7 +4,7 @@
  */
 
 import React, { useRef } from 'react';
-import { CelestialBody, CanvasGraphConfig, SolarSystem } from '../types';
+import { CelestialBody, OrbitalBody, CanvasGraphConfig, SolarSystem } from '../types';
 import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { Globe, Upload, Download, Sparkles, Clock, FileJson, RefreshCw, ShieldCheck } from 'lucide-react';
 
@@ -55,7 +55,8 @@ export const HeaderSelector: React.FC<HeaderSelectorProps> = ({
             id: `custom-${Date.now()}`,
             name: file.name.replace('.json', ''),
             description: 'User uploaded custom solar system',
-            bodies: parsed as CelestialBody[],
+            mainBody: undefined, // TODO
+            bodies: parsed as OrbitalBody[],
           };
           onSelectSystem(customSys);
         } else if (parsed.bodies && Array.isArray(parsed.bodies)) {

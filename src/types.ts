@@ -4,35 +4,38 @@
  */
 
 export interface CelestialBody {
-  flightGlobalsIndex?: number;
   name: string;
   radius: number; // meters
-  maxTerrainHeight?: number; // meters
-  atmosphereHeight?: number; // meters
-  geeASL?: number;
-  mass?: number; // kg
-  stdGravParam?: number; // m^3 / s^2
+  maxTerrainHeight: number; // meters
+  atmosphereHeight: number; // meters
+  stdGravParam: number; // m^3 / s^2
   rotationPeriod?: number; // seconds
   initialRotation?: number; // deg
   tidallyLocked?: string | boolean;
-  semiMajorAxis?: number; // meters
-  eccentricity?: number;
-  inclination?: number; // degrees
-  argOfPeriapsis?: number; // degrees
-  ascNodeLongitude?: number; // degrees
-  meanAnomalyEpoch?: number; // radians
-  epoch?: number; // seconds
   color?: string; // CSS color or rgba
-  referenceBody?: string; // name of parent body
   templateName?: string;
+}
+
+// Interface pour les propriétés orbitales
+export interface OrbitalBody extends CelestialBody {
+  semiMajorAxis: number; // meters
+  eccentricity: number;
+  inclination: number; // degrees
+  argOfPeriapsis: number; // degrees
+  ascNodeLongitude: number; // degrees
+  meanAnomalyEpoch: number; // radians
+  epoch: number; // seconds
+  referenceBody: string; // name of parent body
   soi?: number; // Sphere of Influence radius in meters
 }
+
 
 export interface SolarSystem {
   id: string;
   name: string;
   description: string;
-  bodies: CelestialBody[];
+  mainBody: CelestialBody;
+  bodies: OrbitalBody[];
 }
 
 export interface InstanceNode {
@@ -45,7 +48,7 @@ export interface InstanceNode {
   // User input constraints
   minDate?: number; // UT in seconds (undefined = unconstrained)
   maxDate?: number; // UT in seconds (undefined = unconstrained)
-  minFlybyAltitude?: number; // meters above surface (default = atmosphereHeight || 10000)
+  minFlybyAltitude?: number; // meters above MSL
   maxC3?: number; // m^2 / s^2 (undefined = no limit)
   dateSampleCount?: number; // Override date sampling count N for this instance
   isSourceOverride?: boolean; // Explicitly mark instance as a valid sequence source/start
@@ -139,50 +142,34 @@ export interface PorkchopPlotData {
 export interface SequencePorkchopData {
   id: string;
   sequenceLabel: string;
-  isFullPath?: boolean;
-  instanceCount?: number;
-  instanceIds?: string[];
-  bodyNames?: string[];
-  pathInsts?: InstanceNode[];
-  pathInstances?: InstanceNode[];
-  is4Body?: boolean;
-  sourceInstanceId?: string;
-  flybyInstanceId?: string;
-  flyby2InstanceId?: string;
-  targetInstanceId?: string;
+  isFullPath: boolean;
+  instanceCount: number;
+  instanceIds: string[];
+  bodyNames: string[];
+  pathInsts: InstanceNode[];
+  pathInstances: InstanceNode[];
+  sourceInstanceId: string;
+  targetInstanceId: string;
   sourceBody: string;
-  flybyBody?: string;
-  flyby2Body?: string;
   targetBody: string;
   depDates: number[];
   arrDates: number[];
-  c3DepAMatrix: number[][];
-  c3ArrBMatrix: number[][];
-  c3DepBMatrix: number[][];
-  c3ArrCMatrix: number[][];
-  c3DepCMatrix?: number[][];
-  c3ArrDMatrix?: number[][];
-  c3ArrFinalMatrix?: number[][];
-  flybyPoweredDvs?: {
-    flybyBody: string;
+  c3DepMatrix: number[][];
+  c3ArrMatrix: number[][];
+  flybys: {
+    flybyBodyName: string;
     instanceId: string;
     poweredDvMatrix: number[][];
-  }[];
-  flybyDates?: {
-    flybyBody: string;
-    instanceId: string;
+    c3ArrMatrix: number[][];
+    c3DepMatrix: number[][];
     dateMatrix: number[][];
   }[];
-  poweredDvBMatrix: number[][];
-  poweredDvCMatrix?: number[][];
-  totalPoweredDvMatrix?: number[][];
-  flybyDateMatrix: number[][];
-  flyby2DateMatrix?: number[][];
+  totalPoweredDvMatrix: number[][];
   flightTimeMatrix: number[][];
-  physicalValidMatrix?: boolean[][]; // Strictly physically possible (dt >= 3600s*(N-1), chronological, no collisions)
-  constraintValidMatrix?: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
-  computedSamples?: number;
-  totalSamples?: number;
+  physicalValidMatrix: boolean[][]; // Strictly physically possible (dt >= 3600s*(N-1), chronological, no collisions)
+  constraintValidMatrix: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
+  computedSamples: number;
+  totalSamples: number;
   activeSubtask?: SubtaskProgressInfo | null;
   profiling?: SequenceProfilingStats;
 }

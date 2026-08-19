@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { CelestialBody, InstanceNode, DirectionalLink, FlyableSequenceResult } from '../types';
+import { CelestialBody, OrbitalBody, InstanceNode, DirectionalLink, FlyableSequenceResult } from '../types';
 import { ChevronDown, ChevronUp, Layers, Info, Eye, EyeOff, Sparkles, Activity, ZoomIn, ZoomOut, RotateCcw, Move, Search, X, Copy, Check } from 'lucide-react';
 
 interface TisserandPlotProps {
   instances: InstanceNode[];
   links?: DirectionalLink[];
-  bodies: CelestialBody[];
+  bodies: OrbitalBody[];
   mainBody: CelestialBody;
   results?: FlyableSequenceResult[];
 }
@@ -34,7 +34,7 @@ interface VInfCurveData {
 }
 
 interface BodyTisserandData {
-  body: CelestialBody;
+  body: OrbitalBody;
   a_p: number; // semi-major axis (m)
   v_p: number; // orbital speed around main body (m/s)
   r_p_min: number; // min flyby radius (m)
@@ -137,7 +137,7 @@ export function formatKms(vKms: number): string {
  * Calculates periapsis rp and energy E for a given body, vInf, and pump angle theta.
  */
 function getRpEFromTheta(
-  body: CelestialBody,
+  body: OrbitalBody,
   vInfMs: number,
   thetaRad: number,
   mu_main: number
@@ -180,9 +180,9 @@ function getRpEFromTheta(
  * Returns { thetaA, thetaB } if they intersect within physical bounds, or null if they don't.
  */
 function getIntersectionTheta(
-  bodyA: CelestialBody,
+  bodyA: OrbitalBody,
   vInfA: number,
-  bodyB: CelestialBody,
+  bodyB: OrbitalBody,
   vInfB: number,
   mu_main: number
 ): { thetaA: number; thetaB: number } | null {
@@ -429,14 +429,14 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
 
   // Map each flyby body name to pairs of connected bodies (body1, body2) based on graph links
   const flybyConnectedPairsMap = useMemo(() => {
-    const map: Record<string, { body1: CelestialBody; body2: CelestialBody }[]> = {};
+    const map: Record<string, { body1: OrbitalBody; body2: OrbitalBody }[]> = {};
 
     if (!links || links.length === 0) return map;
 
     const instMap = new Map<string, InstanceNode>();
     instances.forEach(i => instMap.set(i.id, i));
 
-    const bodyMap = new Map<string, CelestialBody>();
+    const bodyMap = new Map<string, OrbitalBody>();
     bodies.forEach(b => bodyMap.set(b.name, b));
 
     instances.forEach(inst => {
@@ -478,13 +478,13 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
 
   // Map each body name to its connected neighbor bodies from graph links
   const neighborBodiesMap = useMemo(() => {
-    const map: Record<string, CelestialBody[]> = {};
+    const map: Record<string, OrbitalBody[]> = {};
     if (!links || links.length === 0) return map;
 
     const instMap = new Map<string, InstanceNode>();
     instances.forEach(i => instMap.set(i.id, i));
 
-    const bodyMap = new Map<string, CelestialBody>();
+    const bodyMap = new Map<string, OrbitalBody>();
     bodies.forEach(b => bodyMap.set(b.name, b));
 
     links.forEach(l => {
@@ -525,11 +525,11 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
     const instMap = new Map<string, InstanceNode>();
     instances.forEach(i => instMap.set(i.id, i));
 
-    const bodyMap = new Map<string, CelestialBody>();
+    const bodyMap = new Map<string, OrbitalBody>();
     bodies.forEach(b => bodyMap.set(b.name, b));
 
     const bodyPrepMap: Record<string, {
-      body: CelestialBody;
+      body: OrbitalBody;
       a_p: number;
       v_p: number;
       r_p_min: number;

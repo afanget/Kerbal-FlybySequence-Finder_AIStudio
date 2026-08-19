@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { InstanceNode, DirectionalLink, CelestialBody } from '../types';
+import { InstanceNode, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
 import { computeTisserandEnvelopes } from '../physics/solver';
+import { getMinFlybyRadius } from '../data/solarSystems';
 
 export interface VInfSampleEvaluation {
   vInfMs: number;
@@ -62,9 +63,9 @@ export interface C3DebugCalculationDetails {
  * Calculates pump angle intersection theta for two bodies in Tisserand (r_p, E) space
  */
 function getTisserandIntersectionTheta(
-  bodyA: CelestialBody,
+  bodyA: OrbitalBody,
   vInfA: number,
-  bodyB: CelestialBody,
+  bodyB: OrbitalBody,
   vInfB: number,
   mu_main: number
 ): { thetaA: number; thetaB: number } | null {
@@ -121,11 +122,11 @@ export function evaluateSingleVInfForInstance(
   vInfMs: number,
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   envelopes: Record<string, { minMs: number; maxMs: number }>
 ): VInfSampleEvaluation {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   const instMap = new Map<string, InstanceNode>();
@@ -156,9 +157,7 @@ export function evaluateSingleVInfForInstance(
   }
 
   const mu_b = body.stdGravParam;
-  const R_b = body.radius;
-  let minAlt = inst.minFlybyAltitude !== undefined ? inst.minFlybyAltitude : (body.atmosphereHeight || 10000);
-  const r_p_min = R_b + minAlt;
+  const r_p_min = getMinFlybyRadius(body, inst.minFlybyAltitude);
 
   // Maximum gravitational turning angle at this excess velocity
   const sinHalfDeltaMax = Math.min(1, Math.max(0, 1 / (1 + (r_p_min * vInfMs * vInfMs) / mu_b)));
@@ -369,14 +368,13 @@ export function computeC3DebugDetails(
   instanceId: string,
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody
 ): C3DebugCalculationDetails | null {
   const inst = instances.find(i => i.id === instanceId);
   if (!inst) return null;
 
-  const body = bodies.find(b => b.name === inst.bodyName);
-  if (!body) return null;
+  const body = bodies.find(b => b.name === inst.bodyName)!;
 
   const envelopes = computeTisserandEnvelopes(instances, links, bodies, mainBody);
   const activeEnv = envelopes[inst.id] || { minMs: 0, maxMs: 10000 };

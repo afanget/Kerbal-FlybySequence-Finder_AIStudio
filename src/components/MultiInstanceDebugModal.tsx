@@ -22,6 +22,7 @@ import {
   PorkchopPlotData,
   DirectionalLink,
   CelestialBody,
+  OrbitalBody,
 } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import {
@@ -54,7 +55,7 @@ interface MultiInstanceDebugModalProps {
   seqPorkchop: SequencePorkchopData;
   porkchops?: Record<string, PorkchopPlotData>;
   links?: DirectionalLink[];
-  bodies?: CelestialBody[];
+  bodies?: OrbitalBody[];
   mainBody?: CelestialBody;
   sequencePorkchops?: Record<string, SequencePorkchopData>;
   timeFormatMode: 'ksp' | 'earth';

@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { CelestialBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode, SequenceProfilingStats, SequenceBlockTiming, SequencePorkchopData, SequenceTransferData } from '../types';
-import { Vector3D, vecSub, vecMag, vecDot, getGravitationalParameter, getBodyStateAtUT } from './kepler';
+import { getMinFlybyAlt, getMinFlybyRadius } from '../data/solarSystems';
+import { CelestialBody, OrbitalBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode, SequenceProfilingStats, SequenceBlockTiming, SequencePorkchopData, SequenceTransferData } from '../types';
+import { Vector3D, vecSub, vecMag, vecDot, getBodyStateAtUT } from './kepler';
 import { solveLambert } from './lambert';
 
 export interface FlybyFeasibility {
@@ -48,10 +49,9 @@ export function evaluateFlybyAtDate(
   stochasticAltError?: number,
   stochasticVelError?: number
 ): FlybyEvaluationResult {
-  const mu = getGravitationalParameter(body);
-  const R = body.radius || 100000;
+  const mu = body.stdGravParam;
   const minAlt = getMinFlybyAlt(body, minFlybyAltOverride);
-  const rpMin = R + minAlt;
+  const rpMin = body.radius + minAlt;
 
   const vInMag = vecMag(vInfIn);
   const vOutMag = vecMag(vInfOut);
@@ -65,7 +65,7 @@ export function evaluateFlybyAtDate(
       deflectionAngleDeg: 0,
       maxDeflectionAngleDeg: 0,
       periapsisAlt: 0,
-      flybyMargin: -minAlt,
+      flybyMargin: 0,
       poweredDv: 0,
       stochasticDv: 0,
     };
@@ -101,7 +101,7 @@ export function evaluateFlybyAtDate(
   }
 
   rp = Math.max(rpMin, rp);
-  const periapsisAlt = rp - R;
+  const periapsisAlt = rp - body.radius;
   const flybyMargin = periapsisAlt - minAlt;
 
   // Periapsis velocities on inbound and outbound hyperbolas
@@ -158,15 +158,6 @@ export function evaluateFlybyAtDate(
 export const DEFAULT_STOCHASTIC_ALT_ERROR = 10000; // 10 km in meters
 export const DEFAULT_STOCHASTIC_VEL_ERROR = 1.0;   // 1 m/s
 
-/**
- * Helper to compute minimum safe flyby altitude above body surface (m).
- */
-export function getMinFlybyAlt(body: CelestialBody, minFlybyAlt?: number): number {
-  if (minFlybyAlt !== undefined) return minFlybyAlt;
-  const atm = body.atmosphereHeight || 0;
-  return atm > 0 ? atm + 10000 : 10000;
-}
-
 export interface StochasticDvResult {
   stochasticDv: number;
   eNom: number;
@@ -205,16 +196,13 @@ export function calculateStochasticDvCore(
     };
   }
 
-  const mu = getGravitationalParameter(body);
-  const R = body.radius || 100000;
-  const minAlt = getMinFlybyAlt(body);
-  const rpMin = R + minAlt;
-  const rpNom = Math.max(rpMin, R + periapsisAlt);
+  const mu = body.stdGravParam;
+  const rpNom = body.radius + periapsisAlt;
 
   const eNom = 1 + (rpNom * vInfInMag * vInfInMag) / Math.max(1, mu);
   const deflectionRadNom = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / eNom)));
 
-  const rpPert = Math.max(R + 1000, rpNom - altErr);
+  const rpPert = rpNom - altErr;
   const vInfInPert = Math.max(0.1, vInfInMag - velErr);
 
   const ePert = 1 + (rpPert * vInfInPert * vInfInPert) / Math.max(1, mu);
@@ -249,7 +237,7 @@ export function calculateStochasticDvCore(
  */
 export function computeStochasticDvForFlyby(
   f: FlybyDetail,
-  body: CelestialBody | undefined,
+  body: CelestialBody,
   stochasticAltError?: number,
   stochasticVelError?: number
 ): number {
@@ -282,14 +270,14 @@ export interface StochasticDvDebugInfo {
 
 export function debugStochasticDvCalculation(
   f: FlybyDetail,
-  body: CelestialBody | undefined,
+  body: CelestialBody,
   stochasticAltError?: number,
   stochasticVelError?: number
 ): StochasticDvDebugInfo {
   const altErr = stochasticAltError ?? DEFAULT_STOCHASTIC_ALT_ERROR;
   const velErr = stochasticVelError ?? DEFAULT_STOCHASTIC_VEL_ERROR;
-  const mu = body ? getGravitationalParameter(body) : 0;
-  const R = body?.radius || 100000;
+  const mu = body.stdGravParam;
+  const R = body.radius;
 
   const core = calculateStochasticDvCore(
     body,
@@ -335,8 +323,8 @@ export function matchUnpoweredFlyby(
   stochasticVelError?: number
 ): FlybyFeasibility {
   // 1. Calculate central body gravitational parameter, radius, and initial v_infinity magnitudes.
-  const mu = getGravitationalParameter(body);
-  const R = body.radius || 100000;
+  const mu = body.stdGravParam;
+  const R = body.radius;
   const minAlt = getMinFlybyAlt(body, minFlybyAlt);
   const rpMin = R + minAlt;
 
@@ -565,7 +553,7 @@ export interface SequentialFlybyDebugInfo {
  */
 export function recomputeFlybyDetailsSequentially(
   seq: FlyableSequenceResult,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   stochasticAltError: number,
   stochasticVelError: number,
@@ -909,7 +897,7 @@ export function generateDirectPorkchopFlybySamples(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -958,7 +946,7 @@ export function generateDirectPorkchopFlybySamples(
   const P1 = legPorkchops[1];
   const flybyInst = pathInsts[1];
   const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyBody.radius + (flybyInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = getMinFlybyRadius(flybyBody, flybyInst.minFlybyAltitude);
 
   const samples: DirectPorkchopFlybySample[] = [];
 
@@ -1050,7 +1038,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -1092,9 +1080,9 @@ export function evaluateSequenceTransferFromDirectPorkchops(
   }
 
   const flybyInst = pathInsts[1];
-  const flybyBody = bodies.find(b => b.name === flybyInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyBody.radius + (flybyInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
-  const muFlyby = getGravitationalParameter(flybyBody);
+  const flybyBody : CelestialBody = bodies.find(b => b.name === flybyInst.bodyName)!;
+  const minFlybyRadius = getMinFlybyRadius(flybyBody, flybyInst.minFlybyAltitude);
+  const muFlyby = flybyBody.stdGravParam;
 
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
   const t6 = profiler ? performance.now() : 0;
@@ -1323,7 +1311,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -1380,7 +1368,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   if (j_last < 0) j_last = 0;
 
   const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
 
   if (profiler) {
     profiler.matrixLookupMs += (performance.now() - t0);
@@ -1452,7 +1440,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
         const prevBody = bodyMap.get(prevInst.bodyName) || mainBody;
         const stPrev = getBodyStateAtUT(prevBody, mainBody, prevFbDate);
         const stFlyby = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
-        const muCentral = getGravitationalParameter(mainBody);
+        const muCentral = mainBody.stdGravParam;
         const lambRes = solveLambert(stPrev.pos, stFlyby.pos, dtPrev, muCentral, true);
         if (lambRes && lambRes.isValid && lambRes.v2 && vecMag(lambRes.v2) > 1e-3) {
           vTransArr = lambRes.v2;
@@ -1532,7 +1520,7 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -1575,9 +1563,9 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
   }
 
   const fbInst = pathInsts[N - 2];
-  const flybyBody = bodies.find(b => b.name === fbInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
-  const muFlyby = getGravitationalParameter(flybyBody);
+  const flybyBody = bodies.find(b => b.name === fbInst.bodyName)!;
+  const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
+  const muFlyby = flybyBody.stdGravParam;
 
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
   const t6 = profiler ? performance.now() : 0;
@@ -1814,7 +1802,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -1871,7 +1859,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   if (j_suffix < 0) j_suffix = 0;
 
   const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
 
   if (profiler) {
     profiler.matrixLookupMs += (performance.now() - t0);
@@ -1945,7 +1933,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
         const nextBody = bodyMap.get(nextInst.bodyName) || mainBody;
         const stFlyby = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
         const stNext = getBodyStateAtUT(nextBody, mainBody, nextFbDate);
-        const muCentral = getGravitationalParameter(mainBody);
+        const muCentral = mainBody.stdGravParam;
         const lambRes = solveLambert(stFlyby.pos, stNext.pos, dtNext, muCentral, true);
         if (lambRes && lambRes.isValid && lambRes.v1 && vecMag(lambRes.v1) > 1e-3) {
           vTransDep = lambRes.v1;
@@ -2028,7 +2016,7 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
@@ -2071,9 +2059,9 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
   }
 
   const fbInst = pathInsts[1];
-  const flybyBody = bodies.find(b => b.name === fbInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
-  const muFlyby = getGravitationalParameter(flybyBody);
+  const flybyBody = bodies.find(b => b.name === fbInst.bodyName)!;
+  const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
+  const muFlyby = flybyBody.stdGravParam;
 
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
   const t6 = profiler ? performance.now() : 0;

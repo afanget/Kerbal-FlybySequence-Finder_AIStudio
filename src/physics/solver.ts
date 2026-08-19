@@ -5,6 +5,7 @@
 
 import {
   CelestialBody,
+  OrbitalBody,
   InstanceNode,
   DirectionalLink,
   PorkchopPlotData,
@@ -14,7 +15,7 @@ import {
   FlyableSequenceResult,
   FlybyDetail
 } from '../types';
-import { getBodyStateAtUT, getOrbitalPeriod, getGravitationalParameter, vecMag, vecDot, vecSub, Vector3D } from './kepler';
+import { getBodyStateAtUT, getOrbitalPeriod, vecMag, vecDot, vecSub, Vector3D } from './kepler';
 import { solveLambert, solveLambertBest, solveLambertAllRevolutions, LambertSolution } from './lambert';
 import {
   matchUnpoweredFlyby,
@@ -26,6 +27,7 @@ import {
   SequenceTransferResult,
   SequenceTransferProfiler,
 } from './flyby';
+import { getMinFlybyRadius } from '../data/solarSystems';
 
 export {
   evaluateSequenceTransferFromDirectPorkchops,
@@ -149,9 +151,9 @@ export function propagateDateBounds(
  * Calculates pump angle intersection theta for two bodies in Tisserand (r_p, E) space
  */
 function getTisserandIntersectionTheta(
-  bodyA: CelestialBody,
+  bodyA: OrbitalBody,
   vInfA: number,
-  bodyB: CelestialBody,
+  bodyB: OrbitalBody,
   vInfB: number,
   mu_main: number
 ): { thetaA: number; thetaB: number } | null {
@@ -214,7 +216,7 @@ function getTisserandIntersectionTheta(
 export function computeTisserandEnvelopes(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody
 ): Record<string, { minMs: number; maxMs: number }> {
 
@@ -222,7 +224,7 @@ export function computeTisserandEnvelopes(
   const instMap = new Map<string, InstanceNode>();
   instances.forEach(i => instMap.set(i.id, i));
 
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   // Default gravitational parameter for the main body (e.g., Sun)
@@ -550,7 +552,7 @@ export function computeTisserandEnvelopes(
 export function propagateC3Bounds(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody
 ): InstanceNode[] {
   const envs = computeTisserandEnvelopes(instances, links, bodies, mainBody);
@@ -603,18 +605,18 @@ export function propagateC3Bounds(
 export function generateLinkEndDates(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody
 ): DirectionalLink[] {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   return links.map(link => {
-    const src = instances.find(i => i.id === link.sourceInstanceId);
-    const tgt = instances.find(i => i.id === link.targetInstanceId);
+    const src = instances.find(i => i.id === link.sourceInstanceId)!;
+    const tgt = instances.find(i => i.id === link.targetInstanceId)!;
 
-    const srcBody = src ? bodyMap.get(src.bodyName) : undefined;
-    const tgtBody = tgt ? bodyMap.get(tgt.bodyName) : undefined;
+    const srcBody = bodyMap.get(src.bodyName)!;
+    const tgtBody = bodyMap.get(tgt.bodyName)!;
 
     let departureSampleCount: number;
     if (src?.dateSampleCount !== undefined) {
@@ -741,10 +743,10 @@ export function countPossibleTransfers(
 export function intersectInstanceDates(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies?: CelestialBody[],
+  bodies?: OrbitalBody[],
   mainBody?: CelestialBody
 ): InstanceNode[] {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   if (bodies) {
     bodies.forEach(b => bodyMap.set(b.name, b));
   }
@@ -868,17 +870,17 @@ export async function computePorkchopPlot(
   link: DirectionalLink,
   srcInstance: InstanceNode,
   tgtInstance: InstanceNode,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   onProgress?: ProgressCallback,
   onPartialUpdatePorkchop?: (pcData: PorkchopPlotData, validCount: number) => void,
   shouldStop?: () => boolean
 ): Promise<PorkchopPlotData> {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
-  const srcBody = bodyMap.get(srcInstance.bodyName) || mainBody;
-  const tgtBody = bodyMap.get(tgtInstance.bodyName) || mainBody;
+  const srcBody = bodyMap.get(srcInstance.bodyName)!;
+  const tgtBody = bodyMap.get(tgtInstance.bodyName)!;
 
   const { srcDates, tgtDates } = countPossibleTransfers(link, srcInstance, tgtInstance);
 
@@ -896,7 +898,7 @@ export async function computePorkchopPlot(
   const vTransArrMatrix: Vector3D[][] = Array.from({ length: nDep }, () => Array(nArr).fill({ x: 0, y: 0, z: 0 }));
 
   const muCentral = mainBody.stdGravParam || 1e12;
-  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
+  const minAllowedRadius = getMinFlybyRadius(mainBody, undefined);
 
   // Precompute body states once for all departure and arrival dates (400x speedup)
   const srcStates = srcDates.map(t => getBodyStateAtUT(srcBody, mainBody, t));
@@ -1059,7 +1061,7 @@ function evaluateSequenceTransferForDates(
   pathInsts: InstanceNode[],
   tDep: number,
   tArr: number,
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops?: Record<string, PorkchopPlotData>
 ): {
@@ -1076,24 +1078,24 @@ function evaluateSequenceTransferForDates(
   if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 3) return null;
   const N = pathInsts.length;
 
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   const srcInst = pathInsts[0];
   const tgtInst = pathInsts[N - 1];
   const flybyInsts = pathInsts.slice(1, N - 1);
 
-  const srcBody = bodyMap.get(srcInst.bodyName) || mainBody;
-  const tgtBody = bodyMap.get(tgtInst.bodyName) || mainBody;
-  const muCentral = mainBody.stdGravParam || 1e12;
-  const minAllowedRadius = 1.1 * (mainBody.radius + (mainBody.atmosphereHeight || 0));
+  const srcBody = bodyMap.get(srcInst.bodyName)!;
+  const tgtBody = bodyMap.get(tgtInst.bodyName)!;
+  const muCentral = mainBody.stdGravParam;
+  const minAllowedRadius = getMinFlybyRadius(mainBody, undefined);
 
   const stA = getBodyStateAtUT(srcBody, mainBody, tDep);
   const stTgt = getBodyStateAtUT(tgtBody, mainBody, tArr);
 
   if (N === 3) {
     const flybyInst = flybyInsts[0];
-    const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+    const flybyBody = bodyMap.get(flybyInst.bodyName)!;
 
     const candidateDates = new Set<number>();
     const FLYBY_SAMPLES = 20;
@@ -1236,8 +1238,8 @@ function evaluateSequenceTransferForDates(
       localMinIndices.push(minK);
     }
 
-    const muFlyby = getGravitationalParameter(flybyBody);
-    const minFlybyRadius = flybyBody.radius + (flybyInst.minFlybyAltitude ?? 1.1 * ((flybyBody.atmosphereHeight || 0)));
+    const muFlyby = flybyBody.stdGravParam;
+    const minFlybyRadius = getMinFlybyRadius(flybyBody, flybyInst.minFlybyAltitude);
     const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
 
     const evalExtrapolatedAtDate = (t: number) => {
@@ -1375,8 +1377,8 @@ function evaluateSequenceTransferForDates(
   if (N === 4) {
     const flyby1Inst = flybyInsts[0];
     const flyby2Inst = flybyInsts[1];
-    const flyby1Body = bodyMap.get(flyby1Inst.bodyName) || mainBody;
-    const flyby2Body = bodyMap.get(flyby2Inst.bodyName) || mainBody;
+    const flyby1Body = bodyMap.get(flyby1Inst.bodyName)!;
+    const flyby2Body = bodyMap.get(flyby2Inst.bodyName)!;
 
     const totalDt = tArr - tDep;
     const SAMPLES = 14;
@@ -1516,13 +1518,13 @@ function evaluateSequenceTransferForDates(
   for (let step = 0; step < flybyInsts.length; step++) {
     const currInst = pathInsts[step];
     const nextInst = pathInsts[step + 1];
-    const nextBody = bodyMap.get(nextInst.bodyName) || mainBody;
+    const nextBody = bodyMap.get(nextInst.bodyName)!;
 
     const newCandidates: { times: number[]; totalDv: number; flybyDvs: number[] }[] = [];
 
     for (const cand of candidates) {
       const tCurr = cand.times[cand.times.length - 1];
-      const stCurr = getBodyStateAtUT(bodyMap.get(currInst.bodyName) || mainBody, mainBody, tCurr);
+      const stCurr = getBodyStateAtUT(bodyMap.get(currInst.bodyName)!, mainBody, tCurr);
 
       const remSteps = N - 1 - (step + 1);
       const maxNextTime = tArr - remSteps * 86400;
@@ -1555,9 +1557,9 @@ function evaluateSequenceTransferForDates(
         let poweredDv = 0;
         if (step > 0) {
           const flybyInst = pathInsts[step];
-          const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+          const flybyBody = bodyMap.get(flybyInst.bodyName)!;
           const prevTime = cand.times[cand.times.length - 2];
-          const stPrev = getBodyStateAtUT(bodyMap.get(pathInsts[step - 1].bodyName) || mainBody, mainBody, prevTime);
+          const stPrev = getBodyStateAtUT(bodyMap.get(pathInsts[step - 1].bodyName)!, mainBody, prevTime);
           const solPrev = solveLambertBest(stPrev.pos, stCurr.pos, tCurr - prevTime, muCentral, true, minAllowedRadius, stPrev.vel, stCurr.vel);
           if (!solPrev.isValid) continue;
 
@@ -1595,17 +1597,17 @@ function evaluateSequenceTransferForDates(
     if (cand.times.length !== N - 1) continue;
     const tLastFlyby = cand.times[cand.times.length - 1];
     const lastFlybyInst = pathInsts[N - 2];
-    const lastFlybyBody = bodyMap.get(lastFlybyInst.bodyName) || mainBody;
+    const lastFlybyBody = bodyMap.get(lastFlybyInst.bodyName)!;
     const stLast = getBodyStateAtUT(lastFlybyBody, mainBody, tLastFlyby);
 
-    const solLeg1 = solveLambertBest(stA.pos, getBodyStateAtUT(bodyMap.get(pathInsts[1].bodyName) || mainBody, mainBody, cand.times[1]).pos, cand.times[1] - tDep, muCentral, true, minAllowedRadius, stA.vel);
+    const solLeg1 = solveLambertBest(stA.pos, getBodyStateAtUT(bodyMap.get(pathInsts[1].bodyName)!, mainBody, cand.times[1]).pos, cand.times[1] - tDep, muCentral, true, minAllowedRadius, stA.vel);
     if (!solLeg1.isValid) continue;
 
     const solFinal = solveLambertBest(stLast.pos, stTgt.pos, tArr - tLastFlyby, muCentral, true, minAllowedRadius, stLast.vel, stTgt.vel);
     if (!solFinal.isValid) continue;
 
     const prevTime = cand.times[cand.times.length - 2];
-    const stPrev = getBodyStateAtUT(bodyMap.get(pathInsts[N - 3].bodyName) || mainBody, mainBody, prevTime);
+    const stPrev = getBodyStateAtUT(bodyMap.get(pathInsts[N - 3].bodyName)!, mainBody, prevTime);
     const solPrev = solveLambertBest(stPrev.pos, stLast.pos, tLastFlyby - prevTime, muCentral, true, minAllowedRadius, stPrev.vel, stLast.vel);
     if (!solPrev.isValid) continue;
 
@@ -1651,7 +1653,7 @@ function evaluateSequenceTransferForDates(
 
 export interface ComputeSequencePorkchopOptions {
   pathInsts: InstanceNode[];
-  bodies: CelestialBody[];
+  bodies: OrbitalBody[];
   mainBody: CelestialBody;
   links?: DirectionalLink[];
   porkchops?: Record<string, PorkchopPlotData>;
@@ -1986,7 +1988,6 @@ export async function computeSequencePorkchopPlot(
     bodyNames: pathInsts.map(i => i.bodyName),
     pathInsts,
     pathInstances: pathInsts,
-    is4Body: N === 4,
     sourceInstanceId: srcInst.id,
     flybyInstanceId: flybyInsts[0]?.id || '',
     flyby2InstanceId: flybyInsts[1]?.id,
@@ -1997,12 +1998,12 @@ export async function computeSequencePorkchopPlot(
     targetBody: tgtInst.bodyName,
     depDates,
     arrDates,
-    c3DepAMatrix,
+    c3DepMatrix,
     c3ArrBMatrix,
     c3DepBMatrix,
     c3ArrCMatrix,
     c3DepCMatrix,
-    c3ArrDMatrix,
+    c3ArrMatrix,
     c3ArrFinalMatrix,
     poweredDvBMatrix,
     poweredDvCMatrix,
@@ -2169,7 +2170,7 @@ export type PartialUpdateCallback = (update: {
 export async function runSequenceSearch(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   onProgress?: ProgressCallback,
   onPartialUpdate?: PartialUpdateCallback,
@@ -2181,7 +2182,7 @@ export async function runSequenceSearch(
   sequencePorkchops: Record<string, SequencePorkchopData>;
   sequences: FlyableSequenceResult[];
 }> {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   let currInstances = [...instances];
@@ -2375,9 +2376,9 @@ export async function runSequenceSearch(
       );
       await yieldUI();
 
-      const srcBody = bodyMap.get(bestPair.srcInst.bodyName) || mainBody;
-      const flybyBody = bodyMap.get(bestPair.flybyInst.bodyName) || mainBody;
-      const tgtBody = bodyMap.get(bestPair.tgtInst.bodyName) || mainBody;
+      const srcBody = bodyMap.get(bestPair.srcInst.bodyName)!;
+      const flybyBody = bodyMap.get(bestPair.flybyInst.bodyName)!;
+      const tgtBody = bodyMap.get(bestPair.tgtInst.bodyName)!;
 
       const constrMatrix1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
       const constrMatrix2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
@@ -2683,13 +2684,13 @@ async function findValidTrajectoriesForPath(
   pathInsts: InstanceNode[],
   pathLinks: DirectionalLink[],
   porkchops: PorkchopPlotData[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   outputSequences: FlyableSequenceResult[],
   onProgress?: ProgressCallback,
   shouldStop?: () => boolean
 ) {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
   const muCentral = mainBody.stdGravParam || 1e12;
   const numLinks = pathLinks.length;
@@ -2736,8 +2737,8 @@ async function findValidTrajectoriesForPath(
     const prevInst = pathInsts[stepIndex - 1];
     const currInst = pathInsts[stepIndex];
 
-    const prevBody = bodyMap.get(prevInst.bodyName) || mainBody;
-    const currBody = bodyMap.get(currInst.bodyName) || mainBody;
+    const prevBody = bodyMap.get(prevInst.bodyName)!;
+    const currBody = bodyMap.get(currInst.bodyName)!;
 
     const minDur = pathLinks[linkIdx].minFlightDuration ?? 0;
     const maxDur = pathLinks[linkIdx].maxFlightDuration ?? 1e10;
@@ -2847,7 +2848,7 @@ async function findValidTrajectoriesForPath(
 
       if (stepIndex === numLinks) {
         // Reached end of path! Assemble complete sequence
-        const depState = getBodyStateAtUT(bodyMap.get(pathInsts[0].bodyName) || mainBody, mainBody, currentChain[0].ut);
+        const depState = getBodyStateAtUT(bodyMap.get(pathInsts[0].bodyName)!, mainBody, currentChain[0].ut);
         const arrState = getBodyStateAtUT(currBody, mainBody, tCurr);
 
         const solFirst = newChain[1].solFromPrev!;
@@ -2875,8 +2876,8 @@ async function findValidTrajectoriesForPath(
             totalStochasticDv += stepK.flybyDetail.stochasticDv;
           }
 
-          const bSrc = bodyMap.get(pathInsts[k - 1].bodyName) || mainBody;
-          const bTgt = bodyMap.get(pathInsts[k].bodyName) || mainBody;
+          const bSrc = bodyMap.get(pathInsts[k - 1].bodyName)!;
+          const bTgt = bodyMap.get(pathInsts[k].bodyName)!;
 
           const stSrc = getBodyStateAtUT(bSrc, mainBody, prevK.ut);
           const stTgt = getBodyStateAtUT(bTgt, mainBody, stepK.ut);
@@ -2940,7 +2941,7 @@ async function findValidTrajectoriesForPath(
 export async function runSequenceSearchAlt(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   onProgress?: ProgressCallback,
   onPartialUpdate?: (partial: Partial<SolverProgress>) => void,
@@ -2959,7 +2960,7 @@ export async function runSequenceSearchAlt(
     sequences: []
   });
 
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   // Step 1: Propagate date bounds
@@ -3024,8 +3025,8 @@ export async function runSequenceSearchAlt(
         const depInstNode = pathInsts[0];
         const arrInstNode = pathInsts[pathInsts.length - 1];
 
-        const depBody = bodyMap.get(depInstNode.bodyName) || mainBody;
-        const arrBody = bodyMap.get(arrInstNode.bodyName) || mainBody;
+        const depBody = bodyMap.get(depInstNode.bodyName)!;
+        const arrBody = bodyMap.get(arrInstNode.bodyName)!;
 
         const depState = getBodyStateAtUT(depBody, mainBody, currentTransfers[0].depDate);
         const arrState = getBodyStateAtUT(arrBody, mainBody, tPrev);
@@ -3067,11 +3068,11 @@ export async function runSequenceSearchAlt(
       const srcNode = pathInsts[legIdx];
       const tgtNode = pathInsts[legIdx + 1];
 
-      const srcBody = bodyMap.get(srcNode.bodyName) || mainBody;
-      const tgtBody = bodyMap.get(tgtNode.bodyName) || mainBody;
+      const srcBody = bodyMap.get(srcNode.bodyName)!;
+      const tgtBody = bodyMap.get(tgtNode.bodyName)!;
 
-      const aSrc = srcBody.semiMajorAxis || 1e10;
-      const aTgt = tgtBody.semiMajorAxis || 1e10;
+      const aSrc = srcBody.semiMajorAxis;
+      const aTgt = tgtBody.semiMajorAxis;
       const aTrans = (aSrc + aTgt) / 2;
       const hohmannDur = Math.PI * Math.sqrt(Math.pow(aTrans, 3) / (mainBody.stdGravParam || 1e12));
 
@@ -3276,8 +3277,8 @@ export function extractSequencesFromSequencePorkchops(
 
         const depDate = seqPc.depDates[r];
         const arrDate = seqPc.arrDates[c];
-        const depC3 = seqPc.c3DepAMatrix?.[r]?.[c] ?? 0;
-        const arrC3 = seqPc.c3ArrFinalMatrix?.[r]?.[c] ?? seqPc.c3ArrCMatrix?.[r]?.[c] ?? seqPc.c3ArrBMatrix?.[r]?.[c] ?? 0;
+        const depC3 = seqPc.c3DepMatrix?.[r]?.[c];
+        const arrC3 = seqPc.c3ArrMatrix?.[r]?.[c];
 
         // Check if each flyby delta-v is <= maxFlybyDvMs (1.0 m/s)
         let passesFlybyDvCheck = true;
@@ -3288,14 +3289,11 @@ export function extractSequencesFromSequencePorkchops(
         for (let fb = 0; fb < numFlybys; fb++) {
           const fbInst = flybyInsts[fb];
           const fbBody = bodyMap.get(fbInst.bodyName) || mainBody;
+          const flyby = seqPc.flybys[fb];
 
           let fbDv = 0;
-          if (seqPc.flybyPoweredDvs?.[fb]?.poweredDvMatrix?.[r]?.[c] !== undefined) {
-            fbDv = seqPc.flybyPoweredDvs[fb].poweredDvMatrix[r][c];
-          } else if (fb === 0) {
-            fbDv = seqPc.poweredDvBMatrix?.[r]?.[c] ?? 0;
-          } else if (fb === 1) {
-            fbDv = seqPc.poweredDvCMatrix?.[r]?.[c] ?? 0;
+          if (flyby.poweredDvMatrix?.[r]?.[c] !== undefined) {
+            fbDv = flyby.poweredDvMatrix[r][c];
           }
 
           if (fbDv > maxFlybyDvMs) {
@@ -3305,18 +3303,16 @@ export function extractSequencesFromSequencePorkchops(
 
           totalPoweredDv += fbDv;
 
-          const fbDate = seqPc.flybyDates?.[fb]?.dateMatrix?.[r]?.[c]
-            ?? (fb === 0 ? seqPc.flybyDateMatrix?.[r]?.[c] : seqPc.flyby2DateMatrix?.[r]?.[c])
-            ?? (depDate + (arrDate - depDate) * ((fb + 1) / (numFlybys + 1)));
+          const fbDate = seqPc.flybys[fb]?.dateMatrix?.[r]?.[c];
 
-          const c3In = fb === 0 ? (seqPc.c3ArrBMatrix?.[r]?.[c] ?? depC3) : (seqPc.c3ArrCMatrix?.[r]?.[c] ?? depC3);
-          const c3Out = fb === 0 ? (seqPc.c3DepBMatrix?.[r]?.[c] ?? depC3) : (seqPc.c3DepCMatrix?.[r]?.[c] ?? depC3);
+          const c3In = flyby.c3ArrMatrix?.[r]?.[c];
+          const c3Out = flyby.c3DepMatrix?.[r]?.[c];
           const vInfInMag = Math.sqrt(Math.max(0, c3In * 1e6));
           const vInfOutMag = Math.sqrt(Math.max(0, c3Out * 1e6));
           const meanVInfMag = (vInfInMag + vInfOutMag)/2;
 
           const muBody = fbBody.stdGravParam;
-          const rPeri = fbBody.radius + (fbInst.minFlybyAltitude ?? (fbBody.atmosphereHeight ? fbBody.atmosphereHeight : 0));
+          const rPeri = getMinFlybyRadius(fbBody, fbInst.minFlybyAltitude);
           const maxTurnAngle = 2 * Math.asin(1 / (1 + (rPeri * (meanVInfMag ** 2)) / muBody)) * (180 / Math.PI);
 
           // TODO compute deflexion angle

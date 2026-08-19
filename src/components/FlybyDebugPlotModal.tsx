@@ -5,7 +5,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { FlybyDebugPlotData, extractFlybyDebugData } from '../utils/flybyDebugPlot';
-import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody } from '../types';
+import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import {
   X,
@@ -28,7 +28,7 @@ interface FlybyDebugPlotModalProps {
   seqPorkchop: SequencePorkchopData;
   porkchops?: Record<string, PorkchopPlotData>;
   links?: DirectionalLink[];
-  bodies?: CelestialBody[];
+  bodies?: OrbitalBody[];
   mainBody?: CelestialBody;
   timeFormatMode: 'ksp' | 'earth';
   onClose: () => void;

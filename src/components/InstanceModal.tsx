@@ -4,13 +4,14 @@
  */
 
 import React, { useState } from 'react';
-import { InstanceNode, CelestialBody } from '../types';
+import { InstanceNode, OrbitalBody } from '../types';
 import { formatUT, parseKSPTimeToUT } from '../utils/timeFormat';
 import { X, Calendar, Compass, ShieldAlert, Check } from 'lucide-react';
+import { getMinFlybyAlt } from '../data/solarSystems';
 
 interface InstanceModalProps {
   instance: InstanceNode;
-  body: CelestialBody | undefined;
+  body: OrbitalBody;
   timeFormatMode: 'ksp' | 'earth';
   onSave: (updated: InstanceNode) => void;
   onClose: () => void;
@@ -34,15 +35,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
   const [maxYear, setMaxYear] = useState<number>(5);
   const [maxDay, setMaxDay] = useState<number>(1);
 
-  const defaultMinFlybyAlt = body
-    ? body.atmosphereHeight && body.atmosphereHeight > 0
-      ? body.atmosphereHeight + 10000
-      : 10000
-    : 10000;
-
-  const [minFlybyAltitude, setMinFlybyAltitude] = useState<string>(
-    instance.minFlybyAltitude !== undefined ? String(instance.minFlybyAltitude) : String(defaultMinFlybyAlt)
-  );
+  const [minFlybyAltitude, setMinFlybyAltitude] = useState<string>(String(getMinFlybyAlt(body, instance.minFlybyAltitude)));
 
   const [maxC3, setMaxC3] = useState<string>(instance.maxC3 !== undefined ? String(instance.maxC3) : '');
   const [dateSampleCount, setDateSampleCount] = useState<string>(
@@ -247,7 +240,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
               />
               <span className="text-[10px] text-[#64748B]">
-                Atmosphere = {body?.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'}
+                Atmosphere = {body.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'}
               </span>
             </div>
 

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { InstanceNode, DirectionalLink, CelestialBody, PorkchopPlotData } from '../types';
+import { InstanceNode, DirectionalLink, CelestialBody, OrbitalBody, PorkchopPlotData } from '../types';
 import { computeTisserandEnvelopes, findAllSubPathsInGraph, computePorkchopPlot } from './solver';
 
 export interface LinkEndDateRanges {
@@ -74,7 +74,7 @@ const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
 export async function computeLinkGridsAndRangesAsync(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   onProgress?: (progressPercent: number, statusText: string) => void
@@ -195,7 +195,7 @@ export async function computeLinkGridsAndRangesAsync(
 export async function computeLinkEndDateRangesAsync(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   timeFormatMode: 'ksp' | 'earth' = 'ksp',
   porkchops: Record<string, PorkchopPlotData> = {},
@@ -219,7 +219,7 @@ export async function computeLinkEndDateRangesAsync(
 export async function compute3BodyConsolidatedRangesAsync(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   timeFormatMode: 'ksp' | 'earth' = 'ksp',
   porkchops: Record<string, PorkchopPlotData> = {},
@@ -374,7 +374,7 @@ export async function compute3BodyConsolidatedRangesAsync(
 export function computeLinkEndDateRanges(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   timeFormatMode: 'ksp' | 'earth' = 'ksp',
   porkchops: Record<string, PorkchopPlotData> = {}
@@ -472,7 +472,7 @@ export function computeLinkEndDateRanges(
 export function compute3BodyConsolidatedRanges(
   instances: InstanceNode[],
   links: DirectionalLink[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   timeFormatMode: 'ksp' | 'earth' = 'ksp',
   porkchops: Record<string, PorkchopPlotData> = {}

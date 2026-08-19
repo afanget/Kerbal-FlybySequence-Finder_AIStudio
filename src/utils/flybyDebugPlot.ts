@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody } from '../types';
-import { vecSub, vecMag, getGravitationalParameter, getBodyStateAtUT, Vector3D } from '../physics/kepler';
-import { evaluateFlybyAtDate, getMinFlybyAlt, evaluateSequenceTransferFromDirectPorkchops } from '../physics/flyby';
+import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
+import { vecSub, vecMag, getBodyStateAtUT, Vector3D } from '../physics/kepler';
+import { evaluateFlybyAtDate, evaluateSequenceTransferFromDirectPorkchops } from '../physics/flyby';
+import { getMinFlybyRadius } from '../data/solarSystems';
 
 export interface FlybyDebugPoint {
   flybyDate: number;
@@ -83,16 +84,14 @@ export function extractFlybyDebugData(
   links: DirectionalLink[],
   clickDepIndex: number,
   clickArrIndex: number,
-  bodies?: CelestialBody[],
-  mainBody?: CelestialBody
+  bodies: OrbitalBody[],
+  mainBody: CelestialBody
 ): FlybyDebugPlotData | null {
-  const bodyNames = seqPorkchop.bodyNames && seqPorkchop.bodyNames.length >= 3
-    ? seqPorkchop.bodyNames
-    : [seqPorkchop.sourceBody, seqPorkchop.flybyBody || 'Flyby', seqPorkchop.targetBody];
+  const bodyNames = seqPorkchop.bodyNames!;
 
-  const bodyA = bodyNames[0] || seqPorkchop.sourceBody;
-  const bodyB = bodyNames[1] || seqPorkchop.flybyBody || '';
-  const bodyC = bodyNames[bodyNames.length - 1] || seqPorkchop.targetBody;
+  const bodyA = bodyNames[0];
+  const bodyB = bodyNames[1];
+  const bodyC = bodyNames[bodyNames.length - 1];
 
   const maxDepIndex = Math.max(0, seqPorkchop.depDates.length - 1);
   const maxArrIndex = Math.max(0, seqPorkchop.arrDates.length - 1);
@@ -128,13 +127,10 @@ export function extractFlybyDebugData(
   const sortedFlybyDates = Array.from(flybyDatesSet).sort((a, b) => a - b);
 
   // Physical body properties for flyby deflection calculations
-  const flybyBodyObj = bodies?.find(b => b.name === bodyB);
-  const centralBodyObj = mainBody || bodies?.find(b => b.name === 'Sun' || b.name === 'Kerbol') || bodies?.[0];
+  const flybyBodyObj = bodies.find(b => b.name === bodyB)!;
 
-  const muFlyby = flybyBodyObj ? getGravitationalParameter(flybyBodyObj) : 3.5316e12; // Kerbin default if undefined
-  const flybyRadius = flybyBodyObj?.radius || 600000;
-  const minFlybyAlt = flybyBodyObj ? getMinFlybyAlt(flybyBodyObj) : 10000;
-  const rpMin = flybyRadius + minFlybyAlt;
+  const muFlyby = flybyBodyObj.stdGravParam;
+  const rpMin = getMinFlybyRadius(flybyBodyObj, undefined);
 
   let minC3 = Infinity;
   let maxC3 = -Infinity;
@@ -199,8 +195,8 @@ export function extractFlybyDebugData(
     let maxDeflectionAngleDeg: number | null = null;
     let flybyDvMps: number | null = null;
 
-    if (flybyBodyObj && centralBodyObj) {
-      const stB = getBodyStateAtUT(flybyBodyObj, centralBodyObj, flybyDate);
+    if (flybyBodyObj && mainBody) {
+      const stB = getBodyStateAtUT(flybyBodyObj, mainBody, flybyDate);
       const vBody = stB.vel;
 
       const hasVArr = vTransArr && (vTransArr.x !== 0 || vTransArr.y !== 0 || vTransArr.z !== 0);

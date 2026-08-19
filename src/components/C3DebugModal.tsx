@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { InstanceNode, DirectionalLink, CelestialBody } from '../types';
+import { InstanceNode, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
 import {
   computeC3DebugDetails,
   evaluateSingleVInfForInstance,
@@ -32,7 +32,7 @@ interface C3DebugModalProps {
   instanceId: string;
   instances: InstanceNode[];
   links: DirectionalLink[];
-  bodies: CelestialBody[];
+  bodies: OrbitalBody[];
   mainBody: CelestialBody;
   timeFormatMode: 'ksp' | 'earth';
   onUpdateInstance?: (updated: InstanceNode) => void;

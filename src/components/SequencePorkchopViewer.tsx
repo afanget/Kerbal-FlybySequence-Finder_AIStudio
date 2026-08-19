@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { SequencePorkchopData, PorkchopPlotData, DirectionalLink, CelestialBody, InstanceNode, SubtaskProgressInfo } from '../types';
+import { SequencePorkchopData, PorkchopPlotData, DirectionalLink, CelestialBody, OrbitalBody, InstanceNode, SubtaskProgressInfo } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import { X, Compass, Calendar, RefreshCw, RotateCcw, ZoomIn, Timer, Activity, ChevronDown, ChevronUp, Cpu, Zap, BarChart2, Layers, Info } from 'lucide-react';
 import { extractFlybyDebugData, FlybyDebugPlotData } from '../utils/flybyDebugPlot';
@@ -28,7 +28,7 @@ interface SequencePorkchopViewerProps {
   sequencePorkchops?: Record<string, SequencePorkchopData>;
   links?: DirectionalLink[];
   instances?: InstanceNode[];
-  bodies?: CelestialBody[];
+  bodies?: OrbitalBody[];
   mainBody?: CelestialBody;
 }
 
