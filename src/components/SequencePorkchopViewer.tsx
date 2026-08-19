@@ -72,6 +72,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   const [activeTab, setActiveTab] = useState<SeqViewTab>(
     instanceCount >= 4 ? 'totalPoweredDv' : 'poweredDvB'
   );
+  const [showOptimisedOut, setShowOptimisedOut] = useState<boolean>(false);
 
   const [hoverData, setHoverData] = useState<{
     depDate: number;
@@ -83,6 +84,9 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     flybyDvs: { body: string; dv: number }[];
     totalPoweredDv: number;
     isValid: boolean;
+    isPhysical: boolean;
+    isConstraint: boolean;
+    statusText: string;
     xPct: number;
     yPct: number;
   } | null>(null);
@@ -99,7 +103,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   } | null>(null);
 
   // Profiling panel fold state
-  const [isProfilingFolded, setIsProfilingFolded] = useState<boolean>(false);
+  const [isProfilingFolded, setIsProfilingFolded] = useState<boolean>(true);
 
   // Drag selection state for box zoom
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
@@ -114,10 +118,11 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   const computedSamples = useMemo(() => {
     if (seqPorkchop.computedSamples !== undefined) return seqPorkchop.computedSamples;
     if (!isComputing && totalSamples > 0) return totalSamples;
-    if (seqPorkchop.validMatrix && nDep > 0 && nArr > 0) {
+    const vMatrix = seqPorkchop.constraintValidMatrix || seqPorkchop.physicalValidMatrix;
+    if (vMatrix && nDep > 0 && nArr > 0) {
       let count = 0;
       for (let i = 0; i < nDep; i++) {
-        const row = seqPorkchop.validMatrix[i];
+        const row = vMatrix[i];
         if (row) {
           for (let j = 0; j < nArr; j++) {
             if (row[j] !== undefined) count++;
@@ -156,7 +161,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
 
   // Compute departure & arrival date windows based on first/last feasible columns (departure) and lines (arrival)
   const dateWindows = useMemo(() => {
-    if (!seqPorkchop.validMatrix || nDep === 0 || nArr === 0) {
+    const vMatrix = seqPorkchop.constraintValidMatrix || seqPorkchop.physicalValidMatrix;
+    if (!vMatrix || nDep === 0 || nArr === 0) {
       return null;
     }
 
@@ -166,7 +172,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     let lastArrIdx = -1;
 
     for (let i = 0; i < nDep; i++) {
-      const row = seqPorkchop.validMatrix[i];
+      const row = vMatrix[i];
       if (row && row.some(Boolean)) {
         if (firstDepIdx === -1) firstDepIdx = i;
         lastDepIdx = i;
@@ -176,7 +182,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     for (let j = 0; j < nArr; j++) {
       let hasFeasible = false;
       for (let i = 0; i < nDep; i++) {
-        if (seqPorkchop.validMatrix[i]?.[j]) {
+        if (vMatrix[i]?.[j]) {
           hasFeasible = true;
           break;
         }
@@ -216,7 +222,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     for (let i = 0; i < nDep; i++) {
       let hasFreeFlyby = false;
       for (let j = 0; j < nArr; j++) {
-        if (seqPorkchop.validMatrix?.[i]?.[j]) {
+        if (seqPorkchop.constraintValidMatrix?.[i]?.[j]) {
           const dv = dvMatrix[i]?.[j];
           if (dv !== undefined && Number.isFinite(dv) && dv <= 1.0) {
             hasFreeFlyby = true;
@@ -236,9 +242,13 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   if (currentMatrix && nDep > 0 && nArr > 0) {
     for (let i = 0; i < nDep; i++) {
       for (let j = 0; j < nArr; j++) {
-        if (seqPorkchop.validMatrix?.[i]?.[j]) {
+        const isEligible = showOptimisedOut
+          ? (seqPorkchop.physicalValidMatrix ? seqPorkchop.physicalValidMatrix[i]?.[j] : false)
+          : (seqPorkchop.constraintValidMatrix ? seqPorkchop.constraintValidMatrix[i]?.[j] : false);
+
+        if (isEligible) {
           const val = currentMatrix[i]?.[j];
-          if (val !== undefined && isFinite(val)) {
+          if (val !== undefined && isFinite(val) && val >= 0) {
             validValues.push(val);
           }
         }
@@ -290,6 +300,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     const startJ = Math.max(0, Math.floor(curJMin));
     const endJ = Math.min(nArr - 1, Math.ceil(curJMax));
 
+    const minPhysicalDt = 3600 * Math.max(1, instanceCount - 1);
+
     for (let i = startI; i <= endI; i++) {
       const x1 = ((i - curIMin) / rangeI) * width;
       const x2 = ((i + 1 - curIMin) / rangeI) * width;
@@ -300,10 +312,25 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         const y2 = height - ((j - curJMin) / rangeJ) * height;
         const cellH = Math.max(0.5, y2 - y1);
 
-        const isValid = seqPorkchop.validMatrix[i]?.[j];
+        const dt = (seqPorkchop.arrDates?.[j] ?? 0) - (seqPorkchop.depDates?.[i] ?? 0);
+        const isPhysical = seqPorkchop.physicalValidMatrix
+          ? !!seqPorkchop.physicalValidMatrix[i]?.[j]
+          : dt >= minPhysicalDt;
 
-        if (!isValid) {
-          ctx.fillStyle = '#0F172A';
+        const isConstraint = seqPorkchop.constraintValidMatrix
+          ? !!seqPorkchop.constraintValidMatrix[i]?.[j]
+          : false;
+
+        // Physically impossible transfers are strictly hidden (never displayed as viable paths)
+        if (!isPhysical) {
+          ctx.fillStyle = '#0B0F19'; // Void for physically impossible
+          ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
+          continue;
+        }
+
+        // If physically possible but filtered out (optimised-out) by constraints
+        if (!isConstraint && !showOptimisedOut) {
+          ctx.fillStyle = '#0F172A'; // Hidden when debug mode is off
           ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
           continue;
         }
@@ -321,7 +348,12 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         norm = Math.max(0, Math.min(1, norm));
 
         const hue = (1 - norm) * 240;
-        ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
+        if (isConstraint) {
+          ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
+        } else {
+          // Subdued styling for optimised-out points during debug inspection
+          ctx.fillStyle = `hsla(${hue}, 35%, 35%, 0.8)`;
+        }
         ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
       }
     }
@@ -342,6 +374,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   }, [
     seqPorkchop,
     activeTab,
+    showOptimisedOut,
     currentMatrix,
     minVal,
     maxVal,
@@ -350,6 +383,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     logRange,
     nDep,
     nArr,
+    instanceCount,
     viewBounds,
     dragStart,
     dragCurrent,
@@ -405,7 +439,24 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       const c3DepA = seqPorkchop.c3DepAMatrix[i]?.[j] || 0;
       const c3ArrFinal = seqPorkchop.c3ArrFinalMatrix?.[i]?.[j] ?? seqPorkchop.c3ArrDMatrix?.[i]?.[j] ?? seqPorkchop.c3ArrCMatrix[i]?.[j] ?? 0;
       const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] ?? seqPorkchop.poweredDvBMatrix[i]?.[j] ?? 0;
-      const isValid = seqPorkchop.validMatrix[i]?.[j] || false;
+      const minPhysicalDt = 3600 * Math.max(1, instanceCount - 1);
+      const dt = arrDate - depDate;
+      const isPhysical = seqPorkchop.physicalValidMatrix
+        ? !!seqPorkchop.physicalValidMatrix[i]?.[j]
+        : dt >= minPhysicalDt;
+
+      const isConstraint = seqPorkchop.constraintValidMatrix
+        ? !!seqPorkchop.constraintValidMatrix[i]?.[j]
+        : false;
+
+      const isValid = isConstraint;
+
+      let statusText = 'Valid Sequence Transfer';
+      if (!isPhysical) {
+        statusText = dt < minPhysicalDt ? 'Physically Impossible (Arrival ≤ Departure)' : 'Physically Impossible (Sub-leg Collision / Infeasible)';
+      } else if (!isConstraint) {
+        statusText = 'Optimised-out (Exceeds C3 / Powered Δv Limits)';
+      }
 
       const flybyDatesList: { body: string; date: number }[] = [];
       if (seqPorkchop.flybyDates && seqPorkchop.flybyDates.length > 0) {
@@ -463,6 +514,9 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         flybyDvs: flybyDvsList,
         totalPoweredDv,
         isValid,
+        isPhysical,
+        isConstraint,
+        statusText,
         xPct: relX * 100,
         yPct: relY * 100,
       });
@@ -764,8 +818,11 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       if (seqPorkchop.flybyDateMatrix && result.flybyDates.length > 0) {
         seqPorkchop.flybyDateMatrix[depIndex][arrIndex] = result.flybyDates[0];
       }
-      if (seqPorkchop.validMatrix) {
-        seqPorkchop.validMatrix[depIndex][arrIndex] = result.totalDv < 1e6;
+      if (seqPorkchop.physicalValidMatrix) {
+        seqPorkchop.physicalValidMatrix[depIndex][arrIndex] = true;
+      }
+      if (seqPorkchop.constraintValidMatrix) {
+        seqPorkchop.constraintValidMatrix[depIndex][arrIndex] = result.totalDv < 1e6;
       }
       setRenderEpoch(e => e + 1);
     }
@@ -843,6 +900,19 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
                 </span>
               </button>
             )}
+
+            {/* Debug Mode Toggle: Show Filtered / Optimised-Out */}
+            <button
+              onClick={() => setShowOptimisedOut(!showOptimisedOut)}
+              className={`px-2 py-1 rounded text-[10px] font-mono border transition ${
+                showOptimisedOut
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                  : 'bg-[#18181B] text-[#94A3B8] hover:text-white border-[#27272A]'
+              }`}
+              title="Toggle display of physically possible but optimised-out / filtered sequence transfers"
+            >
+              {showOptimisedOut ? 'Debug: Filtered ON' : 'Debug: Filtered OFF'}
+            </button>
 
             {onRecomputePorkchop && (
               <button
@@ -1152,25 +1222,25 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
             </div>
 
             {/* Row 2: Metrics breakdown */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 border-t border-[#27272A] pt-1.5 mt-1.5 text-[10px]">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 border-t border-[#27272A] pt-1.5 mt-1.5 text-[10px]">
               <div>
                 <span className="text-[#71717A] block text-[9px]">Dep C3 ({srcBodyName}):</span>
                 <span className={activeTab === 'c3DepA' ? 'text-[#38BDF8] font-bold' : 'text-slate-200'}>
-                  {hoverData && hoverData.isValid ? `${hoverData.c3DepA.toFixed(1)} km²/s²` : '--'}
+                  {hoverData && (hoverData.isConstraint || showOptimisedOut) && isFinite(hoverData.c3DepA) ? `${hoverData.c3DepA.toFixed(1)} km²/s²` : '--'}
                 </span>
               </div>
 
               <div>
                 <span className="text-[#71717A] block text-[9px]">Arr C3 ({tgtBodyName}):</span>
                 <span className={activeTab === 'c3ArrFinal' || activeTab === 'c3ArrD' || activeTab === 'c3ArrC' ? 'text-[#38BDF8] font-bold' : 'text-slate-200'}>
-                  {hoverData && hoverData.isValid ? `${hoverData.c3ArrFinal.toFixed(1)} km²/s²` : '--'}
+                  {hoverData && (hoverData.isConstraint || showOptimisedOut) && isFinite(hoverData.c3ArrFinal) ? `${hoverData.c3ArrFinal.toFixed(1)} km²/s²` : '--'}
                 </span>
               </div>
 
               <div>
                 <span className="text-[#71717A] block text-[9px]">Flyby Powered Δv:</span>
                 <span className={activeTab.includes('powered') || activeTab.includes('flyby') ? 'text-[#38BDF8] font-bold' : 'text-slate-200'}>
-                  {hoverData && hoverData.isValid
+                  {hoverData && (hoverData.isConstraint || showOptimisedOut) && hoverData.flybyDvs.length > 0
                     ? hoverData.flybyDvs.map(f => `${f.body}: ${f.dv.toFixed(1)} m/s`).join(', ') || `${hoverData.totalPoweredDv.toFixed(1)} m/s`
                     : '--'}
                 </span>
@@ -1179,7 +1249,22 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
               <div>
                 <span className="text-[#71717A] block text-[9px]">Total Powered Δv:</span>
                 <span className={activeTab === 'totalPoweredDv' ? 'text-[#38BDF8] font-bold' : 'text-emerald-400 font-semibold'}>
-                  {hoverData && hoverData.isValid ? `${hoverData.totalPoweredDv.toFixed(1)} m/s` : '--'}
+                  {hoverData && (hoverData.isConstraint || showOptimisedOut) && isFinite(hoverData.totalPoweredDv) ? `${hoverData.totalPoweredDv.toFixed(1)} m/s` : '--'}
+                </span>
+              </div>
+
+              <div className="col-span-2 sm:col-span-1">
+                <span className="text-[#71717A] block text-[9px] uppercase">Solution Status:</span>
+                <span className={`text-[10px] font-mono font-bold leading-tight ${
+                  !hoverData
+                    ? 'text-[#64748B]'
+                    : !hoverData.isPhysical
+                    ? 'text-rose-400'
+                    : hoverData.isConstraint
+                    ? 'text-[#60A5FA]'
+                    : 'text-amber-400'
+                }`}>
+                  {hoverData ? hoverData.statusText : '--'}
                 </span>
               </div>
             </div>
@@ -1260,7 +1345,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
               </div>
 
               {/* Multi-Segment Proportional Progress Bar */}
-              {seqPorkchop.profiling.blocks && seqPorkchop.profiling.blocks.length > 0 && (
+              {!isProfilingFolded && seqPorkchop.profiling.blocks && seqPorkchop.profiling.blocks.length > 0 && (
                 <div className="w-full h-2.5 rounded bg-[#18181B] border border-[#27272A] overflow-hidden flex">
                   {seqPorkchop.profiling.blocks.map((block) => {
                     const pct = Math.max(0, Math.min(100, block.percentage || 0));

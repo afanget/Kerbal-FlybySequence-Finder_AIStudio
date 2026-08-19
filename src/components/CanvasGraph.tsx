@@ -489,7 +489,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                 </text>
 
                 {/* Flyby Alt & Max C3 inside Node */}
-                {(inst.minFlybyRadius !== undefined || inst.maxC3 !== undefined) && (
+                {(inst.minFlybyAltitude !== undefined || inst.maxC3 !== undefined) && (
                   <text
                     y="21"
                     fill="#34D399"
@@ -498,7 +498,7 @@ export const CanvasGraph: React.FC<CanvasGraphProps> = ({
                     textAnchor="middle"
                     className="pointer-events-none select-none"
                   >
-                    {inst.minFlybyRadius !== undefined ? `r:${(inst.minFlybyRadius / 1000).toFixed(0)}k ` : ""}
+                    {inst.minFlybyAltitude !== undefined ? `alt:${(inst.minFlybyAltitude / 1000).toFixed(0)}k ` : ""}
                     {inst.maxC3 !== undefined ? `limit:${inst.maxC3}` : ""}
                   </text>
                 )}

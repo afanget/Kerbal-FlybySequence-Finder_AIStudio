@@ -156,7 +156,8 @@ export function extractFlybyDebugData(
       const val = pc1.c3ArrMatrix[i1][j1];
       if (Number.isFinite(val) && !Number.isNaN(val)) {
         c3ArrB = val;
-        isValidArr = pc1.validMatrix?.[i1]?.[j1] !== false;
+        const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
+        isValidArr = valid1 ? !!valid1[i1]?.[j1] : true;
         minC3 = Math.min(minC3, c3ArrB);
         maxC3 = Math.max(maxC3, c3ArrB);
 
@@ -178,7 +179,8 @@ export function extractFlybyDebugData(
       const val = pc2.c3DepMatrix[k2][l2];
       if (Number.isFinite(val) && !Number.isNaN(val)) {
         c3DepB = val;
-        isValidDep = pc2.validMatrix?.[k2]?.[l2] !== false;
+        const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
+        isValidDep = valid2 ? !!valid2[k2]?.[l2] : true;
         minC3 = Math.min(minC3, c3DepB);
         maxC3 = Math.max(maxC3, c3DepB);
 
@@ -292,7 +294,7 @@ export function extractFlybyDebugData(
 
   const storedIsValid = seqTransferEval !== null
     ? (seqTransferEval.totalDv < 1e6)
-    : seqPorkchop.validMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+    : seqPorkchop.constraintValidMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const optimalFlybyDate = storedFlybyDate && Number.isFinite(storedFlybyDate)
     ? storedFlybyDate

@@ -652,7 +652,7 @@ export function recomputeFlybyDetailsSequentially(
       }
     }
 
-    const minFlybyAlt = flybyInst?.minFlybyRadius;
+    const minFlybyAlt = flybyInst?.minFlybyAltitude;
 
     const flybyFeas = matchUnpoweredFlyby(
       flybyBody,
@@ -761,6 +761,8 @@ export interface SequenceTransferResult {
   totalDv: number;
   flybyDvs: number[];
   flybyDates: number[];
+  isPhysicallyValid?: boolean;
+  isConstraintValid?: boolean;
 }
 
 /**
@@ -897,6 +899,7 @@ export interface DirectPorkchopFlybySample {
   maxDeflectionAngleDeg: number;
   dv: number;
   isValid: boolean;
+  isPhysicallyValid?: boolean;
 }
 
 /**
@@ -914,6 +917,9 @@ export function generateDirectPorkchopFlybySamples(
 ): DirectPorkchopFlybySample[] | null {
   if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length !== 3) return null;
   const N = 3;
+
+  // Hard Physical constraint: Total flight time must be at least 2 legs of 3600s
+  if (tArr - tDep < 7200) return null;
 
   const t0 = profiler ? performance.now() : 0;
   const bodyMap = new Map<string, CelestialBody>();
@@ -952,7 +958,7 @@ export function generateDirectPorkchopFlybySamples(
   const P1 = legPorkchops[1];
   const flybyInst = pathInsts[1];
   const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = flybyBody.radius + (flybyInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
 
   const samples: DirectPorkchopFlybySample[] = [];
 
@@ -971,7 +977,13 @@ export function generateDirectPorkchopFlybySamples(
     const j0 = k;
     const i1 = k;
 
-    const isGridValid = (!P0.validMatrix || !!P0.validMatrix[i0]?.[j0]) && (!P1.validMatrix || !!P1.validMatrix[i1]?.[j_last]);
+    // Hard physical time ordering check
+    const dt0 = tFlyby - tDep;
+    const dt1 = tArr - tFlyby;
+    const isChronologicallyPossible = dt0 >= 3600 && dt1 >= 3600;
+
+    const isP0Phys = P0.physicalValidMatrix ? (P0.physicalValidMatrix[i0]?.[j0] ?? false) : true;
+    const isP1Phys = P1.physicalValidMatrix ? (P1.physicalValidMatrix[i1]?.[j_last] ?? false) : true;
 
     const c3Dep0 = P0.c3DepMatrix?.[i0]?.[j0] ?? 0;
     const c3Arr0 = P0.c3ArrMatrix?.[i0]?.[j0] ?? 0;
@@ -981,7 +993,7 @@ export function generateDirectPorkchopFlybySamples(
     const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
     const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j_last];
 
-    if (!vTransArr0 || !vTransDep1 || vecMag(vTransArr0) < 1e-3 || vecMag(vTransDep1) < 1e-3) {
+    if (!isChronologicallyPossible || !isP0Phys || !isP1Phys || !vTransArr0 || !vTransDep1 || vecMag(vTransArr0) < 1e-3 || vecMag(vTransDep1) < 1e-3) {
       samples.push({
         j0,
         tFlyby,
@@ -993,6 +1005,7 @@ export function generateDirectPorkchopFlybySamples(
         maxDeflectionAngleDeg: 0,
         dv: Infinity,
         isValid: false,
+        isPhysicallyValid: false,
       });
       continue;
     }
@@ -1003,6 +1016,7 @@ export function generateDirectPorkchopFlybySamples(
 
     const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
+    const isPhysValid = isChronologicallyPossible && isP0Phys && isP1Phys && flybyEval.isValid;
 
     samples.push({
       j0,
@@ -1014,7 +1028,8 @@ export function generateDirectPorkchopFlybySamples(
       deflectionAngleDeg: flybyEval.deflectionAngleDeg,
       maxDeflectionAngleDeg: flybyEval.maxDeflectionAngleDeg,
       dv: dvFinite ? flybyEval.poweredDv : Infinity,
-      isValid: isGridValid && dvFinite && flybyEval.poweredDv < 1e6,
+      isValid: isPhysValid && dvFinite && flybyEval.poweredDv < 1e6,
+      isPhysicallyValid: isPhysValid,
     });
   }
 
@@ -1060,9 +1075,25 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     return null;
   }
 
+  const validSamples = samples.filter(s => s.isValid && (s.isPhysicallyValid !== false));
+  if (validSamples.length === 0) {
+    if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
+    return {
+      c3DepA: 0,
+      c3ArrB: 0,
+      c3DepB: 0,
+      c3ArrFinal: 0,
+      totalDv: Infinity,
+      flybyDvs: [Infinity],
+      flybyDates: [0],
+      isPhysicallyValid: false,
+      isConstraintValid: false,
+    };
+  }
+
   const flybyInst = pathInsts[1];
   const flybyBody = bodies.find(b => b.name === flybyInst.bodyName) || mainBody;
-  const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = flybyBody.radius + (flybyInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
   const muFlyby = getGravitationalParameter(flybyBody);
 
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
@@ -1186,6 +1217,16 @@ export function evaluateSequenceTransferFromDirectPorkchops(
   let bestResult: SequenceTransferResult | null = null;
   let bestOverallDv = Infinity;
 
+  const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
+    if (!res) return null;
+    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= 1.0;
+    return {
+      ...res,
+      isPhysicallyValid: true,
+      isConstraintValid: isFreeFlyby,
+    };
+  };
+
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
@@ -1193,12 +1234,12 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       bestOverallDv = res.totalDv;
       bestResult = res;
     }
-    if (res.totalDv < 1.0) {
+    if (res.totalDv <= 1.0) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
-      return res;
+      return finalizeResult(res);
     }
   }
 
@@ -1224,8 +1265,8 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      // Stop early if dv < 1 m/s (perfect unpowered flyby)
-      if (res1.totalDv < 1.0 || res2.totalDv < 1.0) {
+      // Stop early if dv <= 1 m/s (perfect unpowered flyby)
+      if (res1.totalDv <= 1.0 || res2.totalDv <= 1.0) {
         break;
       }
 
@@ -1236,12 +1277,12 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       }
     }
 
-    if (currentBest.totalDv < 1.0) {
+    if (currentBest.totalDv <= 1.0) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
-      return currentBest;
+      return finalizeResult(currentBest);
     }
 
     if (currentBest.totalDv < bestOverallDv) {
@@ -1254,7 +1295,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     profiler.continuousOptimizationMs += (performance.now() - t8);
     profiler.totalMethodMs += (performance.now() - methodStart);
   }
-  return bestResult;
+  return finalizeResult(bestResult);
 }
 
 export interface HigherOrderFlybySample {
@@ -1272,6 +1313,7 @@ export interface HigherOrderFlybySample {
   priorFlybyDates: number[];
   priorFlybyDvs: number[];
   isValid: boolean;
+  isPhysicallyValid?: boolean;
 }
 
 /**
@@ -1290,6 +1332,9 @@ export function generateHigherOrderAddLastLegFlybySamples(
 ): HigherOrderFlybySample[] | null {
   if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 4) return null;
   const N = pathInsts.length;
+
+  // Hard Physical constraint: Total flight time must be at least (N-1) legs of 3600s
+  if (tArr - tDep < 3600 * (N - 1)) return null;
 
   const t0 = profiler ? performance.now() : 0;
   const bodyMap = new Map<string, CelestialBody>();
@@ -1335,7 +1380,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   if (j_last < 0) j_last = 0;
 
   const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
-  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
 
   if (profiler) {
     profiler.matrixLookupMs += (performance.now() - t0);
@@ -1359,7 +1404,13 @@ export function generateHigherOrderAddLastLegFlybySamples(
     const j0 = k;
     const i1 = k;
 
-    const isGridValid = (!subSeq.validMatrix || !!subSeq.validMatrix[i0]?.[j0]) && (!P_last.validMatrix || !!P_last.validMatrix[i1]?.[j_last]);
+    // Hard physical time ordering check
+    const dtLast = tArr - tFlyby;
+    const dtTotal = tArr - tDep;
+    const isChronologicallyPossible = dtLast >= 3600 && dtTotal >= 3600 * (N - 1) && (tFlyby - tDep) >= 3600 * (N - 2);
+
+    const isSubSeqPhys = subSeq.physicalValidMatrix ? (subSeq.physicalValidMatrix[i0]?.[j0] ?? false) : true;
+    const isPLastPhys = P_last.physicalValidMatrix ? (P_last.physicalValidMatrix[i1]?.[j_last] ?? false) : true;
 
     const c3DepA = subSeq.c3DepAMatrix?.[i0]?.[j0] ?? 0;
     const rawC3ArrIn = subSeq.c3ArrFinalMatrix?.[i0]?.[j0] ?? subSeq.c3ArrDMatrix?.[i0]?.[j0] ?? subSeq.c3ArrCMatrix?.[i0]?.[j0] ?? subSeq.c3ArrBMatrix?.[i0]?.[j0] ?? 0;
@@ -1411,7 +1462,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
       }
     }
 
-    if (!vTransArr || !vTransDep || vecMag(vTransArr) < 1e-3 || vecMag(vTransDep) < 1e-3) {
+    if (!isChronologicallyPossible || !isSubSeqPhys || !isPLastPhys || !vTransArr || !vTransDep || vecMag(vTransArr) < 1e-3 || vecMag(vTransDep) < 1e-3) {
       samples.push({
         j0,
         tFlyby,
@@ -1427,6 +1478,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
         priorFlybyDates,
         priorFlybyDvs,
         isValid: false,
+        isPhysicallyValid: false,
       });
       continue;
     }
@@ -1441,6 +1493,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
 
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
     const totalDv = dvFinite && Number.isFinite(priorCost) ? priorCost + flybyEval.poweredDv : Infinity;
+    const isPhysValid = isChronologicallyPossible && isSubSeqPhys && isPLastPhys && flybyEval.isValid;
 
     samples.push({
       j0,
@@ -1456,7 +1509,8 @@ export function generateHigherOrderAddLastLegFlybySamples(
       totalDv,
       priorFlybyDates,
       priorFlybyDvs,
-      isValid: isGridValid && dvFinite && Number.isFinite(totalDv) && totalDv < 1e6,
+      isValid: isPhysValid && dvFinite && Number.isFinite(totalDv) && totalDv < 1e6,
+      isPhysicallyValid: isPhysValid,
     });
   }
 
@@ -1506,9 +1560,23 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
   }
 
   const N = pathInsts.length;
+  const validSamples = samples.filter(s => s.isValid && (s.isPhysicallyValid !== false));
+  if (validSamples.length === 0) {
+    if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
+    return {
+      c3DepA: 0,
+      c3ArrFinal: 0,
+      totalDv: Infinity,
+      flybyDvs: Array(N - 2).fill(Infinity),
+      flybyDates: Array(N - 2).fill(0),
+      isPhysicallyValid: false,
+      isConstraintValid: false,
+    };
+  }
+
   const fbInst = pathInsts[N - 2];
   const flybyBody = bodies.find(b => b.name === fbInst.bodyName) || mainBody;
-  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
   const muFlyby = getGravitationalParameter(flybyBody);
 
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
@@ -1641,6 +1709,16 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
   let bestResult: SequenceTransferResult | null = null;
   let bestOverallDv = Infinity;
 
+  const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
+    if (!res) return null;
+    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= 1.0;
+    return {
+      ...res,
+      isPhysicallyValid: true,
+      isConstraintValid: isFreeFlyby,
+    };
+  };
+
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
@@ -1648,12 +1726,12 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       bestOverallDv = res.totalDv;
       bestResult = res;
     }
-    if (res.flybyDvs[res.flybyDvs.length - 1] < 1.0) {
+    if (res.flybyDvs[res.flybyDvs.length - 1] <= 1.0) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
-      return res;
+      return finalizeResult(res);
     }
   }
 
@@ -1678,7 +1756,7 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      if (res1.flybyDvs[res1.flybyDvs.length - 1] < 1.0 || res2.flybyDvs[res2.flybyDvs.length - 1] < 1.0) {
+      if (res1.flybyDvs[res1.flybyDvs.length - 1] <= 1.0 || res2.flybyDvs[res2.flybyDvs.length - 1] <= 1.0) {
         break;
       }
 
@@ -1689,12 +1767,12 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       }
     }
 
-    if (currentBest.flybyDvs[currentBest.flybyDvs.length - 1] < 1.0) {
+    if (currentBest.flybyDvs[currentBest.flybyDvs.length - 1] <= 1.0) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
-      return currentBest;
+      return finalizeResult(currentBest);
     }
 
     if (currentBest.totalDv < bestOverallDv) {
@@ -1707,7 +1785,7 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
     profiler.continuousOptimizationMs += (performance.now() - t8);
     profiler.totalMethodMs += (performance.now() - methodStart);
   }
-  return bestResult;
+  return finalizeResult(bestResult);
 }
 
 export interface HigherOrderFirstLegFlybySample {
@@ -1725,7 +1803,8 @@ export interface HigherOrderFirstLegFlybySample {
   totalDv: number;
   suffixFlybyDates: number[];
   suffixFlybyDvs: number[];
-  isValid: boolean;
+  isPhysicallyValid: boolean;
+  isConstraintValid: boolean;
 }
 
 /**
@@ -1744,6 +1823,9 @@ export function generateHigherOrderAddFirstLegFlybySamples(
 ): HigherOrderFirstLegFlybySample[] | null {
   if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 4) return null;
   const N = pathInsts.length;
+
+  // Hard Physical constraint: Total flight time must be at least (N-1) legs of 3600s
+  if (tArr - tDep < 3600 * (N - 1)) return null;
 
   const t0 = profiler ? performance.now() : 0;
   const bodyMap = new Map<string, CelestialBody>();
@@ -1789,7 +1871,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   if (j_suffix < 0) j_suffix = 0;
 
   const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
-  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
 
   if (profiler) {
     profiler.matrixLookupMs += (performance.now() - t0);
@@ -1813,7 +1895,15 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const j0 = k;
     const i1 = k;
 
-    const isGridValid = (!P_first.validMatrix || !!P_first.validMatrix[i_first]?.[j0]) && (!suffixSeq.validMatrix || !!suffixSeq.validMatrix[i1]?.[j_suffix]);
+    // Hard physical time ordering check
+    const dtFirst = tFlyby - tDep;
+    const dtTotal = tArr - tDep;
+    const isChronologicallyPossible = dtFirst >= 3600 && dtTotal >= 3600 * (N - 1) && (tArr - tFlyby) >= 3600 * (N - 2);
+
+    const isPFirstPhys = P_first.physicalValidMatrix ? (P_first.physicalValidMatrix[i_first]?.[j0] ?? false) : true;
+    const isPFirstConstraint = P_first.constraintValidMatrix ? (P_first.constraintValidMatrix[i_first]?.[j0] ?? false) : isPFirstPhys;
+    const isSuffixPhys = suffixSeq.physicalValidMatrix ? (suffixSeq.physicalValidMatrix[i1]?.[j_suffix] ?? false) : true;
+    const isSuffixConstraint = suffixSeq.constraintValidMatrix ? (suffixSeq.constraintValidMatrix[i1]?.[j_suffix] ?? false) : isSuffixPhys;
 
     const c3DepA = P_first.c3DepMatrix?.[i_first]?.[j0] ?? 0;
     const c3ArrIn = P_first.c3ArrMatrix?.[i_first]?.[j0] ?? 0;
@@ -1865,7 +1955,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
       }
     }
 
-    if (!vTransArr || !vTransDep || vecMag(vTransArr) < 1e-3 || vecMag(vTransDep) < 1e-3) {
+    if (!isChronologicallyPossible || !isPFirstPhys || !isSuffixPhys || !vTransArr || !vTransDep || vecMag(vTransArr) < 1e-3 || vecMag(vTransDep) < 1e-3) {
       samples.push({
         j_first: j0,
         i_suffix: i1,
@@ -1881,7 +1971,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
         totalDv: Infinity,
         suffixFlybyDates,
         suffixFlybyDvs,
-        isValid: false,
+        isPhysicallyValid: false,
+        isConstraintValid: false,
       });
       continue;
     }
@@ -1896,6 +1987,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
 
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
     const totalDv = dvFinite && Number.isFinite(suffixCost) ? suffixCost + flybyEval.poweredDv : Infinity;
+    const isPhysValid = isChronologicallyPossible && isPFirstPhys && isSuffixPhys && flybyEval.isValid;
+    const isConstraintValid = isPhysValid && isPFirstConstraint && isSuffixConstraint && dvFinite && flybyEval.poweredDv <= 1.0;
 
     samples.push({
       j_first: j0,
@@ -1912,7 +2005,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
       totalDv,
       suffixFlybyDates,
       suffixFlybyDvs,
-      isValid: isGridValid && dvFinite && Number.isFinite(totalDv) && totalDv < 1e6,
+      isPhysicallyValid: isPhysValid,
+      isConstraintValid,
     });
   }
 
@@ -1961,9 +2055,24 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
     return null;
   }
 
+  const N = pathInsts.length;
+  const physicallyValidSamples = samples.filter(s => s.isPhysicallyValid);
+  if (physicallyValidSamples.length === 0) {
+    if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
+    return {
+      c3DepA: 0,
+      c3ArrFinal: 0,
+      totalDv: Infinity,
+      flybyDvs: Array(N - 2).fill(Infinity),
+      flybyDates: Array(N - 2).fill(0),
+      isPhysicallyValid: false,
+      isConstraintValid: false,
+    };
+  }
+
   const fbInst = pathInsts[1];
   const flybyBody = bodies.find(b => b.name === fbInst.bodyName) || mainBody;
-  const minFlybyRadius = fbInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+  const minFlybyRadius = flybyBody.radius + (fbInst.minFlybyAltitude ?? (1.1 * (flybyBody.atmosphereHeight || 0)));
   const muFlyby = getGravitationalParameter(flybyBody);
 
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
@@ -1974,10 +2083,10 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
   const rootDates: number[] = [];
 
   for (let k = 0; k < M; k++) {
-    if (!samples[k].isValid) continue;
+    if (!samples[k].isPhysicallyValid) continue;
 
     // Check zero-crossing of C3 (unpowered flyby intersection)
-    if (k < M - 1 && samples[k + 1].isValid) {
+    if (k < M - 1 && samples[k + 1].isPhysicallyValid) {
       const d1 = samples[k].c3ArrB - samples[k].c3DepB;
       const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
       if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
@@ -2008,7 +2117,7 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
     let minK = 0;
     let minVal = Infinity;
     for (let k = 0; k < M; k++) {
-      if (samples[k].isValid && samples[k].totalDv < minVal) {
+      if (samples[k].isPhysicallyValid && samples[k].totalDv < minVal) {
         minVal = samples[k].totalDv;
         minK = k;
       }
@@ -2096,6 +2205,16 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
   let bestResult: SequenceTransferResult | null = null;
   let bestOverallDv = Infinity;
 
+  const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
+    if (!res) return null;
+    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= 1.0;
+    return {
+      ...res,
+      isPhysicallyValid: true,
+      isConstraintValid: isFreeFlyby,
+    };
+  };
+
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
@@ -2103,12 +2222,12 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       bestOverallDv = res.totalDv;
       bestResult = res;
     }
-    if (res.flybyDvs[0] < 1.0) {
+    if (res.flybyDvs[0] <= 1.0) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
-      return res;
+      return finalizeResult(res);
     }
   }
 
@@ -2133,7 +2252,7 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      if (res1.flybyDvs[0] < 1.0 || res2.flybyDvs[0] < 1.0) {
+      if (res1.flybyDvs[0] <= 1.0 || res2.flybyDvs[0] <= 1.0) {
         break;
       }
 
@@ -2144,12 +2263,12 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       }
     }
 
-    if (currentBest.flybyDvs[0] < 1.0) {
+    if (currentBest.flybyDvs[0] <= 1.0) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
-      return currentBest;
+      return finalizeResult(currentBest);
     }
 
     if (currentBest.totalDv < bestOverallDv) {
@@ -2162,6 +2281,6 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
     profiler.continuousOptimizationMs += (performance.now() - t8);
     profiler.totalMethodMs += (performance.now() - methodStart);
   }
-  return bestResult;
+  return finalizeResult(bestResult);
 }
 

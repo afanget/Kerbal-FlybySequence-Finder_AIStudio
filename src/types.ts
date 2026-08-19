@@ -45,7 +45,7 @@ export interface InstanceNode {
   // User input constraints
   minDate?: number; // UT in seconds (undefined = unconstrained)
   maxDate?: number; // UT in seconds (undefined = unconstrained)
-  minFlybyRadius?: number; // meters above surface (default = atmosphereHeight || 10000)
+  minFlybyAltitude?: number; // meters above surface (default = atmosphereHeight || 10000)
   maxC3?: number; // m^2 / s^2 (undefined = no limit)
   dateSampleCount?: number; // Override date sampling count N for this instance
   isSourceOverride?: boolean; // Explicitly mark instance as a valid sequence source/start
@@ -128,7 +128,8 @@ export interface PorkchopPlotData {
   c3ArrMatrix: number[][];
   dvMatrix: number[][]; // Total transfer v_infinity or C3 sum
   flightTimeMatrix: number[][];
-  validMatrix: boolean[][];
+  physicalValidMatrix?: boolean[][]; // Strictly physically possible (dt >= 3600s, Lambert valid, no central body impact)
+  constraintValidMatrix?: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
   vTransDepMatrix?: Vector3D[][];
   vTransArrMatrix?: Vector3D[][];
   computedSamples?: number;
@@ -178,7 +179,8 @@ export interface SequencePorkchopData {
   flybyDateMatrix: number[][];
   flyby2DateMatrix?: number[][];
   flightTimeMatrix: number[][];
-  validMatrix: boolean[][];
+  physicalValidMatrix?: boolean[][]; // Strictly physically possible (dt >= 3600s*(N-1), chronological, no collisions)
+  constraintValidMatrix?: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
   computedSamples?: number;
   totalSamples?: number;
   activeSubtask?: SubtaskProgressInfo | null;
@@ -229,7 +231,7 @@ export interface FlybyDetail {
   periapsisAlt: number; // meters above surface
   flybyMargin: number; // meters above atmosphere/safe terrain
   deflectionAngle: number; // degrees
-  maxDeflectionAngle: number; // degrees achievable at minFlybyRadius
+  maxDeflectionAngle: number; // degrees achievable at minFlybyAltitude
   stochasticDv: number; // m/s required to correct trajectory post-flyby due to 10km alt & 1m/s speed errors
   poweredDv?: number; // m/s required at periapsis if powered flyby
   vInfInMag: number; // m/s

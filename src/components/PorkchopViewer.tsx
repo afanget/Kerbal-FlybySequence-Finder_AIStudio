@@ -24,6 +24,7 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
   onClose,
 }) => {
   const [viewMode, setViewMode] = useState<'c3Dep' | 'c3Arr' | 'dvTotal'>('c3Dep');
+  const [showOptimisedOut, setShowOptimisedOut] = useState<boolean>(false);
   const [hoverData, setHoverData] = useState<{
     depDate: number;
     arrDate: number;
@@ -33,6 +34,9 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
     c3Arr: number;
     dvTotal: number;
     isValid: boolean;
+    isPhysical: boolean;
+    isConstraint: boolean;
+    statusText: string;
     xPct: number;
     yPct: number;
   } | null>(null);
@@ -63,21 +67,29 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
     let min = Infinity;
     let max = -Infinity;
 
-    const valid = porkchop.validMatrix;
+    const constrValid = porkchop.constraintValidMatrix;
+    const physValid = porkchop.physicalValidMatrix;
     let matrix = porkchop.dvMatrix;
     if (viewMode === 'c3Dep') matrix = porkchop.c3DepMatrix;
     else if (viewMode === 'c3Arr') matrix = porkchop.c3ArrMatrix;
 
-    if (valid && matrix) {
+    if (matrix) {
       for (let i = 0; i < nDep; i++) {
-        const vRow = valid[i];
+        const cRow = constrValid ? constrValid[i] : null;
+        const pRow = physValid ? physValid[i] : null;
         const mRow = matrix[i];
-        if (!vRow || !mRow) continue;
+        if (!mRow) continue;
         for (let j = 0; j < nArr; j++) {
-          if (vRow[j]) {
+          const isEligible = showOptimisedOut
+            ? (pRow ? pRow[j] : false)
+            : (cRow ? cRow[j] : false);
+
+          if (isEligible) {
             const val = mRow[j];
-            if (val < min) min = val;
-            if (val > max) max = val;
+            if (Number.isFinite(val) && val > 0) {
+              if (val < min) min = val;
+              if (val > max) max = val;
+            }
           }
         }
       }
@@ -93,11 +105,12 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
     const range = Math.log(red / effMin);
 
     return { minVal: min, maxVal: max, effectiveMin: effMin, redCap: red, logRange: range };
-  }, [porkchop, viewMode, nDep, nArr]);
+  }, [porkchop, viewMode, showOptimisedOut, nDep, nArr]);
 
   // Compute departure & arrival date windows based on first/last feasible columns (departure) and lines (arrival)
   const dateWindows = useMemo(() => {
-    if (!porkchop.validMatrix || nDep === 0 || nArr === 0) {
+    const vMatrix = porkchop.constraintValidMatrix || porkchop.physicalValidMatrix;
+    if (!vMatrix || nDep === 0 || nArr === 0) {
       return null;
     }
 
@@ -108,7 +121,7 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
 
     // First and last departure columns (i) with at least one feasible sample
     for (let i = 0; i < nDep; i++) {
-      const row = porkchop.validMatrix[i];
+      const row = vMatrix[i];
       if (row && row.some(Boolean)) {
         if (firstDepIdx === -1) firstDepIdx = i;
         lastDepIdx = i;
@@ -119,7 +132,7 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
     for (let j = 0; j < nArr; j++) {
       let hasFeasible = false;
       for (let i = 0; i < nDep; i++) {
-        if (porkchop.validMatrix[i]?.[j]) {
+        if (vMatrix[i]?.[j]) {
           hasFeasible = true;
           break;
         }
@@ -184,18 +197,33 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
         const y2 = height - ((j - curJMin) / rangeJ) * height;
         const cellH = Math.max(0.5, y2 - y1);
 
-        const isValid = porkchop.validMatrix[i]?.[j];
+        const dt = porkchop.arrDates[j] - porkchop.depDates[i];
+        const isPhysical = porkchop.physicalValidMatrix
+          ? !!porkchop.physicalValidMatrix[i]?.[j]
+          : dt >= 3600;
 
-        if (!isValid) {
-          ctx.fillStyle = '#0F172A'; // Dark background for invalid
+        const isConstraint = porkchop.constraintValidMatrix
+          ? !!porkchop.constraintValidMatrix[i]?.[j]
+          : false;
+
+        // Physically impossible transfers are strictly hidden (never displayed as viable paths)
+        if (!isPhysical) {
+          ctx.fillStyle = '#0B0F19'; // Dark void for physically impossible points
+          ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
+          continue;
+        }
+
+        // If physically possible but filtered out (optimised-out) by C3/duration constraints
+        if (!isConstraint && !showOptimisedOut) {
+          ctx.fillStyle = '#0F172A'; // Dark background when debug mode is off
           ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
           continue;
         }
 
         let val = 0;
-        if (viewMode === 'c3Dep') val = porkchop.c3DepMatrix[i][j];
-        else if (viewMode === 'c3Arr') val = porkchop.c3ArrMatrix[i][j];
-        else val = porkchop.dvMatrix[i][j];
+        if (viewMode === 'c3Dep') val = porkchop.c3DepMatrix[i]?.[j] ?? 0;
+        else if (viewMode === 'c3Arr') val = porkchop.c3ArrMatrix[i]?.[j] ?? 0;
+        else val = porkchop.dvMatrix[i]?.[j] ?? 0;
 
         // Logarithmic normalization to [0, 1] where minVal -> 0 (blue) and redCap -> 1 (red)
         let norm = 0;
@@ -210,7 +238,12 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
 
         // HSL Color gradient: Blue (240) -> Cyan (180) -> Green (120) -> Yellow (60) -> Red (0)
         const hue = (1 - norm) * 240;
-        ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
+        if (isConstraint) {
+          ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
+        } else {
+          // Subdued hue for optimised-out solutions during debug inspection
+          ctx.fillStyle = `hsla(${hue}, 35%, 35%, 0.8)`;
+        }
         ctx.fillRect(x1, y1, cellW + 0.5, cellH + 0.5);
       }
     }
@@ -228,7 +261,7 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
       ctx.fillRect(bx, by, bw, bh);
       ctx.strokeRect(bx, by, bw, bh);
     }
-  }, [porkchop, viewMode, minVal, effectiveMin, redCap, logRange, nDep, nArr, viewBounds, dragStart, dragCurrent]);
+  }, [porkchop, viewMode, showOptimisedOut, minVal, effectiveMin, redCap, logRange, nDep, nArr, viewBounds, dragStart, dragCurrent]);
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -278,7 +311,24 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
       const flightTime = porkchop.flightTimeMatrix[i]?.[j] || (arrDate - depDate);
       const c3Dep = porkchop.c3DepMatrix[i]?.[j] || 0;
       const c3Arr = porkchop.c3ArrMatrix[i]?.[j] || 0;
-      const isValid = porkchop.validMatrix[i]?.[j] || false;
+      const dt = arrDate - depDate;
+
+      const isPhysical = porkchop.physicalValidMatrix
+        ? !!porkchop.physicalValidMatrix[i]?.[j]
+        : dt >= 3600;
+
+      const isConstraint = porkchop.constraintValidMatrix
+        ? !!porkchop.constraintValidMatrix[i]?.[j]
+        : false;
+
+      const isValid = isConstraint;
+
+      let statusText = 'Valid Solution';
+      if (!isPhysical) {
+        statusText = dt < 3600 ? 'Physically Impossible (Arrival ≤ Departure)' : 'Physically Impossible (Orbit Collision)';
+      } else if (!isConstraint) {
+        statusText = 'Optimised-out (Exceeds C3/Duration Bounds)';
+      }
 
       const dvTotal = porkchop.dvMatrix[i]?.[j] || 0;
 
@@ -296,6 +346,9 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
         c3Arr,
         dvTotal,
         isValid,
+        isPhysical,
+        isConstraint,
+        statusText,
         xPct: relX * 100,
         yPct: relY * 100,
       });
@@ -411,6 +464,19 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
                 Total Δv
               </button>
             </div>
+
+            {/* Debug Mode Toggle: Show Filtered / Optimised-Out */}
+            <button
+              onClick={() => setShowOptimisedOut(!showOptimisedOut)}
+              className={`px-2 py-1 rounded text-[10px] font-mono border transition ${
+                showOptimisedOut
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                  : 'bg-[#25262B] text-[#94A3B8] hover:text-white border-[#2D2E33]'
+              }`}
+              title="Toggle display of physically possible but optimised-out / filtered solutions"
+            >
+              {showOptimisedOut ? 'Debug: Filtered ON' : 'Debug: Filtered OFF'}
+            </button>
 
             <button onClick={onClose} className="p-1 hover:bg-[#25262B] rounded text-[#94A3B8] hover:text-white transition">
               <X className="w-4 h-4" />
@@ -584,10 +650,18 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
                     <span className="text-[#94A3B8]">Total Δv:</span>
                     <strong className="text-[#38BDF8] font-bold">{hoverData ? `${hoverData.dvTotal.toFixed(1)} m/s` : '--'}</strong>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#94A3B8]">Feasibility:</span>
-                    <span className={hoverData ? (hoverData.isValid ? 'text-[#60A5FA] font-bold' : 'text-rose-400 font-bold') : 'text-[#64748B]'}>
-                      {hoverData ? (hoverData.isValid ? 'Valid' : 'Infeasible') : '--'}
+                  <div className="flex flex-col gap-0.5 pt-1.5 border-t border-[#2D2E33]">
+                    <span className="text-[#94A3B8] text-[10px] uppercase">Solution Status:</span>
+                    <span className={`text-[10px] font-mono font-bold leading-tight ${
+                      !hoverData
+                        ? 'text-[#64748B]'
+                        : !hoverData.isPhysical
+                        ? 'text-rose-400'
+                        : hoverData.isConstraint
+                        ? 'text-[#60A5FA]'
+                        : 'text-amber-400'
+                    }`}>
+                      {hoverData ? hoverData.statusText : '--'}
                     </span>
                   </div>
                 </div>

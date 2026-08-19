@@ -158,7 +158,7 @@ export function extractHigherOrderAlgorithmInfo(
         subSequenceDv: s.suffixCost,
         totalDv: s.totalDv,
         otherFlybyDates: s.suffixFlybyDates,
-        isValid: s.isValid,
+        isValid: s.isConstraintValid ?? s.isPhysicallyValid,
       };
 
       if (optimalDate > 0) {
@@ -387,7 +387,8 @@ export function extractMultiInstanceDebugData(
       const i1 = findClosestIndex(pc1.depDates, tPrev);
       const j1 = findClosestIndex(pc1.arrDates, tCurr);
       const rawC3 = pc1.c3ArrMatrix?.[i1]?.[j1];
-      if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!pc1.validMatrix || pc1.validMatrix[i1]?.[j1])) {
+      const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
+      if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid1 || valid1[i1]?.[j1])) {
         c3Arr = rawC3;
         hasValidLeg1 = true;
         if (pc1.vTransArrMatrix?.[i1]?.[j1] && vecMag(pc1.vTransArrMatrix[i1][j1]) > 1e-3) {
@@ -405,7 +406,8 @@ export function extractMultiInstanceDebugData(
       const i2 = findClosestIndex(pc2.depDates, tCurr);
       const j2 = findClosestIndex(pc2.arrDates, tNext);
       const rawC3 = pc2.c3DepMatrix?.[i2]?.[j2];
-      if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!pc2.validMatrix || pc2.validMatrix[i2]?.[j2])) {
+      const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
+      if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid2 || valid2[i2]?.[j2])) {
         c3Dep = rawC3;
         hasValidLeg2 = true;
         if (pc2.vTransDepMatrix?.[i2]?.[j2] && vecMag(pc2.vTransDepMatrix[i2][j2]) > 1e-3) {
@@ -489,7 +491,8 @@ export function extractMultiInstanceDebugData(
         depDates: pc1.depDates,
         arrDates: pc2.arrDates,
         flightTimeMatrix: [],
-        validMatrix: [],
+        physicalValidMatrix: [],
+        constraintValidMatrix: [],
         totalPoweredDvMatrix: [],
         c3DepAMatrix: [],
         c3ArrBMatrix: [],
@@ -613,7 +616,7 @@ export function evaluateMultiInstanceForDates(
 
     const mu = currBody ? getGravitationalParameter(currBody) : 0;
     const R = currBody?.radius || 100000;
-    const minAlt = currBody ? getMinFlybyAlt(currBody, currInst.minFlybyRadius) : 10000;
+    const minAlt = currBody ? getMinFlybyAlt(currBody, currInst.minFlybyAltitude) : 10000;
     const rpMin = R + minAlt;
 
     // Direct link lookups
@@ -632,7 +635,8 @@ export function evaluateMultiInstanceForDates(
     if (pc1 && pc1.vTransArrMatrix && pc1.depDates && pc1.arrDates) {
       const i1 = findClosestIndex(pc1.depDates, tPrev);
       const j1 = findClosestIndex(pc1.arrDates, tCurr);
-      if (Math.abs(pc1.depDates[i1] - tPrev) < 100 && Math.abs(pc1.arrDates[j1] - tCurr) < 100 && (!pc1.validMatrix || pc1.validMatrix[i1]?.[j1])) {
+      const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
+      if (Math.abs(pc1.depDates[i1] - tPrev) < 100 && Math.abs(pc1.arrDates[j1] - tCurr) < 100 && (!valid1 || valid1[i1]?.[j1])) {
         vTransArr = pc1.vTransArrMatrix[i1]?.[j1];
       }
     }
@@ -652,7 +656,8 @@ export function evaluateMultiInstanceForDates(
     if (pc2 && pc2.vTransDepMatrix && pc2.depDates && pc2.arrDates) {
       const i2 = findClosestIndex(pc2.depDates, tCurr);
       const j2 = findClosestIndex(pc2.arrDates, tNext);
-      if (Math.abs(pc2.depDates[i2] - tCurr) < 100 && Math.abs(pc2.arrDates[j2] - tNext) < 100 && (!pc2.validMatrix || pc2.validMatrix[i2]?.[j2])) {
+      const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
+      if (Math.abs(pc2.depDates[i2] - tCurr) < 100 && Math.abs(pc2.arrDates[j2] - tNext) < 100 && (!valid2 || valid2[i2]?.[j2])) {
         vTransDep = pc2.vTransDepMatrix[i2]?.[j2];
       }
     }
@@ -673,7 +678,7 @@ export function evaluateMultiInstanceForDates(
     const c3Arr = (vecMag(vInfIn) ** 2) / 1e6;
     const c3Dep = (vecMag(vInfOut) ** 2) / 1e6;
 
-    const flybyEval = evaluateFlybyAtDate(currBody, vInfIn, vInfOut, tCurr, currInst.minFlybyRadius);
+    const flybyEval = evaluateFlybyAtDate(currBody, vInfIn, vInfOut, tCurr, currInst.minFlybyAltitude);
 
     // Sub-3 debug data
     let sub3DebugData: FlybyDebugPlotData | null = null;
@@ -695,7 +700,8 @@ export function evaluateMultiInstanceForDates(
         depDates: pc1.depDates,
         arrDates: pc2.arrDates,
         flightTimeMatrix: [],
-        validMatrix: [],
+        physicalValidMatrix: [],
+        constraintValidMatrix: [],
         totalPoweredDvMatrix: [],
         c3DepAMatrix: [],
         c3ArrBMatrix: [],

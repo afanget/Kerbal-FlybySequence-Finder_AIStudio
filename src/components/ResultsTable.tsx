@@ -25,6 +25,7 @@ interface ResultsTableProps {
   timeFormatMode: 'ksp' | 'earth';
   onSearchSequences: () => void;
   onSearchSequencesAlt?: () => void;
+  onSearchSequencesFromPorkchops?: () => void;
   onStopSearch?: () => void;
   onRemoveResult?: (seqId: string) => void;
   onClearResults?: () => void;
@@ -62,6 +63,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   timeFormatMode,
   onSearchSequences,
   onSearchSequencesAlt,
+  onSearchSequencesFromPorkchops,
   onStopSearch,
   onRemoveResult,
   onClearResults,
@@ -88,6 +90,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
   const [selectedInstanceFilter, setSelectedInstanceFilter] = useState<string>('ALL');
   const [isSequencePorkchopsFolded, setIsSequencePorkchopsFolded] = useState<boolean>(true);
+  const [isTisserandRangesFolded, setIsTisserandRangesFolded] = useState<boolean>(true);
   const [tisserandRangesTab, setTisserandRangesTab] = useState<'3body' | 'links'>('3body');
 
   // Asynchronous state for Tisserand date range calculations
@@ -541,6 +544,17 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                   <span>Search possible sequences (another way)</span>
                 </button>
               )}
+              {onSearchSequencesFromPorkchops && (
+                <button
+                  id="btn-search-sequences-porkchops"
+                  onClick={onSearchSequencesFromPorkchops}
+                  className="search-btn-porkchops flex items-center gap-2 px-5 py-2.5 rounded font-serif text-xs uppercase tracking-widest text-white bg-emerald-700 hover:bg-emerald-600 border border-emerald-500 shadow-lg transition active:scale-95 cursor-pointer font-semibold"
+                  title="Compute all full-path sequence porkchops and collect all samples with each flyby Δv ≤ 1 m/s into results"
+                >
+                  <Layers className="w-4 h-4 text-emerald-200" />
+                  <span>Search possible sequences (from sequences porkchop)</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -644,112 +658,83 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         </div>
       )}
 
-      {/* Pre-Flyby Position & Speed Error Controls */}
-      <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2">
-          <Sliders className="w-4 h-4 text-[#60A5FA]" />
-          <span className="font-semibold text-[#E2E8F0] uppercase tracking-wider text-[11px]">
-            Pre-Flyby Navigation Error Parameters
-          </span>
-          <span className="text-[#94A3B8] text-[11px] hidden sm:inline">
-            (Updates stochastic Δv & C3 sum instantly without re-searching)
-          </span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-4 font-mono text-xs">
-          <div className="flex items-center gap-2">
-            <label className="text-[#94A3B8] font-sans">Position Error:</label>
-            <div className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded px-2.5 py-1">
-              <input
-                id="input-pos-error"
-                type="number"
-                min="0"
-                max="100000"
-                step="1"
-                value={stochasticAltErrorKm}
-                onChange={(e) => setStochasticAltErrorKm(parseFloat(e.target.value) || 0)}
-                className="w-16 bg-transparent text-[#60A5FA] font-bold text-right outline-none"
-              />
-              <span className="text-[#64748B] ml-1">km</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <label className="text-[#94A3B8] font-sans">Speed Error:</label>
-            <div className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded px-2.5 py-1">
-              <input
-                id="input-speed-error"
-                type="number"
-                min="0"
-                max="1000"
-                step="0.1"
-                value={stochasticVelErrorMs}
-                onChange={(e) => setStochasticVelErrorMs(parseFloat(e.target.value) || 0)}
-                className="w-16 bg-transparent text-[#60A5FA] font-bold text-right outline-none"
-              />
-              <span className="text-[#64748B] ml-1">m/s</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tisserand-Filtered Date Ranges & 3-Body Sequence Intersections */}
+      {/* Tisserand-Filtered Date Ranges & 3-Body Sequence Intersections (Foldable - folded by default) */}
       {(isCalculatingTisserandRanges || sequence3BodyRangesList.length > 0 || linkEndRangesList.length > 0) && (
-        <div className="bg-[#25262B] p-3.5 rounded border border-[#2D2E33] flex flex-col gap-3 text-xs shadow-sm">
-          {/* Section Header with Tabs & Export */}
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2D2E33] pb-2.5">
-            <div className="flex items-center gap-2">
+        <div className="bg-[#25262B] rounded border border-[#2D2E33] overflow-hidden flex flex-col shadow-sm">
+          {/* Fold Header Toggle Button */}
+          <div className="w-full px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-white uppercase tracking-wider bg-[#2D2E33]/40 border-b border-[#2D2E33] select-none">
+            <button
+              onClick={() => setIsTisserandRangesFolded(!isTisserandRangesFolded)}
+              className="flex items-center gap-2 hover:text-[#38BDF8] transition cursor-pointer text-left"
+            >
               <GitMerge className="w-4 h-4 text-emerald-400" />
-              <span className="font-bold text-white uppercase tracking-wider text-xs">
-                Tisserand v_inf Filtered Date Ranges & 3-Body Intersections
-              </span>
-              <span className="text-[10px] text-[#94A3B8] font-mono hidden sm:inline">
+              <span>Tisserand v_inf Filtered Date Ranges & 3-Body Intersections</span>
+              <span className="text-[10px] text-[#94A3B8] font-mono font-normal normal-case hidden sm:inline">
                 (0.01d dichotomic bisection precision)
               </span>
+              {isCalculatingTisserandRanges && (
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-950/85 border border-blue-500/50 text-[10px] font-mono font-bold text-[#38BDF8] shadow-sm ml-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#38BDF8] animate-ping" />
+                  <span>Calculating: {tisserandProgress}%</span>
+                </span>
+              )}
+            </button>
+
+            <div className="flex items-center gap-2">
+              {!isTisserandRangesFolded && !isCalculatingTisserandRanges && (
+                <>
+                  {/* Tab selector */}
+                  <div className="flex items-center bg-[#1A1B1E] p-0.5 rounded border border-[#2D2E33]">
+                    <button
+                      onClick={() => setTisserandRangesTab('3body')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
+                        tisserandRangesTab === '3body'
+                          ? 'bg-[#38BDF8] text-black font-bold'
+                          : 'text-[#94A3B8] hover:text-white'
+                      }`}
+                    >
+                      <GitMerge className="w-3.5 h-3.5" />
+                      <span>3-Body Consolidated ({sequence3BodyRangesList.length})</span>
+                    </button>
+                    <button
+                      onClick={() => setTisserandRangesTab('links')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
+                        tisserandRangesTab === 'links'
+                          ? 'bg-[#38BDF8] text-black font-bold'
+                          : 'text-[#94A3B8] hover:text-white'
+                      }`}
+                    >
+                      <Calendar className="w-3.5 h-3.5" />
+                      <span>Link Ends ({linkEndRangesList.length})</span>
+                    </button>
+                  </div>
+
+                  {/* Export XLSX button */}
+                  <button
+                    onClick={handleExportTisserandRangesToExcel}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-cyan-300 border border-cyan-500/40 rounded text-[11px] font-semibold transition cursor-pointer"
+                    title="Export Tisserand date ranges to Excel"
+                  >
+                    <Download className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Export XLSX</span>
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={() => setIsTisserandRangesFolded(!isTisserandRangesFolded)}
+                className="flex items-center gap-1 text-[#94A3B8] hover:text-white text-[11px] font-mono font-normal cursor-pointer px-1.5 py-1 rounded hover:bg-[#1E293B] transition"
+              >
+                <span>{isTisserandRangesFolded ? 'Show / Unfold' : 'Hide / Fold'}</span>
+                {isTisserandRangesFolded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+              </button>
             </div>
-
-            {!isCalculatingTisserandRanges && (
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Tab selector */}
-                <div className="flex items-center bg-[#1A1B1E] p-0.5 rounded border border-[#2D2E33]">
-                  <button
-                    onClick={() => setTisserandRangesTab('3body')}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
-                      tisserandRangesTab === '3body'
-                        ? 'bg-[#38BDF8] text-black font-bold'
-                        : 'text-[#94A3B8] hover:text-white'
-                    }`}
-                  >
-                    <GitMerge className="w-3.5 h-3.5" />
-                    <span>3-Body Consolidated Intersections ({sequence3BodyRangesList.length})</span>
-                  </button>
-                  <button
-                    onClick={() => setTisserandRangesTab('links')}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
-                      tisserandRangesTab === 'links'
-                        ? 'bg-[#38BDF8] text-black font-bold'
-                        : 'text-[#94A3B8] hover:text-white'
-                    }`}
-                  >
-                    <Calendar className="w-3.5 h-3.5" />
-                    <span>Link Ends Date Ranges ({linkEndRangesList.length})</span>
-                  </button>
-                </div>
-
-                {/* Export XLSX button */}
-                <button
-                  onClick={handleExportTisserandRangesToExcel}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-cyan-300 border border-cyan-500/40 rounded text-[11px] font-semibold transition cursor-pointer"
-                  title="Export Tisserand date ranges to Excel"
-                >
-                  <Download className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Export XLSX</span>
-                </button>
-              </div>
-            )}
           </div>
 
-          {isCalculatingTisserandRanges ? (
+          {/* Unfolded Content */}
+          {!isTisserandRangesFolded && (
+            <div className="p-3.5 flex flex-col gap-3">
+              {isCalculatingTisserandRanges ? (
             <div className="bg-[#1A1B1E] border border-[#2D2E33] rounded-lg p-5 flex flex-col items-center justify-center gap-2.5 text-slate-300 my-1">
               <div className="flex items-center gap-2 font-mono text-xs text-[#38BDF8] font-semibold">
                 <RefreshCw className="w-4 h-4 animate-spin text-[#38BDF8]" />
@@ -901,8 +886,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
           )}
         </>
       )}
-    </div>
-  )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Sequence Porkchops Banners by Instance Count (Foldable - folded by default) */}
       {candidateInstanceCounts.length > 0 && (
@@ -1158,6 +1145,55 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
           </div>
         </div>
       )}
+
+      {/* Pre-Flyby Position & Speed Error Controls */}
+      <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2">
+          <Sliders className="w-4 h-4 text-[#60A5FA]" />
+          <span className="font-semibold text-[#E2E8F0] uppercase tracking-wider text-[11px]">
+            Pre-Flyby Navigation Error Parameters
+          </span>
+          <span className="text-[#94A3B8] text-[11px] hidden sm:inline">
+            (Updates stochastic Δv & C3 sum instantly without re-searching)
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 font-mono text-xs">
+          <div className="flex items-center gap-2">
+            <label className="text-[#94A3B8] font-sans">Position Error:</label>
+            <div className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded px-2.5 py-1">
+              <input
+                id="input-pos-error"
+                type="number"
+                min="0"
+                max="100000"
+                step="1"
+                value={stochasticAltErrorKm}
+                onChange={(e) => setStochasticAltErrorKm(parseFloat(e.target.value) || 0)}
+                className="w-16 bg-transparent text-[#60A5FA] font-bold text-right outline-none"
+              />
+              <span className="text-[#64748B] ml-1">km</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[#94A3B8] font-sans">Speed Error:</label>
+            <div className="flex items-center bg-[#1A1B1E] border border-[#2D2E33] rounded px-2.5 py-1">
+              <input
+                id="input-speed-error"
+                type="number"
+                min="0"
+                max="1000"
+                step="0.1"
+                value={stochasticVelErrorMs}
+                onChange={(e) => setStochasticVelErrorMs(parseFloat(e.target.value) || 0)}
+                className="w-16 bg-transparent text-[#60A5FA] font-bold text-right outline-none"
+              />
+              <span className="text-[#64748B] ml-1">m/s</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Column Reordering, Visibility Controls, & Multi-Level Sort Rules */}
       <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-wrap items-center justify-between gap-2 text-xs">

@@ -557,8 +557,8 @@ export const TisserandPlot: React.FC<TisserandPlotProps> = ({
       let minAlt = Infinity;
 
       bodyInstances.forEach(inst => {
-        if (inst.minFlybyRadius !== undefined && inst.minFlybyRadius < minAlt) {
-          minAlt = inst.minFlybyRadius;
+        if (inst.minFlybyAltitude !== undefined && inst.minFlybyAltitude < minAlt) {
+          minAlt = inst.minFlybyAltitude;
         }
       });
 

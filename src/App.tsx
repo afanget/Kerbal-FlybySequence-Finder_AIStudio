@@ -36,7 +36,8 @@ import {
   propagateC3Bounds,
   generateLinkEndDates,
   countPossibleTransfers,
-  intersectInstanceDates
+  intersectInstanceDates,
+  extractSequencesFromSequencePorkchops
 } from './physics/solver';
 import { daysToSeconds, parseKSPTimeToUT } from './utils/timeFormat';
 
@@ -101,7 +102,8 @@ export default function App() {
         c3ArrMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(Infinity)),
         dvMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(Infinity)),
         flightTimeMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(0)),
-        validMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(false)),
+        physicalValidMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(false)),
+        constraintValidMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(false)),
         vTransDepMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: 0, y: 0, z: 0 })),
         vTransArrMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: 0, y: 0, z: 0 })),
         computedSamples: 0,
@@ -181,7 +183,8 @@ export default function App() {
         flybyDateMatrix: [],
         flyby2DateMatrix: [],
         flightTimeMatrix: [],
-        validMatrix: [],
+        physicalValidMatrix: [],
+        constraintValidMatrix: [],
         flybyPoweredDvs: [],
         flybyDates: [],
       };
@@ -253,7 +256,8 @@ export default function App() {
 
   // Load initial preset mission on first mount (Kerbin -> Eve -> Kerbin -> Jool -> Grannus)
   useEffect(() => {
-    loadPresetMission('kerbin_grannus');
+    loadPresetMission('kjug');
+    // TODO loadPresetMission('kerbin_grannus');
   }, []);
 
   // Auto-propagate date bounds & candidate sample counts whenever instances/links change outside active search
@@ -316,14 +320,14 @@ export default function App() {
       const kspYearSec = daysToSeconds(426, 'ksp');
 
       newInsts = [
-        {id: 'inst-K1', bodyName: 'Kerbin' , x: 120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 9, isSourceOverride: true},
-        {id: 'inst-Du', bodyName: 'Duna'   , x: 220, y: 120, minFlybyRadius: 70000},
-        {id: 'inst-K2', bodyName: 'Kerbin' , x: 320, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 16, isSourceOverride: true},
-        {id: 'inst-E1', bodyName: 'Eve'    , x: 420, y: 120, minFlybyRadius: 100000},
-        {id: 'inst-K3', bodyName: 'Kerbin' , x: 520, y: 320, minFlybyRadius: 70000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25, isSourceOverride: true},
-        {id: 'inst-J',  bodyName: 'Jool'   , x: 720, y: 120, minFlybyRadius: 210000      , minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
-        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyRadius: 210000     , minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
-        {id: 'inst-G',  bodyName: 'Grannus', x: 920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 16, dateSampleCount: 1},
+        {id: 'inst-K1', bodyName: 'Kerbin' , x:  120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 9, isSourceOverride: true},
+        {id: 'inst-Du', bodyName: 'Duna'   , x:  220, y: 120, minFlybyAltitude:  70_000},
+        {id: 'inst-K2', bodyName: 'Kerbin' , x:  320, y: 320, minFlybyAltitude: 100_000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 16, isSourceOverride: true},
+        {id: 'inst-E1', bodyName: 'Eve'    , x:  420, y: 120, minFlybyAltitude: 100_000},
+        {id: 'inst-K3', bodyName: 'Kerbin' , x:  520, y: 320, minFlybyAltitude: 100_000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25, isSourceOverride: true},
+        {id: 'inst-J',  bodyName: 'Jool'   , x:  720, y: 120, minFlybyAltitude: 300_000, minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
+        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyAltitude: 400_000, minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
+        {id: 'inst-G',  bodyName: 'Grannus', x:  920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 16, dateSampleCount: 1},
       ];
 
       newLinks = [
@@ -336,6 +340,28 @@ export default function App() {
         {id: 'link-J-U',   sourceInstanceId: 'inst-J',  targetInstanceId: 'inst-U'},
         {id: 'link-U-G',   sourceInstanceId: 'inst-U',  targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(7500, 'ksp')},
         {id: 'link-J-G',   sourceInstanceId: 'inst-J',  targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(9500, 'ksp')},
+      ];
+    } else if (presetKey === 'kjug') {
+      // Kerbin -> Jool -> Urlum -> Grannus
+      const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
+      setCurrentSystem(grannusSys);
+      setMainBodyName('Sun');
+      setTimeFormatMode('ksp');
+
+      const kspDaySec = daysToSeconds(1, 'ksp');
+      const kspYearSec = daysToSeconds(426, 'ksp');
+
+      newInsts = [
+        {id: 'inst-K3', bodyName: 'Kerbin' , x:  120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 16, isSourceOverride: true},
+        {id: 'inst-J',  bodyName: 'Jool'   , x:  720, y: 120, minFlybyAltitude: 300_000, minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
+        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyAltitude: 400_000, minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
+        {id: 'inst-G',  bodyName: 'Grannus', x:  920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 16, dateSampleCount: 1},
+      ];
+
+      newLinks = [
+        {id: 'link-K3-J',  sourceInstanceId: 'inst-K3', targetInstanceId: 'inst-J'},
+        {id: 'link-J-U',   sourceInstanceId: 'inst-J',  targetInstanceId: 'inst-U'},
+        {id: 'link-U-G',   sourceInstanceId: 'inst-U',  targetInstanceId: 'inst-G', minFlightDuration: daysToSeconds(7500, 'ksp')},
       ];
     } else if (presetKey === 'kej') {
       // Kerbin -> Eve -> Jool
@@ -363,9 +389,9 @@ export default function App() {
 
       newInsts = [
         { id: 'inst-0', bodyName: 'Earth', x: 120, y: 220, minDate: 0, maxC3: 30 },
-        { id: 'inst-1', bodyName: 'Venus', x: 320, y: 140, minFlybyRadius: 300000 },
-        { id: 'inst-2', bodyName: 'Earth', x: 520, y: 220, minFlybyRadius: 300000 },
-        { id: 'inst-3', bodyName: 'Earth', x: 720, y: 220, minFlybyRadius: 300000 },
+        { id: 'inst-1', bodyName: 'Venus', x: 320, y: 140, minFlybyAltitude: 300000 },
+        { id: 'inst-2', bodyName: 'Earth', x: 520, y: 220, minFlybyAltitude: 300000 },
+        { id: 'inst-3', bodyName: 'Earth', x: 720, y: 220, minFlybyAltitude: 300000 },
         { id: 'inst-4', bodyName: 'Jupiter', x: 920, y: 140 },
       ];
       newLinks = [
@@ -582,6 +608,116 @@ export default function App() {
     }
   };
 
+  // Execute Search from Sequence Porkchops
+  // Computes all full-path sequence porkchops (if not done yet), then extracts all samples where each flyby delta-v <= 1 m/s
+  const handleSearchSequencesFromPorkchops = async () => {
+    if (instances.length === 0 || links.length === 0) {
+      alert('Please add body instances and directional links to the canvas before searching.');
+      return;
+    }
+
+    const candPaths = findAllSubPathsInGraph(links, instances);
+    const fullPathCands = candPaths.filter(c => c.isFullPath && c.pathInsts.length >= 3);
+
+    if (fullPathCands.length === 0) {
+      alert('No complete full-path sequence of at least 3 body instances found in the current graph.');
+      return;
+    }
+
+    stopSearchRef.current = false;
+    setIsSearching(true);
+    setSearchStatusText('Preparing full-path sequence porkchops...');
+
+    try {
+      const mainBody = currentSystem.bodies.find(b => b.name === mainBodyName) || currentSystem.bodies[0];
+      const activeSequencePorkchops: Record<string, SequencePorkchopData> = { ...sequencePorkchops };
+      const activePorkchops: Record<string, PorkchopPlotData> = { ...porkchops };
+
+      for (let idx = 0; idx < fullPathCands.length; idx++) {
+        if (stopSearchRef.current) break;
+        const cand = fullPathCands[idx];
+        const existing = activeSequencePorkchops[cand.id];
+
+        const isFullyComputed = existing && existing.depDates && existing.depDates.length > 0 &&
+          existing.arrDates && existing.arrDates.length > 0 &&
+          (existing.constraintValidMatrix || existing.physicalValidMatrix) &&
+          existing.computedSamples === existing.totalSamples;
+
+        if (!isFullyComputed) {
+          setSearchStatusText(`Computing sequence porkchop for full path ${idx + 1}/${fullPathCands.length}: ${cand.sequenceLabel}...`);
+          setComputingSeqId(cand.id);
+
+          const seqPc = await computeSequencePorkchopPlot({
+            pathInsts: cand.pathInsts,
+            bodies: currentSystem.bodies,
+            mainBody,
+            links,
+            porkchops: activePorkchops,
+            sequencePorkchops: activeSequencePorkchops,
+            onProgress: (msg) => setSearchStatusText(msg),
+            onPartialUpdate: (partialSeq) => {
+              activeSequencePorkchops[cand.id] = partialSeq;
+              setSequencePorkchops(prev => ({
+                ...prev,
+                [cand.id]: partialSeq
+              }));
+            },
+            onSubtaskProgress: (subtask) => {
+              setActiveSubtask(subtask);
+            },
+            onDirectPorkchopUpdate: (newPcs) => {
+              Object.assign(activePorkchops, newPcs);
+              setPorkchops(prev => ({ ...prev, ...newPcs }));
+            },
+            onSequencePorkchopUpdate: (subSeqPc) => {
+              activeSequencePorkchops[subSeqPc.id] = subSeqPc;
+              setSequencePorkchops(prev => ({
+                ...prev,
+                [subSeqPc.id]: subSeqPc
+              }));
+            },
+            shouldStop: () => stopSearchRef.current,
+            isFullPath: true,
+          });
+
+          activeSequencePorkchops[cand.id] = seqPc;
+          setSequencePorkchops(prev => ({
+            ...prev,
+            [cand.id]: seqPc
+          }));
+          setComputingSeqId(null);
+          setActiveSubtask(null);
+        }
+      }
+
+      if (stopSearchRef.current) {
+        setSearchStatusText('Search stopped by user.');
+        return;
+      }
+
+      // Extract all samples where each flyby delta-v is <= 1 m/s (no new Lambert compute needed)
+      setSearchStatusText('Extracting sequence results with flyby Δv ≤ 1 m/s from computed sequence porkchops...');
+      const extractedResults = extractSequencesFromSequencePorkchops(
+        activeSequencePorkchops,
+        fullPathCands,
+        instances,
+        currentSystem.bodies,
+        mainBody,
+        1.0
+      );
+
+      setResults(extractedResults);
+      setSearchStatusText(`Extracted ${extractedResults.length} validated sequence solution(s) with each flyby Δv ≤ 1 m/s.`);
+    } catch (err) {
+      console.error('Sequence porkchops search error:', err);
+      alert('Error searching sequences from porkchops: ' + err);
+    } finally {
+      setIsSearching(false);
+      setComputingSeqId(null);
+      setActiveSubtask(null);
+    }
+  };
+
   const handleRemoveResult = (seqId: string) => {
     setResults(prev => prev.filter(r => r.id !== seqId));
   };
@@ -678,6 +814,7 @@ export default function App() {
             timeFormatMode={timeFormatMode}
             onSearchSequences={handleSearchSequences}
             onSearchSequencesAlt={handleSearchSequencesAlt}
+            onSearchSequencesFromPorkchops={handleSearchSequencesFromPorkchops}
             onStopSearch={handleStopSearch}
             onRemoveResult={handleRemoveResult}
             onClearResults={handleClearResults}

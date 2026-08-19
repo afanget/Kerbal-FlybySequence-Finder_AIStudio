@@ -40,8 +40,8 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
       : 10000
     : 10000;
 
-  const [minFlybyRadius, setMinFlybyRadius] = useState<string>(
-    instance.minFlybyRadius !== undefined ? String(instance.minFlybyRadius) : String(defaultMinFlybyAlt)
+  const [minFlybyAltitude, setMinFlybyAltitude] = useState<string>(
+    instance.minFlybyAltitude !== undefined ? String(instance.minFlybyAltitude) : String(defaultMinFlybyAlt)
   );
 
   const [maxC3, setMaxC3] = useState<string>(instance.maxC3 !== undefined ? String(instance.maxC3) : '');
@@ -67,7 +67,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
       ...instance,
       minDate: minDateSec !== '' ? parseFloat(minDateSec) : undefined,
       maxDate: maxDateSec !== '' ? parseFloat(maxDateSec) : undefined,
-      minFlybyRadius: minFlybyRadius !== '' ? parseFloat(minFlybyRadius) : undefined,
+      minFlybyAltitude: minFlybyAltitude !== '' ? parseFloat(minFlybyAltitude) : undefined,
       maxC3: maxC3 !== '' ? parseFloat(maxC3) : undefined,
       dateSampleCount: dateSampleCount !== '' ? parseInt(dateSampleCount, 10) : undefined,
       isSourceOverride,
@@ -221,7 +221,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
             </div>
           </div>
 
-          {/* Flyby Radius, C3 & Sample Count Constraints */}
+          {/* Flyby Altitude, C3 & Sample Count Constraints */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="bg-[#25262B] p-3 rounded border border-[#2D2E33] flex flex-col gap-1">
               <div className="flex justify-between items-center">
@@ -229,10 +229,10 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                   <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
                   Min Altitude (m)
                 </label>
-                {minFlybyRadius !== '' && (
+                {minFlybyAltitude !== '' && (
                   <button
                     type="button"
-                    onClick={() => setMinFlybyRadius('')}
+                    onClick={() => setMinFlybyAltitude('')}
                     className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
                   >
                     Unset
@@ -241,13 +241,13 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
               </div>
               <input
                 type="number"
-                value={minFlybyRadius}
-                onChange={(e) => setMinFlybyRadius(e.target.value)}
+                value={minFlybyAltitude}
+                onChange={(e) => setMinFlybyAltitude(e.target.value)}
                 placeholder="Atmosphere + 10km"
                 className="bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
               />
               <span className="text-[10px] text-[#64748B]">
-                Above surface ({body?.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'})
+                Atmosphere = {body?.atmosphereHeight ? (body.atmosphereHeight / 1000).toFixed(0) + 'km' : '0km'}
               </span>
             </div>
 

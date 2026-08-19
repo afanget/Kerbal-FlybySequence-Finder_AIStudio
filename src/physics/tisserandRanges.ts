@@ -111,7 +111,8 @@ export async function computeLinkGridsAndRangesAsync(
       porkchopsMap[link.id] = pcData;
     }
 
-    const { depDates, arrDates, c3DepMatrix, c3ArrMatrix, validMatrix } = pcData;
+    const { depDates, arrDates, c3DepMatrix, c3ArrMatrix, constraintValidMatrix, physicalValidMatrix } = pcData;
+    const validMatrix = constraintValidMatrix || physicalValidMatrix || [];
     const N_DEP = depDates.length;
     const N_ARR = arrDates.length;
 
@@ -294,9 +295,10 @@ export async function compute3BodyConsolidatedRangesAsync(
     if (hasFlybyOverlap && pc1 && pc2) {
       // 1. Consolidated Departure Window at Source Instance (filtering Link 1 porkchop grid for flyby overlap)
       const validDepDatesForSeq: number[] = [];
+      const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
       for (let i = 0; i < pc1.depDates.length; i++) {
         for (let j = 0; j < pc1.arrDates.length; j++) {
-          if (pc1.validMatrix[i]?.[j]) {
+          if (valid1?.[i]?.[j]) {
             const arrT = pc1.arrDates[j];
             if (arrT >= consolidatedFlybyMin - 1.0 && arrT <= consolidatedFlybyMax + 1.0) {
               validDepDatesForSeq.push(pc1.depDates[i]);
@@ -316,9 +318,10 @@ export async function compute3BodyConsolidatedRangesAsync(
 
       // 2. Consolidated Arrival Window at Target Instance (filtering Link 2 porkchop grid for flyby overlap)
       const validArrDatesForSeq: number[] = [];
+      const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
       for (let j = 0; j < pc2.arrDates.length; j++) {
         for (let i = 0; i < pc2.depDates.length; i++) {
-          if (pc2.validMatrix[i]?.[j]) {
+          if (valid2?.[i]?.[j]) {
             const depT = pc2.depDates[i];
             if (depT >= consolidatedFlybyMin - 1.0 && depT <= consolidatedFlybyMax + 1.0) {
               validArrDatesForSeq.push(pc2.arrDates[j]);
@@ -393,7 +396,8 @@ export function computeLinkEndDateRanges(
     const srcEnv = envs[srcInst.id] || { minMs: 0, maxMs: 1e6 };
     const tgtEnv = envs[tgtInst.id] || { minMs: 0, maxMs: 1e6 };
 
-    const { depDates, arrDates, c3DepMatrix, c3ArrMatrix, validMatrix } = pcData;
+    const { depDates, arrDates, c3DepMatrix, c3ArrMatrix, constraintValidMatrix, physicalValidMatrix } = pcData;
+    const validMatrix = constraintValidMatrix || physicalValidMatrix || [];
 
     const validDepDates: number[] = [];
     const validArrDates: number[] = [];
@@ -530,9 +534,10 @@ export function compute3BodyConsolidatedRanges(
 
     if (hasFlybyOverlap && pc1 && pc2) {
       const validDepDatesForSeq: number[] = [];
+      const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
       for (let i = 0; i < pc1.depDates.length; i++) {
         for (let j = 0; j < pc1.arrDates.length; j++) {
-          if (pc1.validMatrix[i]?.[j]) {
+          if (valid1?.[i]?.[j]) {
             const arrT = pc1.arrDates[j];
             if (arrT >= consolidatedFlybyMin - 1.0 && arrT <= consolidatedFlybyMax + 1.0) {
               validDepDatesForSeq.push(pc1.depDates[i]);
@@ -551,9 +556,10 @@ export function compute3BodyConsolidatedRanges(
       }
 
       const validArrDatesForSeq: number[] = [];
+      const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
       for (let j = 0; j < pc2.arrDates.length; j++) {
         for (let i = 0; i < pc2.depDates.length; i++) {
-          if (pc2.validMatrix[i]?.[j]) {
+          if (valid2?.[i]?.[j]) {
             const depT = pc2.depDates[i];
             if (depT >= consolidatedFlybyMin - 1.0 && depT <= consolidatedFlybyMax + 1.0) {
               validArrDatesForSeq.push(pc2.arrDates[j]);

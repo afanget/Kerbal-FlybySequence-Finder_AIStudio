@@ -157,7 +157,7 @@ export function evaluateSingleVInfForInstance(
 
   const mu_b = body.stdGravParam;
   const R_b = body.radius;
-  let minAlt = inst.minFlybyRadius !== undefined ? inst.minFlybyRadius : (body.atmosphereHeight || 10000);
+  let minAlt = inst.minFlybyAltitude !== undefined ? inst.minFlybyAltitude : (body.atmosphereHeight || 10000);
   const r_p_min = R_b + minAlt;
 
   // Maximum gravitational turning angle at this excess velocity
@@ -388,7 +388,7 @@ export function computeC3DebugDetails(
   const isSource = !hasIncoming || !!inst.isSourceOverride;
   const isTarget = !hasOutgoing;
 
-  const minAlt = inst.minFlybyRadius !== undefined ? inst.minFlybyRadius : (body.atmosphereHeight || 10000);
+  const minAlt = inst.minFlybyAltitude !== undefined ? inst.minFlybyAltitude : (body.atmosphereHeight || 10000);
   const r_p_min = body.radius + minAlt;
 
   // 5 deg unconstrained ceiling

@@ -251,11 +251,11 @@ export function computeTisserandEnvelopes(
     const bodyInstances = instances.filter(i => i.bodyName === body.name);
     let minAlt = Infinity;
     bodyInstances.forEach(inst => {
-      if (inst.minFlybyRadius !== undefined && inst.minFlybyRadius < minAlt) {
-        minAlt = inst.minFlybyRadius;
+      if (inst.minFlybyAltitude !== undefined && inst.minFlybyAltitude < minAlt) {
+        minAlt = inst.minFlybyAltitude;
       }
     });
-    // Fallback to atmosphere height if no instances define a minFlybyRadius
+    // Fallback to atmosphere height if no instances define a minFlybyAltitude
     if (minAlt === Infinity) {
       minAlt = body.atmosphereHeight;
     }
@@ -283,10 +283,10 @@ export function computeTisserandEnvelopes(
     let maxMs = prep.vInf5DegMs;
     const hasIncoming = links.some(l => l.targetInstanceId === inst.id); // Has incoming trajectory
     const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id); // Has outgoing trajectory
-    const isPureFlyby = hasIncoming && hasOutgoing && !inst.isSourceOverride; // Pure flyby (no source override)
+    const isFlyby = hasIncoming && hasOutgoing; // Flyby instance among other roles
 
-    // If not a pure flyby and maxC3 is defined, cap maxMs to sqrt(maxC3) * 1000 (convert km²/s² to m/s)
-    if (!isPureFlyby && inst.maxC3 !== undefined && inst.maxC3 > 0) {
+    // 1. maxC3 should not lower the maximum C3 given by the tisserand plot if the instance is a flyby among other roles
+    if (!isFlyby && inst.maxC3 !== undefined && inst.maxC3 > 0) {
       maxMs = Math.min(maxMs, Math.sqrt(inst.maxC3) * 1000);
     }
     // Ensure maxMs is at least 1000 m/s
@@ -561,7 +561,7 @@ export function propagateC3Bounds(
     const hasOutgoing = links.some(l => l.sourceInstanceId === inst.id);
     const isFlyby = hasIncoming && hasOutgoing;
     const isSource = !hasIncoming || !!inst.isSourceOverride;
-    const isTarget = !hasOutgoing;
+    const isTarget = !hasOutgoing || !!inst.isTargetOverride;
 
     if (!env || (env.minMs === 0 && env.maxMs === 0)) {
       return {
@@ -854,9 +854,10 @@ export function clonePorkchopData(pcData: PorkchopPlotData): PorkchopPlotData {
     c3ArrMatrix: pcData.c3ArrMatrix.map(row => [...row]),
     dvMatrix: pcData.dvMatrix.map(row => [...row]),
     flightTimeMatrix: pcData.flightTimeMatrix.map(row => [...row]),
-    validMatrix: pcData.validMatrix.map(row => [...row]),
-    vTransDepMatrix: pcData.vTransDepMatrix.map(row => [...row]),
-    vTransArrMatrix: pcData.vTransArrMatrix.map(row => [...row]),
+    physicalValidMatrix: pcData.physicalValidMatrix?.map(row => [...row]),
+    constraintValidMatrix: pcData.constraintValidMatrix?.map(row => [...row]),
+    vTransDepMatrix: pcData.vTransDepMatrix?.map(row => [...row]),
+    vTransArrMatrix: pcData.vTransArrMatrix?.map(row => [...row]),
   };
 }
 
@@ -889,7 +890,8 @@ export async function computePorkchopPlot(
   const c3ArrMatrix: number[][] = Array.from({ length: nDep }, () => Array(nArr).fill(Infinity));
   const dvMatrix: number[][] = Array.from({ length: nDep }, () => Array(nArr).fill(Infinity));
   const flightTimeMatrix: number[][] = Array.from({ length: nDep }, () => Array(nArr).fill(0));
-  const validMatrix: boolean[][] = Array.from({ length: nDep }, () => Array(nArr).fill(false));
+  const physicalValidMatrix: boolean[][] = Array.from({ length: nDep }, () => Array(nArr).fill(false));
+  const constraintValidMatrix: boolean[][] = Array.from({ length: nDep }, () => Array(nArr).fill(false));
   const vTransDepMatrix: Vector3D[][] = Array.from({ length: nDep }, () => Array(nArr).fill({ x: 0, y: 0, z: 0 }));
   const vTransArrMatrix: Vector3D[][] = Array.from({ length: nDep }, () => Array(nArr).fill({ x: 0, y: 0, z: 0 }));
 
@@ -910,7 +912,8 @@ export async function computePorkchopPlot(
     c3ArrMatrix,
     dvMatrix,
     flightTimeMatrix,
-    validMatrix,
+    physicalValidMatrix,
+    constraintValidMatrix,
     vTransDepMatrix,
     vTransArrMatrix,
     computedSamples: 0,
@@ -948,6 +951,7 @@ export async function computePorkchopPlot(
       const minDur = link.minFlightDuration ?? 0;
       const maxDur = link.maxFlightDuration ?? 1e10;
 
+      let isPhysicallyPossible = false;
       let passC3 = false;
       let c3Dep = Infinity;
       let c3Arr = Infinity;
@@ -955,7 +959,8 @@ export async function computePorkchopPlot(
       let v1 = { x: 0, y: 0, z: 0 };
       let v2 = { x: 0, y: 0, z: 0 };
 
-      if (dt >= minDur && dt <= maxDur) {
+      // Strictly physically impossible if dt < 3600 (e.g. arrival before/at departure)
+      if (dt >= 3600) {
         const srcState = srcStates[i];
         const tgtState = tgtStates[j];
 
@@ -963,6 +968,7 @@ export async function computePorkchopPlot(
         const sol = solveLambert(srcState.pos, tgtState.pos, dt, muCentral, true, minAllowedRadius);
 
         if (sol.isValid) {
+          isPhysicallyPossible = true;
           v1 = sol.v1;
           v2 = sol.v2;
 
@@ -976,13 +982,14 @@ export async function computePorkchopPlot(
           c3Arr = (vInfArrMag * vInfArrMag) / 1e6;
           dv = vInfDepMag + vInfArrMag;
 
+          const passDur = (dt >= minDur && dt <= maxDur);
           const passSrcC3 = (srcInstance.computedMinC3 === undefined || c3Dep >= srcInstance.computedMinC3 - 0.05) &&
                             (srcInstance.computedMaxC3 === undefined || c3Dep <= srcInstance.computedMaxC3 + 0.05);
 
           const passTgtC3 = (tgtInstance.computedMinC3 === undefined || c3Arr >= tgtInstance.computedMinC3 - 0.05) &&
                             (tgtInstance.computedMaxC3 === undefined || c3Arr <= tgtInstance.computedMaxC3 + 0.05);
 
-          passC3 = passSrcC3 && passTgtC3;
+          passC3 = passDur && passSrcC3 && passTgtC3;
         }
       }
 
@@ -991,7 +998,8 @@ export async function computePorkchopPlot(
       c3DepMatrix[i][j] = c3Dep;
       c3ArrMatrix[i][j] = c3Arr;
       dvMatrix[i][j] = dv;
-      validMatrix[i][j] = passC3;
+      physicalValidMatrix[i][j] = isPhysicallyPossible;
+      constraintValidMatrix[i][j] = passC3;
       if (passC3) validCount++;
 
       // Preview block fill for unvisited neighbor cells
@@ -1005,7 +1013,8 @@ export async function computePorkchopPlot(
             c3DepMatrix[r][c] = c3Dep;
             c3ArrMatrix[r][c] = c3Arr;
             dvMatrix[r][c] = dv;
-            validMatrix[r][c] = passC3;
+            physicalValidMatrix[r][c] = isPhysicallyPossible;
+            constraintValidMatrix[r][c] = passC3;
             flightTimeMatrix[r][c] = tgtDates[c] - srcDates[r];
           }
         }
@@ -1149,7 +1158,7 @@ function evaluateSequenceTransferForDates(
             vInfInB,
             vInfOutB,
             tFlybyB,
-            flybyInst.minFlybyRadius
+            flybyInst.minFlybyAltitude
           );
 
           if (evalRes.flybyMargin < -1e-3) continue;
@@ -1228,7 +1237,7 @@ function evaluateSequenceTransferForDates(
     }
 
     const muFlyby = getGravitationalParameter(flybyBody);
-    const minFlybyRadius = flybyInst.minFlybyRadius ?? (1.1 * (flybyBody.radius + (flybyBody.atmosphereHeight || 0)));
+    const minFlybyRadius = flybyBody.radius + (flybyInst.minFlybyAltitude ?? 1.1 * ((flybyBody.atmosphereHeight || 0)));
     const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
 
     const evalExtrapolatedAtDate = (t: number) => {
@@ -1437,10 +1446,10 @@ function evaluateSequenceTransferForDates(
               const vInfOutC = vecSub(sol3.v1, stC.vel);
               const vInfArrD = vecSub(sol3.v2, stTgt.vel);
 
-              const evalB = evaluateFlybyAtDate(flyby1Body, vInfInB, vInfOutB, tB, flyby1Inst.minFlybyRadius);
+              const evalB = evaluateFlybyAtDate(flyby1Body, vInfInB, vInfOutB, tB, flyby1Inst.minFlybyAltitude);
               if (evalB.flybyMargin < -1e-3) continue;
 
-              const evalC = evaluateFlybyAtDate(flyby2Body, vInfInC, vInfOutC, tC, flyby2Inst.minFlybyRadius);
+              const evalC = evaluateFlybyAtDate(flyby2Body, vInfInC, vInfOutC, tC, flyby2Inst.minFlybyAltitude);
               if (evalC.flybyMargin < -1e-3) continue;
 
               const c3DepA = (vecMag(vInfDepA) ** 2) / 1e6;
@@ -1560,7 +1569,7 @@ function evaluateSequenceTransferForDates(
             vInfIn,
             vInfOut,
             tCurr,
-            flybyInst.minFlybyRadius
+            flybyInst.minFlybyAltitude
           );
 
           if (flybyEval.flybyMargin < -100000) continue;
@@ -1608,7 +1617,7 @@ function evaluateSequenceTransferForDates(
       vInfIn,
       vInfOut,
       tLastFlyby,
-      lastFlybyInst.minFlybyRadius
+      lastFlybyInst.minFlybyAltitude
     );
     if (lastFlybyEval.flybyMargin < -100000) continue;
 
@@ -1951,7 +1960,8 @@ export async function computeSequencePorkchopPlot(
   const flybyDateMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const flyby2DateMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
   const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const validMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
+  const physicalValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
+  const constraintValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
 
   const flybyPoweredDvs = flybyInsts.map(inst => ({
     flybyBody: inst.bodyName,
@@ -2000,7 +2010,8 @@ export async function computeSequencePorkchopPlot(
     flybyDateMatrix,
     flyby2DateMatrix,
     flightTimeMatrix,
-    validMatrix,
+    physicalValidMatrix,
+    constraintValidMatrix,
     flybyPoweredDvs,
     flybyDates,
     computedSamples: 0,
@@ -2037,7 +2048,7 @@ export async function computeSequencePorkchopPlot(
       const totalDt = tArr - tDep;
       flightTimeMatrix[i][j] = totalDt;
 
-      const bestRes = totalDt >= 86400 * (N - 1)
+      const bestRes = totalDt >= 3600 * (N - 1)
         ? (N === 3
             ? evaluateSequenceTransferFromDirectPorkchops(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, profiler)
             : (subChainStrategy === 'suffix'
@@ -2045,8 +2056,13 @@ export async function computeSequencePorkchopPlot(
                 : evaluateHigherOrderSequenceTransferAddLastLeg(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, sequencePorkchopsMap, profiler)))
         : null;
 
+      const isPhysical = (totalDt >= 3600 * (N - 1)) && !!bestRes && (bestRes.isPhysicallyValid !== false);
+      const isConstraint = isPhysical && (bestRes.isConstraintValid !== false);
+
+      physicalValidMatrix[i][j] = isPhysical;
+      constraintValidMatrix[i][j] = isConstraint;
+
       if (bestRes) {
-        validMatrix[i][j] = true;
         c3DepAMatrix[i][j] = bestRes.c3DepA;
         c3ArrFinalMatrix[i][j] = bestRes.c3ArrFinal;
         totalPoweredDvMatrix[i][j] = bestRes.totalDv;
@@ -2074,7 +2090,7 @@ export async function computeSequencePorkchopPlot(
           if (flybyDates[fb]) flybyDates[fb].dateMatrix[i][j] = bestRes.flybyDates[fb] || 0;
         }
 
-        validCount++;
+        if (isConstraint) validCount++;
       }
 
       // Preview block fill for unvisited neighbor cells in current pass
@@ -2084,7 +2100,8 @@ export async function computeSequencePorkchopPlot(
           const c = j + dj;
           if (evaluated[r][c] === 0) {
             flightTimeMatrix[r][c] = arrDates[c] - depDates[r];
-            validMatrix[r][c] = !!bestRes;
+            physicalValidMatrix[r][c] = isPhysical;
+            constraintValidMatrix[r][c] = isConstraint;
             c3DepAMatrix[r][c] = bestRes?.c3DepA || 0;
             c3ArrFinalMatrix[r][c] = bestRes?.c3ArrFinal || 0;
             totalPoweredDvMatrix[r][c] = bestRes?.totalDv || 0;
@@ -2317,12 +2334,15 @@ export async function runSequenceSearch(
       const pc = porkchops[link.id];
       if (pc) {
         let valid = 0;
-        for (let r = 0; r < pc.validMatrix.length; r++) {
-          for (let c = 0; c < pc.validMatrix[r].length; c++) {
-            if (pc.validMatrix[r][c]) valid++;
+        const matrix = pc.constraintValidMatrix || pc.physicalValidMatrix;
+        if (matrix) {
+          for (let r = 0; r < matrix.length; r++) {
+            for (let c = 0; c < matrix[r].length; c++) {
+              if (matrix[r][c]) valid++;
+            }
           }
+          return valid;
         }
-        return valid;
       }
       return link.possibleTransfersCount ?? ((link.departureSampleCount || 30) * (link.arrivalSampleCount || 30));
     };
@@ -2359,11 +2379,14 @@ export async function runSequenceSearch(
       const flybyBody = bodyMap.get(bestPair.flybyInst.bodyName) || mainBody;
       const tgtBody = bodyMap.get(bestPair.tgtInst.bodyName) || mainBody;
 
-      const newValid1 = pc1.validMatrix.map(row => [...row]);
-      const newValid2 = pc2.validMatrix.map(row => [...row]);
+      const constrMatrix1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
+      const constrMatrix2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
 
-      const validEntry1 = pc1.validMatrix.map(row => row.map(() => false));
-      const validEntry2 = pc2.validMatrix.map(row => row.map(() => false));
+      const newValid1 = constrMatrix1?.map(row => [...row]) ?? [];
+      const newValid2 = constrMatrix2?.map(row => [...row]) ?? [];
+
+      const validEntry1 = constrMatrix1?.map(row => row.map(() => false)) ?? [];
+      const validEntry2 = constrMatrix2?.map(row => row.map(() => false)) ?? [];
 
       const srcPosCache = new Map<number, Vector3D>();
       const tgtPosCache = new Map<number, Vector3D>();
@@ -2393,7 +2416,7 @@ export async function runSequenceSearch(
           const m2 = m < pc2.depDates.length - 1 ? m + 1 : (m > 0 ? m - 1 : m);
 
           for (let i = 0; i < pc1.depDates.length; i++) {
-            if (!pc1.validMatrix[i][j]) continue;
+            if (!constrMatrix1?.[i]?.[j]) continue;
             const vTransIn1 = pc1.vTransArrMatrix?.[i]?.[j];
             const vTransIn2 = pc1.vTransArrMatrix?.[i]?.[j2];
             if (!vTransIn1 || !vTransIn2) continue;
@@ -2402,7 +2425,7 @@ export async function runSequenceSearch(
             const vInfIn2 = vecSub(vTransIn2, stBody2.vel);
 
             for (let n = 0; n < pc2.arrDates.length; n++) {
-              if (!pc2.validMatrix[m][n]) continue;
+              if (!constrMatrix2?.[m]?.[n]) continue;
               const vTransOut1 = pc2.vTransDepMatrix?.[m]?.[n];
               const vTransOut2 = pc2.vTransDepMatrix?.[m2]?.[n];
               if (!vTransOut1 || !vTransOut2) continue;
@@ -2418,7 +2441,7 @@ export async function runSequenceSearch(
                 vInfOut2,
                 t1,
                 t2,
-                bestPair.flybyInst.minFlybyRadius
+                bestPair.flybyInst.minFlybyAltitude
               );
 
               if (feas.isValid) {
@@ -2448,16 +2471,20 @@ export async function runSequenceSearch(
 
       // Count total valid transfers in pc1 and pc2
       let count1 = 0;
-      for (let r = 0; r < pc1.validMatrix.length; r++) {
-        for (let c = 0; c < pc1.validMatrix[r].length; c++) {
-          if (pc1.validMatrix[r][c]) count1++;
+      if (constrMatrix1) {
+        for (let r = 0; r < constrMatrix1.length; r++) {
+          for (let c = 0; c < constrMatrix1[r].length; c++) {
+            if (constrMatrix1[r][c]) count1++;
+          }
         }
       }
 
       let count2 = 0;
-      for (let r = 0; r < pc2.validMatrix.length; r++) {
-        for (let c = 0; c < pc2.validMatrix[r].length; c++) {
-          if (pc2.validMatrix[r][c]) count2++;
+      if (constrMatrix2) {
+        for (let r = 0; r < constrMatrix2.length; r++) {
+          for (let c = 0; c < constrMatrix2[r].length; c++) {
+            if (constrMatrix2[r][c]) count2++;
+          }
         }
       }
 
@@ -2724,7 +2751,7 @@ async function findValidTrajectoriesForPath(
       if (outputSequences.length >= 150) break;
       if (shouldStop?.()) break;
 
-      if (!pc.validMatrix[i][j]) continue;
+      if (!pc.constraintValidMatrix?.[i]?.[j]) continue;
 
       const tCurr = pc.arrDates[j];
       const dt = tCurr - tPrev;
@@ -2788,7 +2815,7 @@ async function findValidTrajectoriesForPath(
           vInfOut2,
           t1,
           t2,
-          prevInst.minFlybyRadius
+          prevInst.minFlybyAltitude
         );
 
         if (!flybyFeas.isValid || flybyFeas.matchedFlybyDate === undefined) continue;
@@ -3079,7 +3106,7 @@ export async function runSequenceSearchAlt(
             vInfIn,
             vInfOut,
             tPrev,
-            srcNode.minFlybyRadius
+            srcNode.minFlybyAltitude
           );
 
           if (!flybyEval.isValid) continue;
@@ -3212,3 +3239,137 @@ export async function runSequenceSearchAlt(
     sequences: allKeptSequences
   };
 }
+
+/**
+ * Extract flyable sequences directly from sequence porkchop plots
+ * filters for samples where each flyby delta-v <= maxFlybyDvMs (e.g. 1.0 m/s)
+ * No new Lambert compute is needed as values are taken from the computed porkchops.
+ */
+export function extractSequencesFromSequencePorkchops(
+  sequencePorkchops: Record<string, SequencePorkchopData>,
+  candidatePaths: CandidateSequencePath[],
+  instances: InstanceNode[],
+  bodies: CelestialBody[],
+  mainBody: CelestialBody,
+  maxFlybyDvMs: number = 1.0
+): FlyableSequenceResult[] {
+  const bodyMap = new Map<string, CelestialBody>();
+  bodies.forEach(b => bodyMap.set(b.name, b));
+  const results: FlyableSequenceResult[] = [];
+
+  const fullPathCands = candidatePaths.filter(c => c.isFullPath);
+
+  for (const cand of fullPathCands) {
+    const seqPc = sequencePorkchops[cand.id] || Object.values(sequencePorkchops).find(
+      s => s.instanceIds && s.instanceIds.join('-') === cand.pathInsts.map(i => i.id).join('-')
+    );
+    if (!seqPc || !seqPc.depDates || !seqPc.arrDates || (!seqPc.constraintValidMatrix && !seqPc.physicalValidMatrix)) continue;
+
+    const pathInsts = cand.pathInsts;
+    const numInsts = pathInsts.length;
+    const flybyInsts = pathInsts.slice(1, numInsts - 1);
+    const numFlybys = flybyInsts.length;
+
+    for (let r = 0; r < seqPc.depDates.length; r++) {
+      for (let c = 0; c < seqPc.arrDates.length; c++) {
+        if (!seqPc.constraintValidMatrix?.[r]?.[c]) continue;
+
+        const depDate = seqPc.depDates[r];
+        const arrDate = seqPc.arrDates[c];
+        const depC3 = seqPc.c3DepAMatrix?.[r]?.[c] ?? 0;
+        const arrC3 = seqPc.c3ArrFinalMatrix?.[r]?.[c] ?? seqPc.c3ArrCMatrix?.[r]?.[c] ?? seqPc.c3ArrBMatrix?.[r]?.[c] ?? 0;
+
+        // Check if each flyby delta-v is <= maxFlybyDvMs (1.0 m/s)
+        let passesFlybyDvCheck = true;
+        const flybyDetails: FlybyDetail[] = [];
+        let totalPoweredDv = 0;
+        let totalStochasticDv = 0;
+
+        for (let fb = 0; fb < numFlybys; fb++) {
+          const fbInst = flybyInsts[fb];
+          const fbBody = bodyMap.get(fbInst.bodyName) || mainBody;
+
+          let fbDv = 0;
+          if (seqPc.flybyPoweredDvs?.[fb]?.poweredDvMatrix?.[r]?.[c] !== undefined) {
+            fbDv = seqPc.flybyPoweredDvs[fb].poweredDvMatrix[r][c];
+          } else if (fb === 0) {
+            fbDv = seqPc.poweredDvBMatrix?.[r]?.[c] ?? 0;
+          } else if (fb === 1) {
+            fbDv = seqPc.poweredDvCMatrix?.[r]?.[c] ?? 0;
+          }
+
+          if (fbDv > maxFlybyDvMs) {
+            passesFlybyDvCheck = false;
+            break;
+          }
+
+          totalPoweredDv += fbDv;
+
+          const fbDate = seqPc.flybyDates?.[fb]?.dateMatrix?.[r]?.[c]
+            ?? (fb === 0 ? seqPc.flybyDateMatrix?.[r]?.[c] : seqPc.flyby2DateMatrix?.[r]?.[c])
+            ?? (depDate + (arrDate - depDate) * ((fb + 1) / (numFlybys + 1)));
+
+          const c3In = fb === 0 ? (seqPc.c3ArrBMatrix?.[r]?.[c] ?? depC3) : (seqPc.c3ArrCMatrix?.[r]?.[c] ?? depC3);
+          const c3Out = fb === 0 ? (seqPc.c3DepBMatrix?.[r]?.[c] ?? depC3) : (seqPc.c3DepCMatrix?.[r]?.[c] ?? depC3);
+          const vInfInMag = Math.sqrt(Math.max(0, c3In * 1e6));
+          const vInfOutMag = Math.sqrt(Math.max(0, c3Out * 1e6));
+          const meanVInfMag = (vInfInMag + vInfOutMag)/2;
+
+          const muBody = fbBody.stdGravParam;
+          const rPeri = fbBody.radius + (fbInst.minFlybyAltitude ?? (fbBody.atmosphereHeight ? fbBody.atmosphereHeight : 0));
+          const maxTurnAngle = 2 * Math.asin(1 / (1 + (rPeri * (meanVInfMag ** 2)) / muBody)) * (180 / Math.PI);
+
+          // TODO compute deflexion angle
+          // TODO compute periapsisRadius from deflexion angle at meanVInfMag
+          const periapsisRadius = rPeri;
+
+          // TODO compute stochDv like in flyby.ts
+          const defaultStochDv = Math.max(0.1, 10.0 * (10000 / Math.max(1000, periapsisRadius)));
+          totalStochasticDv += defaultStochDv + fbDv;
+
+          flybyDetails.push({
+            bodyName: fbInst.bodyName,
+            instanceId: fbInst.id,
+            flybyDate: fbDate,
+            flybyDateSampling: 86400,
+            periapsisAlt: periapsisRadius - fbBody.radius,
+            flybyMargin: 0,
+            deflectionAngle: Math.min(maxTurnAngle, maxTurnAngle * 0.5),
+            maxDeflectionAngle: maxTurnAngle,
+            stochasticDv: defaultStochDv,
+            poweredDv: fbDv,
+            vInfInMag,
+            vInfOutMag,
+          });
+        }
+
+        if (!passesFlybyDvCheck) continue;
+
+        const totalFlightTime = seqPc.flightTimeMatrix?.[r]?.[c] || (arrDate - depDate);
+
+        results.push({
+          id: `seq-pc-cand-${cand.id}-${r}-${c}`,
+          instanceIds: pathInsts.map(i => i.id),
+          bodyNames: pathInsts.map(i => i.bodyName),
+          depDate,
+          arrDate,
+          depC3,
+          arrC3,
+          totalFlightTime,
+          totalStochasticDv,
+          totalDv: totalPoweredDv,
+          flybys: flybyDetails,
+          transfers: []
+        });
+      }
+    }
+  }
+
+  // Sort results by sum of (C3d + C3a + stochasticDv^2)
+  return results.sort((a, b) => {
+    const costA = a.depC3 + a.arrC3 + ((a.totalStochasticDv / 1000) ** 2);
+    const costB = b.depC3 + b.arrC3 + ((b.totalStochasticDv / 1000) ** 2);
+    return costA - costB;
+  });
+}
+
