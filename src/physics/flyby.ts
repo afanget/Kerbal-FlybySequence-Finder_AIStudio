@@ -1333,7 +1333,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   const subSeqKey = subPath.map(i => i.id).join('-');
   const subSeqId = `seq-pc-${subSeqKey}`;
   const subSeq = sequencePorkchops[subSeqId] || sequencePorkchops[subSeqKey] || Object.values(sequencePorkchops).find(
-    s => s.instanceIds && s.instanceIds.join('-') === subSeqKey
+    s => s.id === subSeqId || s.id === subSeqKey || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === subSeqKey
   );
 
   if (!subSeq || !subSeq.depDates || !subSeq.arrDates || subSeq.depDates.length === 0 || subSeq.arrDates.length === 0) {
@@ -1400,22 +1400,22 @@ export function generateHigherOrderAddLastLegFlybySamples(
     const isSubSeqPhys = subSeq.physicalValidMatrix ? (subSeq.physicalValidMatrix[i0]?.[j0] ?? false) : true;
     const isPLastPhys = P_last.physicalValidMatrix ? (P_last.physicalValidMatrix[i1]?.[j_last] ?? false) : true;
 
-    const c3DepA = subSeq.c3DepAMatrix?.[i0]?.[j0] ?? 0;
-    const rawC3ArrIn = subSeq.c3ArrFinalMatrix?.[i0]?.[j0] ?? subSeq.c3ArrDMatrix?.[i0]?.[j0] ?? subSeq.c3ArrCMatrix?.[i0]?.[j0] ?? subSeq.c3ArrBMatrix?.[i0]?.[j0] ?? 0;
-    const priorCost = subSeq.totalPoweredDvMatrix?.[i0]?.[j0] ?? subSeq.poweredDvBMatrix?.[i0]?.[j0] ?? 0;
+    const c3DepA = subSeq.c3DepMatrix?.[i0]?.[j0] ?? 0;
+    const rawC3ArrIn = subSeq.c3ArrMatrix?.[i0]?.[j0] ?? 0;
+    const priorCost = subSeq.totalPoweredDvMatrix?.[i0]?.[j0] ?? 0;
 
     const c3DepOut = P_last.c3DepMatrix?.[i1]?.[j_last] ?? 0;
     const c3ArrFinal = P_last.c3ArrMatrix?.[i1]?.[j_last] ?? 0;
     const vTransDep = P_last.vTransDepMatrix?.[i1]?.[j_last];
 
     // Extract prior flyby dates & DVs
-    const priorFlybyDates: number[] = subSeq.flybyDates && subSeq.flybyDates.length > 0
-      ? subSeq.flybyDates.map(fd => fd.dateMatrix?.[i0]?.[j0] || 0)
-      : [subSeq.flybyDateMatrix?.[i0]?.[j0] || 0];
+    const priorFlybyDates: number[] = subSeq.flybys && subSeq.flybys.length > 0
+      ? subSeq.flybys.map(fb => fb.dateMatrix?.[i0]?.[j0] || 0)
+      : [];
 
-    const priorFlybyDvs: number[] = subSeq.flybyPoweredDvs && subSeq.flybyPoweredDvs.length > 0
-      ? subSeq.flybyPoweredDvs.map(fd => fd.poweredDvMatrix?.[i0]?.[j0] || 0)
-      : [subSeq.poweredDvBMatrix?.[i0]?.[j0] || 0];
+    const priorFlybyDvs: number[] = subSeq.flybys && subSeq.flybys.length > 0
+      ? subSeq.flybys.map(fb => fb.poweredDvMatrix?.[i0]?.[j0] || 0)
+      : [];
 
     // Obtain inbound velocity vector vTransArr entering flybyBody
     let vTransArr: Vector3D | undefined;
@@ -1824,7 +1824,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   const suffixKey = suffixPath.map(i => i.id).join('-');
   const suffixSeqId = `seq-pc-${suffixKey}`;
   const suffixSeq = sequencePorkchops[suffixSeqId] || sequencePorkchops[suffixKey] || Object.values(sequencePorkchops).find(
-    s => s.instanceIds && s.instanceIds.join('-') === suffixKey
+    s => s.id === suffixSeqId || s.id === suffixKey || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === suffixKey
   );
 
   if (!suffixSeq || !suffixSeq.depDates || !suffixSeq.arrDates || suffixSeq.depDates.length === 0 || suffixSeq.arrDates.length === 0) {
@@ -1897,18 +1897,18 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const c3ArrIn = P_first.c3ArrMatrix?.[i_first]?.[j0] ?? 0;
     const vTransArr: Vector3D | undefined = P_first.vTransArrMatrix?.[i_first]?.[j0];
 
-    const rawC3DepOut = suffixSeq.c3DepAMatrix?.[i1]?.[j_suffix] ?? 0;
-    const c3ArrFinal = suffixSeq.c3ArrFinalMatrix?.[i1]?.[j_suffix] ?? suffixSeq.c3ArrDMatrix?.[i1]?.[j_suffix] ?? suffixSeq.c3ArrCMatrix?.[i1]?.[j_suffix] ?? 0;
-    const suffixCost = suffixSeq.totalPoweredDvMatrix?.[i1]?.[j_suffix] ?? suffixSeq.poweredDvBMatrix?.[i1]?.[j_suffix] ?? 0;
+    const rawC3DepOut = suffixSeq.c3DepMatrix?.[i1]?.[j_suffix] ?? 0;
+    const c3ArrFinal = suffixSeq.c3ArrMatrix?.[i1]?.[j_suffix] ?? 0;
+    const suffixCost = suffixSeq.totalPoweredDvMatrix?.[i1]?.[j_suffix] ?? 0;
 
     // Extract suffix flyby dates & DVs (for Inst_2, ..., Inst_{N-2})
-    const suffixFlybyDates: number[] = suffixSeq.flybyDates && suffixSeq.flybyDates.length > 0
-      ? suffixSeq.flybyDates.map(fd => fd.dateMatrix?.[i1]?.[j_suffix] || 0)
-      : (suffixSeq.flybyDateMatrix ? [suffixSeq.flybyDateMatrix[i1]?.[j_suffix] || 0] : []);
+    const suffixFlybyDates: number[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
+      ? suffixSeq.flybys.map(fb => fb.dateMatrix?.[i1]?.[j_suffix] || 0)
+      : [];
 
-    const suffixFlybyDvs: number[] = suffixSeq.flybyPoweredDvs && suffixSeq.flybyPoweredDvs.length > 0
-      ? suffixSeq.flybyPoweredDvs.map(fd => fd.poweredDvMatrix?.[i1]?.[j_suffix] || 0)
-      : (suffixSeq.poweredDvBMatrix ? [suffixSeq.poweredDvBMatrix[i1]?.[j_suffix] || 0] : []);
+    const suffixFlybyDvs: number[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
+      ? suffixSeq.flybys.map(fb => fb.poweredDvMatrix?.[i1]?.[j_suffix] || 0)
+      : [];
 
     // Obtain outbound velocity vector vTransDep exiting flybyBody (Inst_1)
     let vTransDep: Vector3D | undefined;

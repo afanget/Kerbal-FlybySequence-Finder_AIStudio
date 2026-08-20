@@ -280,21 +280,11 @@ export function extractMultiInstanceDebugData(
   const tArr = seqPorkchop.arrDates[clampedArrIndex];
 
   // Resolve path instances
-  const pathInsts: InstanceNode[] =
-    seqPorkchop.pathInsts && seqPorkchop.pathInsts.length > 0
-      ? seqPorkchop.pathInsts
-      : seqPorkchop.pathInstances && seqPorkchop.pathInstances.length > 0
-      ? seqPorkchop.pathInstances
-      : (seqPorkchop.bodyNames || [seqPorkchop.sourceBody, seqPorkchop.flybyBody || 'FB', seqPorkchop.targetBody]).map(
-          (name, idx) =>
-            ({
-              id: seqPorkchop.instanceIds?.[idx] || `inst-${idx}`,
-              bodyName: name,
-              label: name,
-              x: 0,
-              y: 0,
-            } as InstanceNode)
-        );
+  const pathInsts: InstanceNode[] = [
+    seqPorkchop.sourceBody,
+    ...seqPorkchop.flybys.map(f => f.instance),
+    seqPorkchop.targetBody,
+  ];
 
   const N = pathInsts.length;
   if (N <= 3) return null;
@@ -477,30 +467,25 @@ export function extractMultiInstanceDebugData(
           sequenceLabel: `${prevInst.bodyName} ➔ ${currInst.bodyName} ➔ ${nextInst.bodyName}`,
           isFullPath: false,
           instanceCount: 3,
-          instanceIds: [prevInst.id, currInst.id, nextInst.id],
-          bodyNames: [prevInst.bodyName, currInst.bodyName, nextInst.bodyName],
-          pathInsts: [prevInst, currInst, nextInst],
-          sourceInstanceId: prevInst.id,
-          targetInstanceId: nextInst.id,
-          sourceBody: prevInst.bodyName,
-          flybyBody: currInst.bodyName,
-          targetBody: nextInst.bodyName,
+          sourceBody: prevInst,
+          targetBody: nextInst,
           depDates: pc1.depDates,
           arrDates: pc2.arrDates,
-          flybys: {
-            flybyBodyName: currBody.name,
-            instanceId: currInst.id,
+          flybys: [{
+            instance: currInst,
             poweredDvMatrix: [],
             c3ArrMatrix: [],
             c3DepMatrix: [],
             dateMatrix: [],
-          },
+          }],
           flightTimeMatrix: [],
           physicalValidMatrix: [],
           constraintValidMatrix: [],
           totalPoweredDvMatrix: [],
           c3DepMatrix: [],
           c3ArrMatrix: [],
+          computedSamples: 0,
+          totalSamples: 0,
         };
 
         const clickI_sub = findClosestIndex(pc1.depDates, tPrev);
@@ -683,28 +668,25 @@ export function evaluateMultiInstanceForDates(
         sequenceLabel: `${prevInst.bodyName} ➔ ${currInst.bodyName} ➔ ${nextInst.bodyName}`,
         isFullPath: false,
         instanceCount: 3,
-        instanceIds: [prevInst.id, currInst.id, nextInst.id],
-        bodyNames: [prevInst.bodyName, currInst.bodyName, nextInst.bodyName],
-        pathInsts: [prevInst, currInst, nextInst],
-        sourceInstanceId: prevInst.id,
-        flybyInstanceId: currInst.id,
-        targetInstanceId: nextInst.id,
-        sourceBody: prevInst.bodyName,
-        flybyBody: currInst.bodyName,
-        targetBody: nextInst.bodyName,
+        sourceBody: prevInst,
+        targetBody: nextInst,
         depDates: pc1.depDates,
         arrDates: pc2.arrDates,
+        flybys: [{
+          instance: currInst,
+          poweredDvMatrix: [],
+          c3ArrMatrix: [],
+          c3DepMatrix: [],
+          dateMatrix: [],
+        }],
         flightTimeMatrix: [],
         physicalValidMatrix: [],
         constraintValidMatrix: [],
         totalPoweredDvMatrix: [],
-        c3DepAMatrix: [],
-        c3ArrBMatrix: [],
-        c3DepBMatrix: [],
-        c3ArrCMatrix: [],
-        c3ArrFinalMatrix: [],
-        poweredDvBMatrix: [],
-        flybyDateMatrix: [],
+        c3DepMatrix: [],
+        c3ArrMatrix: [],
+        computedSamples: 0,
+        totalSamples: 0,
       };
 
       const clickI_sub = findClosestIndex(pc1.depDates, tPrev);

@@ -1753,7 +1753,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
 
                                     const depBody = bodies.find(b => b.name === depBodyName)!;
 
-                                    const depState = getBodyStateAtUT(depBody, mBody, tr.depDate);
+                                    const depState = getBodyStateAtUT(depBody, mainBody, tr.depDate);
                                     const vTransDepVec = tr.vTransDep;
 
                                     const elem = stateToOrbitalElements(depState.pos, vTransDepVec, mainBody.stdGravParam, tr.depDate);

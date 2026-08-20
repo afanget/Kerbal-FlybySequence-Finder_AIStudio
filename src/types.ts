@@ -109,7 +109,7 @@ export interface PorkchopPlotData {
   c3ArrMatrix: number[][];
   dvMatrix: number[][]; // Total transfer v_infinity or C3 sum
   flightTimeMatrix: number[][];
-  physicalValidMatrix?: boolean[][]; // Strictly physically possible (dt >= 3600s, Lambert valid, no central body impact)
+  physicalValidMatrix?: boolean[][]; // Strictly physically possible (dt >= 0, Lambert valid, no central body impact)
   constraintValidMatrix?: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
   vTransDepMatrix?: Vector3D[][];
   vTransArrMatrix?: Vector3D[][];
@@ -122,21 +122,14 @@ export interface SequencePorkchopData {
   sequenceLabel: string;
   isFullPath: boolean;
   instanceCount: number;
-  instanceIds: string[];
-  bodyNames: string[];
-  pathInsts: InstanceNode[];
-  pathInstances: InstanceNode[];
-  sourceInstanceId: string;
-  targetInstanceId: string;
-  sourceBody: string;
-  targetBody: string;
+  sourceBody: InstanceNode;
+  targetBody: InstanceNode;
   depDates: number[];
   arrDates: number[];
   c3DepMatrix: number[][];
   c3ArrMatrix: number[][];
-  flybys: {
-    flybyBodyName: string;
-    instanceId: string;
+  flybys: { // TODO consider changing that for FlybyDetail[]
+    instance: InstanceNode;
     poweredDvMatrix: number[][];
     c3ArrMatrix: number[][];
     c3DepMatrix: number[][];
@@ -144,7 +137,7 @@ export interface SequencePorkchopData {
   }[];
   totalPoweredDvMatrix: number[][];
   flightTimeMatrix: number[][];
-  physicalValidMatrix: boolean[][]; // Strictly physically possible (dt >= 3600s*(N-1), chronological, no collisions)
+  physicalValidMatrix: boolean[][]; // Strictly physically possible (dt >= 0, chronological, no collisions)
   constraintValidMatrix: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
   computedSamples: number;
   totalSamples: number;

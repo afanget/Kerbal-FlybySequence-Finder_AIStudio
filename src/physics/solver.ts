@@ -1787,7 +1787,7 @@ export async function computeSequencePorkchopPlot(
     const prefixKey = prefixPath.map(i => i.id).join('-');
     const prefixSeqId = `seq-pc-${prefixKey}`;
     const prefixSeq = sequencePorkchopsMap[prefixSeqId] || sequencePorkchopsMap[prefixKey] || Object.values(sequencePorkchopsMap).find(
-      s => s.instanceIds && s.instanceIds.join('-') === prefixKey
+      s => s.id === prefixSeqId || s.id === prefixKey || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === prefixKey
     );
     const hasPrefix = !!(prefixSeq && prefixSeq.depDates && prefixSeq.depDates.length > 0 && prefixSeq.arrDates && prefixSeq.arrDates.length > 0);
 
@@ -1795,7 +1795,7 @@ export async function computeSequencePorkchopPlot(
     const suffixKey = suffixPath.map(i => i.id).join('-');
     const suffixSeqId = `seq-pc-${suffixKey}`;
     const suffixSeq = sequencePorkchopsMap[suffixSeqId] || sequencePorkchopsMap[suffixKey] || Object.values(sequencePorkchopsMap).find(
-      s => s.instanceIds && s.instanceIds.join('-') === suffixKey
+      s => s.id === suffixSeqId || s.id === suffixKey || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === suffixKey
     );
     const hasSuffix = !!(suffixSeq && suffixSeq.depDates && suffixSeq.depDates.length > 0 && suffixSeq.arrDates && suffixSeq.arrDates.length > 0);
 
@@ -1950,32 +1950,17 @@ export async function computeSequencePorkchopPlot(
   const N_ARR = arrDates.length;
 
   const c3DepAMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3ArrBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3DepBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3ArrCMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const c3DepCMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
-  const c3ArrDMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
   const c3ArrFinalMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-
-  const poweredDvBMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const poweredDvCMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
   const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-
-  const flybyDateMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const flyby2DateMatrix: number[][] | undefined = N >= 4 ? Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)) : undefined;
   const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
   const physicalValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
   const constraintValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
 
-  const flybyPoweredDvs = flybyInsts.map(inst => ({
-    flybyBody: inst.bodyName,
-    instanceId: inst.id,
+  const flybys = flybyInsts.map(inst => ({
+    instance: inst,
     poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
-  }));
-
-  const flybyDates = flybyInsts.map(inst => ({
-    flybyBody: inst.bodyName,
-    instanceId: inst.id,
+    c3ArrMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
+    c3DepMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
     dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
   }));
 
@@ -1986,37 +1971,17 @@ export async function computeSequencePorkchopPlot(
     sequenceLabel: seqLabel,
     isFullPath,
     instanceCount: N,
-    instanceIds: pathInsts.map(i => i.id),
-    bodyNames: pathInsts.map(i => i.bodyName),
-    pathInsts,
-    pathInstances: pathInsts,
-    sourceInstanceId: srcInst.id,
-    flybyInstanceId: flybyInsts[0]?.id || '',
-    flyby2InstanceId: flybyInsts[1]?.id,
-    targetInstanceId: tgtInst.id,
-    sourceBody: srcInst.bodyName,
-    flybyBody: flybyInsts[0]?.bodyName || '',
-    flyby2Body: flybyInsts[1]?.bodyName,
-    targetBody: tgtInst.bodyName,
+    sourceBody: srcInst,
+    targetBody: tgtInst,
     depDates,
     arrDates,
-    c3DepMatrix,
-    c3ArrBMatrix,
-    c3DepBMatrix,
-    c3ArrCMatrix,
-    c3DepCMatrix,
-    c3ArrMatrix,
-    c3ArrFinalMatrix,
-    poweredDvBMatrix,
-    poweredDvCMatrix,
+    c3DepMatrix: c3DepAMatrix,
+    c3ArrMatrix: c3ArrFinalMatrix,
+    flybys,
     totalPoweredDvMatrix,
-    flybyDateMatrix,
-    flyby2DateMatrix,
     flightTimeMatrix,
     physicalValidMatrix,
     constraintValidMatrix,
-    flybyPoweredDvs,
-    flybyDates,
     computedSamples: 0,
     totalSamples: totalPoints,
     activeSubtask: null,
@@ -2070,27 +2035,18 @@ export async function computeSequencePorkchopPlot(
         c3ArrFinalMatrix[i][j] = bestRes.c3ArrFinal;
         totalPoweredDvMatrix[i][j] = bestRes.totalDv;
 
-        if (N === 3) {
-          c3ArrBMatrix[i][j] = bestRes.c3ArrB || 0;
-          c3DepBMatrix[i][j] = bestRes.c3DepB || 0;
-          c3ArrCMatrix[i][j] = bestRes.c3ArrFinal;
-          poweredDvBMatrix[i][j] = bestRes.flybyDvs[0] || 0;
-          flybyDateMatrix[i][j] = bestRes.flybyDates[0] || 0;
-        } else if (N === 4) {
-          c3ArrBMatrix[i][j] = bestRes.c3ArrB || 0;
-          c3DepBMatrix[i][j] = bestRes.c3DepB || 0;
-          if (c3ArrCMatrix) c3ArrCMatrix[i][j] = bestRes.c3ArrC ?? bestRes.c3ArrFinal;
-          if (c3DepCMatrix) c3DepCMatrix[i][j] = bestRes.c3DepC || 0;
-          if (c3ArrDMatrix) c3ArrDMatrix[i][j] = bestRes.c3ArrFinal;
-          poweredDvBMatrix[i][j] = bestRes.flybyDvs[0] || 0;
-          if (poweredDvCMatrix) poweredDvCMatrix[i][j] = bestRes.flybyDvs[1] || 0;
-          flybyDateMatrix[i][j] = bestRes.flybyDates[0] || 0;
-          if (flyby2DateMatrix) flyby2DateMatrix[i][j] = bestRes.flybyDates[1] || 0;
-        }
-
         for (let fb = 0; fb < flybyInsts.length; fb++) {
-          if (flybyPoweredDvs[fb]) flybyPoweredDvs[fb].poweredDvMatrix[i][j] = bestRes.flybyDvs[fb] || 0;
-          if (flybyDates[fb]) flybyDates[fb].dateMatrix[i][j] = bestRes.flybyDates[fb] || 0;
+          if (flybys[fb]) {
+            flybys[fb].poweredDvMatrix[i][j] = bestRes.flybyDvs[fb] || 0;
+            flybys[fb].dateMatrix[i][j] = bestRes.flybyDates[fb] || 0;
+            if (fb === 0) {
+              flybys[fb].c3ArrMatrix[i][j] = bestRes.c3ArrB || 0;
+              flybys[fb].c3DepMatrix[i][j] = bestRes.c3DepB || 0;
+            } else if (fb === 1) {
+              flybys[fb].c3ArrMatrix[i][j] = bestRes.c3ArrC || 0;
+              flybys[fb].c3DepMatrix[i][j] = bestRes.c3DepC || 0;
+            }
+          }
         }
 
         if (isConstraint) validCount++;
@@ -2109,27 +2065,18 @@ export async function computeSequencePorkchopPlot(
             c3ArrFinalMatrix[r][c] = bestRes?.c3ArrFinal || 0;
             totalPoweredDvMatrix[r][c] = bestRes?.totalDv || 0;
 
-            if (N === 3) {
-              c3ArrBMatrix[r][c] = bestRes?.c3ArrB || 0;
-              c3DepBMatrix[r][c] = bestRes?.c3DepB || 0;
-              c3ArrCMatrix[r][c] = bestRes?.c3ArrFinal || 0;
-              poweredDvBMatrix[r][c] = bestRes?.flybyDvs[0] || 0;
-              flybyDateMatrix[r][c] = bestRes?.flybyDates[0] || 0;
-            } else if (N === 4) {
-              c3ArrBMatrix[r][c] = bestRes?.c3ArrB || 0;
-              c3DepBMatrix[r][c] = bestRes?.c3DepB || 0;
-              if (c3ArrCMatrix) c3ArrCMatrix[r][c] = bestRes?.c3ArrC ?? bestRes?.c3ArrFinal ?? 0;
-              if (c3DepCMatrix) c3DepCMatrix[r][c] = bestRes?.c3DepC || 0;
-              if (c3ArrDMatrix) c3ArrDMatrix[r][c] = bestRes?.c3ArrFinal;
-              poweredDvBMatrix[r][c] = bestRes?.flybyDvs[0] || 0;
-              if (poweredDvCMatrix) poweredDvCMatrix[r][c] = bestRes?.flybyDvs[1] || 0;
-              flybyDateMatrix[r][c] = bestRes?.flybyDates[0] || 0;
-              if (flyby2DateMatrix) flyby2DateMatrix[r][c] = bestRes?.flybyDates[1] || 0;
-            }
-
             for (let fb = 0; fb < flybyInsts.length; fb++) {
-              if (flybyPoweredDvs[fb]) flybyPoweredDvs[fb].poweredDvMatrix[r][c] = bestRes?.flybyDvs[fb] || 0;
-              if (flybyDates[fb]) flybyDates[fb].dateMatrix[r][c] = bestRes?.flybyDates[fb] || 0;
+              if (flybys[fb]) {
+                flybys[fb].poweredDvMatrix[r][c] = bestRes?.flybyDvs[fb] || 0;
+                flybys[fb].dateMatrix[r][c] = bestRes?.flybyDates[fb] || 0;
+                if (fb === 0) {
+                  flybys[fb].c3ArrMatrix[r][c] = bestRes?.c3ArrB || 0;
+                  flybys[fb].c3DepMatrix[r][c] = bestRes?.c3DepB || 0;
+                } else if (fb === 1) {
+                  flybys[fb].c3ArrMatrix[r][c] = bestRes?.c3ArrC || 0;
+                  flybys[fb].c3DepMatrix[r][c] = bestRes?.c3DepC || 0;
+                }
+              }
             }
           }
         }
@@ -3263,8 +3210,9 @@ export function extractSequencesFromSequencePorkchops(
   const fullPathCands = candidatePaths.filter(c => c.isFullPath);
 
   for (const cand of fullPathCands) {
-    const seqPc = sequencePorkchops[cand.id] || Object.values(sequencePorkchops).find(
-      s => s.instanceIds && s.instanceIds.join('-') === cand.pathInsts.map(i => i.id).join('-')
+    const pathKey = cand.pathInsts.map(i => i.id).join('-');
+    const seqPc = sequencePorkchops[cand.id] || sequencePorkchops[`seq-pc-${pathKey}`] || sequencePorkchops[pathKey] || Object.values(sequencePorkchops).find(
+      s => s.id === cand.id || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === pathKey
     );
     if (!seqPc || !seqPc.depDates || !seqPc.arrDates || (!seqPc.constraintValidMatrix && !seqPc.physicalValidMatrix)) continue;
 

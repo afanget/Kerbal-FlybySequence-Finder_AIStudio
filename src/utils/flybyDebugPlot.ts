@@ -87,7 +87,12 @@ export function extractFlybyDebugData(
   bodies: OrbitalBody[],
   mainBody: CelestialBody
 ): FlybyDebugPlotData | null {
-  const bodyNames = seqPorkchop.bodyNames!;
+  const pathInsts = [
+    seqPorkchop.sourceBody,
+    ...seqPorkchop.flybys.map(f => f.instance),
+    seqPorkchop.targetBody,
+  ];
+  const bodyNames = pathInsts.map(i => i.bodyName);
 
   const bodyA = bodyNames[0];
   const bodyB = bodyNames[1];
@@ -120,7 +125,7 @@ export function extractFlybyDebugData(
   const l2 = findClosestIndex(pc2.arrDates, arrDateC);
 
   // Chosen flyby date from sequence porkchop matrix if available
-  const chosenFlybyDateB = seqPorkchop.flybyDateMatrix?.[clampedDepIndex]?.[clampedArrIndex] || undefined;
+  const chosenFlybyDateB = seqPorkchop.flybys[0]?.dateMatrix?.[clampedDepIndex]?.[clampedArrIndex] || undefined;
 
   // Collect flyby dates range (union of pc1.arrDates and pc2.depDates)
   const flybyDatesSet = new Set<number>([...pc1.arrDates, ...pc2.depDates]);
@@ -256,8 +261,7 @@ export function extractFlybyDebugData(
   }
 
   // If pathInsts are available, compute/verify the continuous optimal flyby date via evaluateSequenceTransferFromDirectPorkchops
-  const pathInsts = seqPorkchop.pathInsts || seqPorkchop.pathInstances;
-  const seqTransferEval = (pathInsts && pathInsts.length >= 3 && bodies && mainBody)
+  const seqTransferEval = (pathInsts.length >= 3 && bodies && mainBody)
     ? evaluateSequenceTransferFromDirectPorkchops(
         pathInsts,
         depDateA,
@@ -271,10 +275,10 @@ export function extractFlybyDebugData(
 
   const storedFlybyDate = seqTransferEval?.flybyDates?.[0]
     ?? chosenFlybyDateB
-    ?? seqPorkchop.flybyDates?.[0]?.dateMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+    ?? seqPorkchop.flybys[0]?.dateMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const storedFlybyDv = seqTransferEval?.flybyDvs?.[0]
-    ?? seqPorkchop.poweredDvBMatrix?.[clampedDepIndex]?.[clampedArrIndex]
+    ?? seqPorkchop.flybys[0]?.poweredDvMatrix?.[clampedDepIndex]?.[clampedArrIndex]
     ?? seqPorkchop.totalPoweredDvMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const storedTotalDv = seqTransferEval?.totalDv
@@ -282,11 +286,10 @@ export function extractFlybyDebugData(
     ?? storedFlybyDv;
 
   const storedC3DepA = seqTransferEval?.c3DepA
-    ?? seqPorkchop.c3DepAMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+    ?? seqPorkchop.c3DepMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const storedC3ArrC = seqTransferEval?.c3ArrFinal
-    ?? seqPorkchop.c3ArrFinalMatrix?.[clampedDepIndex]?.[clampedArrIndex]
-    ?? seqPorkchop.c3ArrCMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+    ?? seqPorkchop.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const storedIsValid = seqTransferEval !== null
     ? (seqTransferEval.totalDv < 1e6)
@@ -308,11 +311,11 @@ export function extractFlybyDebugData(
     : (pc2.c3ArrMatrix?.[k2Opt]?.[l2] ?? 0);
 
   const c3ArrB = seqTransferEval?.c3ArrB
-    ?? seqPorkchop.c3ArrBMatrix?.[clampedDepIndex]?.[clampedArrIndex]
+    ?? seqPorkchop.flybys[0]?.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex]
     ?? pc1.c3ArrMatrix?.[i1]?.[j1Opt];
 
   const c3DepB = seqTransferEval?.c3DepB
-    ?? seqPorkchop.c3DepBMatrix?.[clampedDepIndex]?.[clampedArrIndex]
+    ?? seqPorkchop.flybys[0]?.c3DepMatrix?.[clampedDepIndex]?.[clampedArrIndex]
     ?? pc2.c3DepMatrix?.[k2Opt]?.[l2];
 
   const flybyDvMps = (storedFlybyDv !== undefined && Number.isFinite(storedFlybyDv))

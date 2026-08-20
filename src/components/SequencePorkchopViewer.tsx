@@ -59,15 +59,30 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   bodies,
   mainBody,
 }) => {
-  const currentSubtask = activeSubtask || seqPorkchop.activeSubtask || null;
-  const bodyNames = seqPorkchop.bodyNames && seqPorkchop.bodyNames.length > 0
-    ? seqPorkchop.bodyNames
-    : seqPorkchop.sequenceLabel.split(/➔|->|→/).map(s => s.trim()).filter(Boolean);
+  const resolvedPathInsts = useMemo<InstanceNode[]>(() => {
+    if (seqPorkchop.sourceBody && seqPorkchop.targetBody) {
+      return [
+        seqPorkchop.sourceBody,
+        ...(seqPorkchop.flybys ? seqPorkchop.flybys.map(f => f.instance) : []),
+        seqPorkchop.targetBody,
+      ];
+    }
+    const names = seqPorkchop.sequenceLabel.split(/➔|->|→/).map(s => s.trim()).filter(Boolean);
+    return names.map((name, idx) => ({
+      id: `inst-${idx}`,
+      bodyName: name,
+      customName: name,
+      x: 0,
+      y: 0,
+    } as InstanceNode));
+  }, [seqPorkchop]);
 
-  const instanceCount = seqPorkchop.instanceCount || bodyNames.length || (seqPorkchop.is4Body ? 4 : 3);
-  const srcBodyName = bodyNames[0] || seqPorkchop.sourceBody;
-  const tgtBodyName = bodyNames[bodyNames.length - 1] || seqPorkchop.targetBody;
-  const flybyBodyNames = bodyNames.slice(1, -1);
+  const currentSubtask = activeSubtask || seqPorkchop.activeSubtask || null;
+  const bodyNames = resolvedPathInsts.map(i => i.bodyName);
+  const instanceCount = seqPorkchop.instanceCount || resolvedPathInsts.length || 3;
+  const srcBodyName = resolvedPathInsts[0]?.bodyName || 'Source';
+  const tgtBodyName = resolvedPathInsts[resolvedPathInsts.length - 1]?.bodyName || 'Target';
+  const flybyBodyNames = resolvedPathInsts.slice(1, -1).map(i => i.bodyName);
 
   const [activeTab, setActiveTab] = useState<SeqViewTab>(
     instanceCount >= 4 ? 'totalPoweredDv' : 'poweredDvB'
@@ -139,22 +154,21 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     : (isComputing ? 0 : 100);
 
   const getMatrixForTab = (tab: SeqViewTab): number[][] => {
-    if (tab === 'totalPoweredDv') return seqPorkchop.totalPoweredDvMatrix || seqPorkchop.poweredDvBMatrix;
-    if (tab === 'c3DepA') return seqPorkchop.c3DepAMatrix;
-    if (tab === 'c3ArrFinal' || tab === 'c3ArrD') return seqPorkchop.c3ArrFinalMatrix || seqPorkchop.c3ArrDMatrix || seqPorkchop.c3ArrCMatrix;
-    if (tab === 'c3ArrB') return seqPorkchop.c3ArrBMatrix;
-    if (tab === 'c3DepB') return seqPorkchop.c3DepBMatrix;
-    if (tab === 'c3ArrC') return seqPorkchop.c3ArrCMatrix;
-    if (tab === 'poweredDvB') return seqPorkchop.poweredDvBMatrix;
-    if (tab === 'poweredDvC') return seqPorkchop.poweredDvCMatrix || seqPorkchop.poweredDvBMatrix;
+    if (tab === 'totalPoweredDv') return seqPorkchop.totalPoweredDvMatrix || [];
+    if (tab === 'c3DepA') return seqPorkchop.c3DepMatrix || [];
+    if (tab === 'c3ArrFinal' || tab === 'c3ArrD' || tab === 'c3ArrC') return seqPorkchop.c3ArrMatrix || [];
+    if (tab === 'c3ArrB') return seqPorkchop.flybys?.[0]?.c3ArrMatrix || [];
+    if (tab === 'c3DepB') return seqPorkchop.flybys?.[0]?.c3DepMatrix || [];
+    if (tab === 'poweredDvB') return seqPorkchop.flybys?.[0]?.poweredDvMatrix || seqPorkchop.totalPoweredDvMatrix || [];
+    if (tab === 'poweredDvC') return seqPorkchop.flybys?.[1]?.poweredDvMatrix || seqPorkchop.totalPoweredDvMatrix || [];
 
     if (tab.startsWith('flybyDv_')) {
       const idx = parseInt(tab.replace('flybyDv_', ''), 10);
-      if (seqPorkchop.flybyPoweredDvs?.[idx]) {
-        return seqPorkchop.flybyPoweredDvs[idx].poweredDvMatrix;
+      if (seqPorkchop.flybys?.[idx]) {
+        return seqPorkchop.flybys[idx].poweredDvMatrix || [];
       }
     }
-    return seqPorkchop.totalPoweredDvMatrix || seqPorkchop.poweredDvBMatrix;
+    return seqPorkchop.totalPoweredDvMatrix || [];
   };
 
   const currentMatrix = getMatrixForTab(activeTab);
@@ -215,7 +229,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   // Compute number of departure dates for which the delta-v cost is <= 1 m/s ("possible departure date for free flyby")
   const freeFlybyDepDatesCount = useMemo(() => {
     if (!seqPorkchop || nDep === 0 || nArr === 0) return 0;
-    const dvMatrix = seqPorkchop.totalPoweredDvMatrix || seqPorkchop.poweredDvBMatrix;
+    const dvMatrix = seqPorkchop.totalPoweredDvMatrix;
     if (!dvMatrix) return 0;
 
     let count = 0;
@@ -435,10 +449,10 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     if (i >= 0 && i < nDep && j >= 0 && j < nArr) {
       const depDate = seqPorkchop.depDates[i];
       const arrDate = seqPorkchop.arrDates[j];
-      const flightTime = seqPorkchop.flightTimeMatrix[i]?.[j] || (arrDate - depDate);
-      const c3DepA = seqPorkchop.c3DepAMatrix[i]?.[j] || 0;
-      const c3ArrFinal = seqPorkchop.c3ArrFinalMatrix?.[i]?.[j] ?? seqPorkchop.c3ArrDMatrix?.[i]?.[j] ?? seqPorkchop.c3ArrCMatrix[i]?.[j] ?? 0;
-      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] ?? seqPorkchop.poweredDvBMatrix[i]?.[j] ?? 0;
+      const flightTime = seqPorkchop.flightTimeMatrix?.[i]?.[j] || (arrDate - depDate);
+      const c3DepA = seqPorkchop.c3DepMatrix?.[i]?.[j] || 0;
+      const c3ArrFinal = seqPorkchop.c3ArrMatrix?.[i]?.[j] || 0;
+      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] || 0;
       const minPhysicalDt = 3600 * Math.max(1, instanceCount - 1);
       const dt = arrDate - depDate;
       const isPhysical = seqPorkchop.physicalValidMatrix
@@ -459,49 +473,20 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       }
 
       const flybyDatesList: { body: string; date: number }[] = [];
-      if (seqPorkchop.flybyDates && seqPorkchop.flybyDates.length > 0) {
-        seqPorkchop.flybyDates.forEach(f => {
-          flybyDatesList.push({
-            body: f.flybyBody,
-            date: f.dateMatrix[i]?.[j] || (depDate + arrDate) / 2,
-          });
-        });
-      } else {
-        if (seqPorkchop.flybyBody) {
-          flybyDatesList.push({
-            body: seqPorkchop.flybyBody,
-            date: seqPorkchop.flybyDateMatrix[i]?.[j] || (depDate + arrDate) / 2,
-          });
-        }
-        if (seqPorkchop.flyby2Body) {
-          flybyDatesList.push({
-            body: seqPorkchop.flyby2Body,
-            date: seqPorkchop.flyby2DateMatrix?.[i]?.[j] || (depDate + arrDate) / 2,
-          });
-        }
-      }
-
       const flybyDvsList: { body: string; dv: number }[] = [];
-      if (seqPorkchop.flybyPoweredDvs && seqPorkchop.flybyPoweredDvs.length > 0) {
-        seqPorkchop.flybyPoweredDvs.forEach(f => {
+
+      if (seqPorkchop.flybys && seqPorkchop.flybys.length > 0) {
+        seqPorkchop.flybys.forEach((fb, fbIdx) => {
+          const body = fb.instance?.bodyName || flybyBodyNames[fbIdx] || `Flyby ${fbIdx + 1}`;
+          flybyDatesList.push({
+            body,
+            date: fb.dateMatrix?.[i]?.[j] || (depDate + arrDate) / 2,
+          });
           flybyDvsList.push({
-            body: f.flybyBody,
-            dv: f.poweredDvMatrix[i]?.[j] || 0,
+            body,
+            dv: fb.poweredDvMatrix?.[i]?.[j] || 0,
           });
         });
-      } else {
-        if (seqPorkchop.flybyBody) {
-          flybyDvsList.push({
-            body: seqPorkchop.flybyBody,
-            dv: seqPorkchop.poweredDvBMatrix[i]?.[j] || 0,
-          });
-        }
-        if (seqPorkchop.flyby2Body) {
-          flybyDvsList.push({
-            body: seqPorkchop.flyby2Body,
-            dv: seqPorkchop.poweredDvCMatrix?.[i]?.[j] || 0,
-          });
-        }
       }
 
       setHoverData({
@@ -695,37 +680,6 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     );
   }
 
-  const resolvedPathInsts = useMemo<InstanceNode[]>(() => {
-    if (seqPorkchop.pathInsts && seqPorkchop.pathInsts.length > 0) {
-      return seqPorkchop.pathInsts;
-    }
-    if (seqPorkchop.pathInstances && seqPorkchop.pathInstances.length > 0) {
-      return seqPorkchop.pathInstances;
-    }
-    if (seqPorkchop.instanceIds && instances && instances.length > 0) {
-      const found = seqPorkchop.instanceIds
-        .map(id => instances.find(i => i.id === id))
-        .filter((i): i is InstanceNode => !!i);
-      if (found.length === seqPorkchop.instanceIds.length) {
-        return found;
-      }
-    }
-    const names = seqPorkchop.bodyNames && seqPorkchop.bodyNames.length >= 3
-      ? seqPorkchop.bodyNames
-      : [seqPorkchop.sourceBody, seqPorkchop.flybyBody || 'Flyby', seqPorkchop.targetBody];
-    const ids = seqPorkchop.instanceIds && seqPorkchop.instanceIds.length === names.length
-      ? seqPorkchop.instanceIds
-      : [seqPorkchop.sourceInstanceId || 'src', seqPorkchop.flybyInstanceId || 'fb', seqPorkchop.targetInstanceId || 'tgt'];
-
-    return names.map((name, idx) => ({
-      id: ids[idx] || `inst-${idx}`,
-      bodyName: name,
-      customName: name,
-      x: 0,
-      y: 0,
-    } as InstanceNode));
-  }, [seqPorkchop, instances]);
-
   const handleRecomputePointCell = (depIndex: number, arrIndex: number) => {
     if (!seqPorkchop || !bodies || !mainBody) return;
 
@@ -791,37 +745,44 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     }
 
     if (result) {
-      if (seqPorkchop.totalPoweredDvMatrix) {
+      if (seqPorkchop.totalPoweredDvMatrix && seqPorkchop.totalPoweredDvMatrix[depIndex]) {
         seqPorkchop.totalPoweredDvMatrix[depIndex][arrIndex] = result.totalDv;
       }
-      if (seqPorkchop.poweredDvBMatrix) {
-        seqPorkchop.poweredDvBMatrix[depIndex][arrIndex] = result.flybyDvs[0] ?? 0;
+      if (seqPorkchop.c3DepMatrix && seqPorkchop.c3DepMatrix[depIndex]) {
+        seqPorkchop.c3DepMatrix[depIndex][arrIndex] = result.c3DepA;
       }
-      if (seqPorkchop.poweredDvCMatrix && result.flybyDvs.length > 1) {
-        seqPorkchop.poweredDvCMatrix[depIndex][arrIndex] = result.flybyDvs[1];
+      if (seqPorkchop.c3ArrMatrix && seqPorkchop.c3ArrMatrix[depIndex]) {
+        seqPorkchop.c3ArrMatrix[depIndex][arrIndex] = result.c3ArrFinal;
       }
-      if (seqPorkchop.c3DepAMatrix) {
-        seqPorkchop.c3DepAMatrix[depIndex][arrIndex] = result.c3DepA;
+      if (seqPorkchop.flybys) {
+        seqPorkchop.flybys.forEach((fb, fbIdx) => {
+          if (fb.poweredDvMatrix && fb.poweredDvMatrix[depIndex]) {
+            fb.poweredDvMatrix[depIndex][arrIndex] = result.flybyDvs[fbIdx] ?? 0;
+          }
+          if (fb.dateMatrix && fb.dateMatrix[depIndex]) {
+            fb.dateMatrix[depIndex][arrIndex] = result.flybyDates[fbIdx] ?? 0;
+          }
+          if (fbIdx === 0) {
+            if (fb.c3ArrMatrix && fb.c3ArrMatrix[depIndex] && result.c3ArrB !== undefined) {
+              fb.c3ArrMatrix[depIndex][arrIndex] = result.c3ArrB;
+            }
+            if (fb.c3DepMatrix && fb.c3DepMatrix[depIndex] && result.c3DepB !== undefined) {
+              fb.c3DepMatrix[depIndex][arrIndex] = result.c3DepB;
+            }
+          } else if (fbIdx === 1) {
+            if (fb.c3ArrMatrix && fb.c3ArrMatrix[depIndex] && result.c3ArrC !== undefined) {
+              fb.c3ArrMatrix[depIndex][arrIndex] = result.c3ArrC;
+            }
+            if (fb.c3DepMatrix && fb.c3DepMatrix[depIndex] && result.c3DepC !== undefined) {
+              fb.c3DepMatrix[depIndex][arrIndex] = result.c3DepC;
+            }
+          }
+        });
       }
-      if (seqPorkchop.c3ArrBMatrix && result.c3ArrB !== undefined) {
-        seqPorkchop.c3ArrBMatrix[depIndex][arrIndex] = result.c3ArrB;
-      }
-      if (seqPorkchop.c3DepBMatrix && result.c3DepB !== undefined) {
-        seqPorkchop.c3DepBMatrix[depIndex][arrIndex] = result.c3DepB;
-      }
-      if (seqPorkchop.c3ArrCMatrix && result.c3ArrC !== undefined) {
-        seqPorkchop.c3ArrCMatrix[depIndex][arrIndex] = result.c3ArrC;
-      }
-      if (seqPorkchop.c3ArrFinalMatrix) {
-        seqPorkchop.c3ArrFinalMatrix[depIndex][arrIndex] = result.c3ArrFinal;
-      }
-      if (seqPorkchop.flybyDateMatrix && result.flybyDates.length > 0) {
-        seqPorkchop.flybyDateMatrix[depIndex][arrIndex] = result.flybyDates[0];
-      }
-      if (seqPorkchop.physicalValidMatrix) {
+      if (seqPorkchop.physicalValidMatrix && seqPorkchop.physicalValidMatrix[depIndex]) {
         seqPorkchop.physicalValidMatrix[depIndex][arrIndex] = true;
       }
-      if (seqPorkchop.constraintValidMatrix) {
+      if (seqPorkchop.constraintValidMatrix && seqPorkchop.constraintValidMatrix[depIndex]) {
         seqPorkchop.constraintValidMatrix[depIndex][arrIndex] = result.totalDv < 1e6;
       }
       setRenderEpoch(e => e + 1);
