@@ -4,7 +4,7 @@
  */
 
 import React, { useRef } from 'react';
-import { CelestialBody, OrbitalBody, CanvasGraphConfig, SolarSystem } from '../types';
+import { OrbitalBody, CanvasGraphConfig, SolarSystem } from '../types';
 import { PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { Globe, Upload, Download, Sparkles, Clock, FileJson, RefreshCw, ShieldCheck } from 'lucide-react';
 

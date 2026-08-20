@@ -5,7 +5,6 @@
 
 import {
   OrbitalElements,
-  Vector3D,
   getStateFromOrbitalElements,
   stateToOrbitalElements,
   vecSub,
@@ -17,7 +16,7 @@ import { solveLambert } from './lambert';
 import { evaluateFlybyAtDate, matchUnpoweredFlyby } from './flyby';
 import { getOrbitalBodyByName, PRESET_SOLAR_SYSTEMS } from '../data/solarSystems';
 import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
-import { CelestialBody, OrbitalBody, SolarSystem } from '../types';
+import { CelestialBody, OrbitalBody, SolarSystem, Vector3D } from '../types';
 
 export interface AutotestCaseResult {
   caseId: string;

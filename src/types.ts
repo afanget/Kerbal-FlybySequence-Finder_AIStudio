@@ -93,28 +93,6 @@ export interface CanvasGraphConfig {
   timeFormatMode: 'ksp' | 'earth'; // KSP = 6h days / 426d years, Earth = 24h days / 365d years
 }
 
-import { LambertSolution } from './physics/lambert';
-
-export interface LambertTransferResult {
-  linkId?: string;
-  sourceInstanceId?: string;
-  targetInstanceId?: string;
-  depDate: number;
-  arrDate: number;
-  flightTime: number;
-  vInfDep: [number, number, number]; // m/s relative to departure body
-  vInfArr: [number, number, number]; // m/s relative to arrival body
-  c3Dep: number; // (m/s)^2
-  c3Arr: number; // (m/s)^2
-  depAngle: number; // degrees
-  arrAngle: number; // degrees
-  transferOrbitSemiMajorAxis: number;
-  vTransDep: [number, number, number];
-  vTransArr: [number, number, number];
-  isValid: boolean;
-  sol?: LambertSolution;
-}
-
 export interface Vector3D {
   x: number;
   y: number;
@@ -223,6 +201,39 @@ export interface FlybyDetail {
   poweredDv?: number; // m/s required at periapsis if powered flyby
   vInfInMag: number; // m/s
   vInfOutMag: number; // m/s
+}
+
+export interface LambertSolution {
+  v1: Vector3D; // Departure velocity vector in m/s
+  v2: Vector3D; // Arrival velocity vector in m/s
+  semiMajorAxis: number;
+  isValid: boolean;
+}
+
+export interface Vector3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface LambertTransferResult {
+  linkId?: string;
+  sourceInstanceId?: string;
+  targetInstanceId?: string;
+  depDate: number;
+  arrDate: number;
+  flightTime: number;
+  vInfDep: Vector3D; // m/s relative to departure body
+  vInfArr: Vector3D; // m/s relative to arrival body
+  c3Dep: number; // (m/s)^2
+  c3Arr: number; // (m/s)^2
+  depAngle: number; // degrees
+  arrAngle: number; // degrees
+  transferOrbitSemiMajorAxis: number;
+  vTransDep: Vector3D;
+  vTransArr: Vector3D;
+  isValid: boolean;
+  sol?: LambertSolution;
 }
 
 export interface FlyableSequenceResult {

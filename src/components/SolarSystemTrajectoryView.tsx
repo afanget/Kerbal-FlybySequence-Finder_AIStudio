@@ -4,14 +4,13 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { FlyableSequenceResult, CelestialBody, OrbitalBody } from '../types';
+import { FlyableSequenceResult, CelestialBody, OrbitalBody, Vector3D } from '../types';
 import {
   getBodyStateAtUT,
   stateToOrbitalElements,
   getPositionFromOrbitalElements,
   solveKeplerEquation,
   solveHyperbolicKeplerEquation,
-  Vector3D,
   StateVector,
   OrbitalElements,
   vecSub,

@@ -7,7 +7,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, OrbitalBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode, SubtaskProgressInfo } from '../types';
 import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
-import { getBodyStateAtUT, stateToOrbitalElements, Vector3D } from '../physics/kepler';
+import { getBodyStateAtUT, stateToOrbitalElements } from '../physics/kepler';
 import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath } from '../physics/solver';
 import { compute3BodyConsolidatedRangesAsync, LinkEndDateRanges, Sequence3BodyConsolidatedRange } from '../physics/tisserandRanges';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
@@ -1754,7 +1754,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                     const depBody = bodies.find(b => b.name === depBodyName)!;
 
                                     const depState = getBodyStateAtUT(depBody, mBody, tr.depDate);
-                                    const vTransDepVec: Vector3D = { x: tr.vTransDep[0], y: tr.vTransDep[1], z: tr.vTransDep[2] };
+                                    const vTransDepVec = tr.vTransDep;
 
                                     const elem = stateToOrbitalElements(depState.pos, vTransDepVec, mainBody.stdGravParam, tr.depDate);
                                     const periodSec = 2 * Math.PI * Math.sqrt(Math.pow(Math.abs(elem.semiMajorAxis), 3) / Math.max(1, mainBody.stdGravParam));

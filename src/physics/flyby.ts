@@ -4,8 +4,8 @@
  */
 
 import { getMinFlybyAlt, getMinFlybyRadius } from '../data/solarSystems';
-import { CelestialBody, OrbitalBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode, SequenceProfilingStats, SequenceBlockTiming, SequencePorkchopData, SequenceTransferData } from '../types';
-import { Vector3D, vecSub, vecMag, vecDot, getBodyStateAtUT } from './kepler';
+import { CelestialBody, OrbitalBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode, SequenceProfilingStats, SequenceBlockTiming, SequencePorkchopData, SequenceTransferData, Vector3D } from '../types';
+import { vecSub, vecMag, vecDot, getBodyStateAtUT } from './kepler';
 import { solveLambert } from './lambert';
 
 export interface FlybyFeasibility {
@@ -563,14 +563,14 @@ export function recomputeFlybyDetailsSequentially(
   instances?: InstanceNode[]
 ): SequentialFlybyDebugInfo[] {
   const debugInfos: SequentialFlybyDebugInfo[] = [];
-  const bodyMap = new Map<string, CelestialBody>(bodies.map(b => [b.name, b]));
+  const bodyMap = new Map<string, OrbitalBody>(bodies.map(b => [b.name, b]));
 
   if (!seq.transfers || seq.transfers.length === 0) return debugInfos;
 
   // Flybys occur at intermediate bodies (index 1 to bodyNames.length - 2)
   for (let k = 1; k < seq.bodyNames.length - 1; k++) {
     const bodyName = seq.bodyNames[k];
-    const flybyBody = bodyMap.get(bodyName) || mainBody;
+    const flybyBody = bodyMap.get(bodyName)!;
 
     const trIn = seq.transfers[k - 1];
     const trOut = seq.transfers[k];
@@ -580,8 +580,8 @@ export function recomputeFlybyDetailsSequentially(
     const tPrev = trIn.arrDate;
     const stPrev1 = getBodyStateAtUT(flybyBody, mainBody, tPrev);
 
-    const vTransIn1: Vector3D = { x: trIn.vTransArr[0], y: trIn.vTransArr[1], z: trIn.vTransArr[2] };
-    const vTransOut1: Vector3D = { x: trOut.vTransDep[0], y: trOut.vTransDep[1], z: trOut.vTransDep[2] };
+    const vTransIn1: Vector3D = trIn.vTransArr;
+    const vTransOut1: Vector3D = trOut.vTransDep;
 
     const vInfIn1 = vecSub(vTransIn1, stPrev1.vel);
     const vInfOut1 = vecSub(vTransOut1, stPrev1.vel);
@@ -910,7 +910,7 @@ export function generateDirectPorkchopFlybySamples(
   if (tArr - tDep < 7200) return null;
 
   const t0 = profiler ? performance.now() : 0;
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   // Find direct link porkchops for each leg
@@ -945,7 +945,7 @@ export function generateDirectPorkchopFlybySamples(
 
   const P1 = legPorkchops[1];
   const flybyInst = pathInsts[1];
-  const flybyBody = bodyMap.get(flybyInst.bodyName) || mainBody;
+  const flybyBody = bodyMap.get(flybyInst.bodyName)!;
   const minFlybyRadius = getMinFlybyRadius(flybyBody, flybyInst.minFlybyAltitude);
 
   const samples: DirectPorkchopFlybySample[] = [];
@@ -1325,7 +1325,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   if (tArr - tDep < 3600 * (N - 1)) return null;
 
   const t0 = profiler ? performance.now() : 0;
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   // Find the (N-1)-bodies sub-sequence
@@ -1367,7 +1367,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   let j_last = findClosestDateIndex(P_last.arrDates, tArr);
   if (j_last < 0) j_last = 0;
 
-  const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
+  const flybyBody = bodyMap.get(fbInst.bodyName)!;
   const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
 
   if (profiler) {
@@ -1437,7 +1437,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
       const prevFbDate = priorFlybyDates[priorFlybyDates.length - 1] || 0;
       const dtPrev = tFlyby - prevFbDate;
       if (dtPrev > 0) {
-        const prevBody = bodyMap.get(prevInst.bodyName) || mainBody;
+        const prevBody = bodyMap.get(prevInst.bodyName)!;
         const stPrev = getBodyStateAtUT(prevBody, mainBody, prevFbDate);
         const stFlyby = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
         const muCentral = mainBody.stdGravParam;
@@ -1816,7 +1816,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   if (tArr - tDep < 3600 * (N - 1)) return null;
 
   const t0 = profiler ? performance.now() : 0;
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   // Find the (N-1)-bodies suffix sub-sequence: Inst_1 -> ... -> Inst_{N-1}
@@ -1858,7 +1858,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   let j_suffix = findClosestDateIndex(suffixSeq.arrDates, tArr);
   if (j_suffix < 0) j_suffix = 0;
 
-  const flybyBody = bodyMap.get(fbInst.bodyName) || mainBody;
+  const flybyBody = bodyMap.get(fbInst.bodyName)!;
   const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
 
   if (profiler) {
@@ -1930,7 +1930,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
       const nextFbDate = suffixFlybyDates[0] || (suffixSeq.arrDates[j_suffix] || 0);
       const dtNext = nextFbDate - tFlyby;
       if (dtNext > 0) {
-        const nextBody = bodyMap.get(nextInst.bodyName) || mainBody;
+        const nextBody = bodyMap.get(nextInst.bodyName)!;
         const stFlyby = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
         const stNext = getBodyStateAtUT(nextBody, mainBody, nextFbDate);
         const muCentral = mainBody.stdGravParam;

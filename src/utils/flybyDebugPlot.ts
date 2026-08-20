@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
-import { vecSub, vecMag, getBodyStateAtUT, Vector3D } from '../physics/kepler';
+import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody, Vector3D } from '../types';
+import { vecSub, vecMag, getBodyStateAtUT } from '../physics/kepler';
 import { evaluateFlybyAtDate, evaluateSequenceTransferFromDirectPorkchops } from '../physics/flyby';
 import { getMinFlybyRadius } from '../data/solarSystems';
 

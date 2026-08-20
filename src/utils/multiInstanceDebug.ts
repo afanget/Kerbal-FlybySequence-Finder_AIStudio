@@ -10,13 +10,13 @@ import {
   CelestialBody,
   OrbitalBody,
   InstanceNode,
+  Vector3D,
 } from '../types';
 import {
   getBodyStateAtUT,
   vecSub,
   vecMag,
   vecDot,
-  Vector3D,
 } from '../physics/kepler';
 import { solveLambert } from '../physics/lambert';
 import {

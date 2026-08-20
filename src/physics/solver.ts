@@ -11,12 +11,14 @@ import {
   PorkchopPlotData,
   SequencePorkchopData,
   SubtaskProgressInfo,
-  LambertTransferResult,
   FlyableSequenceResult,
-  FlybyDetail
+  FlybyDetail,
+  Vector3D,
+  LambertSolution,
+  LambertTransferResult
 } from '../types';
-import { getBodyStateAtUT, getOrbitalPeriod, vecMag, vecDot, vecSub, Vector3D } from './kepler';
-import { solveLambert, solveLambertBest, solveLambertAllRevolutions, LambertSolution } from './lambert';
+import { getBodyStateAtUT, getOrbitalPeriod, vecMag, vecDot, vecSub } from './kepler';
+import { solveLambert, solveLambertBest, solveLambertAllRevolutions } from './lambert';
 import {
   matchUnpoweredFlyby,
   evaluateFlybyAtDate,
@@ -3154,15 +3156,15 @@ export async function runSequenceSearchAlt(
           depDate: tPrev,
           arrDate: tCurr,
           flightTime: dt,
-          vInfDep: [vInfDepVec.x, vInfDepVec.y, vInfDepVec.z],
-          vInfArr: [vInfArrVec.x, vInfArrVec.y, vInfArrVec.z],
+          vInfDep: { x: vInfDepVec.x, y: vInfDepVec.y, z: vInfDepVec.z },
+          vInfArr: { x: vInfArrVec.x, y: vInfArrVec.y, z: vInfArrVec.z },
           c3Dep: (vecMag(vInfDepVec) ** 2) / 1e6,
           c3Arr: (vecMag(vInfArrVec) ** 2) / 1e6,
           depAngle: 0,
           arrAngle: 0,
           transferOrbitSemiMajorAxis: sol.semiMajorAxis,
-          vTransDep: [sol.v1.x, sol.v1.y, sol.v1.z],
-          vTransArr: [sol.v2.x, sol.v2.y, sol.v2.z],
+          vTransDep: { x: sol.v1.x, y: sol.v1.y, z: sol.v1.z },
+          vTransArr: { x: sol.v2.x, y: sol.v2.y, z: sol.v2.z },
           isValid: true,
           sol
         };

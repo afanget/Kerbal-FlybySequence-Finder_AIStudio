@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Vector3D, vecMag, vecDot, vecCross, vecScale, vecSub, vecAdd } from './kepler';
-
-export interface LambertSolution {
-  v1: Vector3D; // Departure velocity vector in m/s
-  v2: Vector3D; // Arrival velocity vector in m/s
-  semiMajorAxis: number;
-  isValid: boolean;
-}
+import { LambertSolution, Vector3D } from '../types';
+import { vecMag, vecDot, vecCross, vecScale, vecSub, vecAdd } from './kepler';
 
 /**
  * Universal Variable / Izzo Lambert Solver

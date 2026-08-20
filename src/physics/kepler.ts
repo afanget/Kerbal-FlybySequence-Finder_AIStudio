@@ -3,13 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { CelestialBody, OrbitalBody } from '../types';
-
-export interface Vector3D {
-  x: number;
-  y: number;
-  z: number;
-}
+import { CelestialBody, OrbitalBody, Vector3D } from '../types';
 
 export interface StateVector {
   pos: Vector3D; // position in meters
