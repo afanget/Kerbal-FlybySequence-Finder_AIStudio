@@ -315,7 +315,7 @@ export default function App() {
         {id: 'inst-K3', bodyName: 'Kerbin' , x:  520, y: 320, minFlybyAltitude: 100_000, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 25, isSourceOverride: true},
         {id: 'inst-J',  bodyName: 'Jool'   , x:  720, y: 120, minFlybyAltitude: 300_000, minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
         {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyAltitude: 400_000, minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
-        {id: 'inst-G',  bodyName: 'Grannus', x:  920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 16, dateSampleCount: 1},
+        {id: 'inst-G',  bodyName: 'Grannus', x:  920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 20, dateSampleCount: 1},
       ];
 
       newLinks = [
@@ -342,8 +342,8 @@ export default function App() {
       newInsts = [
         {id: 'inst-K3', bodyName: 'Kerbin' , x:  120, y: 320, minDate: (6-1) * kspYearSec, maxDate: (15-1) * kspYearSec, maxC3: 16, isSourceOverride: true},
         {id: 'inst-J',  bodyName: 'Jool'   , x:  720, y: 120, minFlybyAltitude: 300_000, minDate: ( 7.8-1) * kspYearSec, maxDate: (16.2-1) * kspYearSec},  // to reduce search space Y07D403-Y16D060
-        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyAltitude: 400_000, minDate: (11.3-1) * kspYearSec, maxDate: (20.8-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
-        {id: 'inst-G',  bodyName: 'Grannus', x:  920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 16, dateSampleCount: 1},
+        {id: 'inst-U',  bodyName: 'Urlum'  , x: 1020, y: 120, minFlybyAltitude: 400_000, minDate: (11.3-1) * kspYearSec, maxDate: (22-1) * kspYearSec}, // to reduce search space Y11D183-Y20D32?
+        {id: 'inst-G',  bodyName: 'Grannus', x:  920, y: 320, minDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxDate: (42-1) * kspYearSec + (416-1) * kspDaySec, maxC3: 20, dateSampleCount: 1},
       ];
 
       newLinks = [

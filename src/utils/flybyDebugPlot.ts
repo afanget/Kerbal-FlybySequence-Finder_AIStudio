@@ -3,10 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody, Vector3D } from '../types';
-import { vecSub, vecMag, getBodyStateAtUT } from '../physics/kepler';
-import { evaluateFlybyAtDate, evaluateSequenceTransferFromDirectPorkchops } from '../physics/flyby';
+import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
+import { generateDirectPorkchopFlybySamples, evaluateSequenceTransferFromDirectPorkchops, MAX_ALLOWED_FLYBY_DV_MPS } from '../physics/flyby';
 import { getMinFlybyRadius } from '../data/solarSystems';
+
+export const DEFAULT_MIN_C3 = 0;
+export const DEFAULT_MAX_C3 = 100;
+export const DEFAULT_MAX_FEASIBLE_C3_SPAN = 100;
+export const DEFAULT_MIN_DEFLECTION_DEG = 0;
+export const DEFAULT_MAX_DEFLECTION_DEG = 180;
+export const C3_HIGH_FEASIBLE_CUTOFF = 250;
 
 export interface FlybyDebugPoint {
   flybyDate: number;
@@ -111,126 +117,68 @@ export function extractFlybyDebugData(
     return null;
   }
 
-  // Find direct porkchops for Link 1 (A -> B) and Link 2 (B -> C)
-  const allPcs = Object.values(porkchops);
-
-  const pc1 = allPcs.find(p => p.sourceBody === bodyA && p.targetBody === bodyB);
-  const pc2 = allPcs.find(p => p.sourceBody === bodyB && p.targetBody === bodyC);
-
-  if (!pc1 || !pc2) {
-    return null;
-  }
-
-  const i1 = findClosestIndex(pc1.depDates, depDateA);
-  const l2 = findClosestIndex(pc2.arrDates, arrDateC);
-
-  // Chosen flyby date from sequence porkchop matrix if available
-  const chosenFlybyDateB = seqPorkchop.flybys[0]?.dateMatrix?.[clampedDepIndex]?.[clampedArrIndex] || undefined;
-
-  // Collect flyby dates range (union of pc1.arrDates and pc2.depDates)
-  const flybyDatesSet = new Set<number>([...pc1.arrDates, ...pc2.depDates]);
-  const sortedFlybyDates = Array.from(flybyDatesSet).sort((a, b) => a - b);
-
-  // Physical body properties for flyby deflection calculations
-  const flybyBodyObj = bodies.find(b => b.name === bodyB)!;
+  const flybyBodyObj = bodies.find(b => b.name === bodyB);
+  if (!flybyBodyObj) return null;
 
   const muFlyby = flybyBodyObj.stdGravParam;
   const rpMin = getMinFlybyRadius(flybyBodyObj, undefined);
+
+  // Generate discrete samples using the shared flyby generator
+  const samples = generateDirectPorkchopFlybySamples(
+    pathInsts,
+    depDateA,
+    arrDateC,
+    bodies,
+    mainBody,
+    porkchops,
+    links
+  );
 
   let minC3 = Infinity;
   let maxC3 = -Infinity;
   let minFeasibleC3 = Infinity;
   let maxFeasibleC3 = -Infinity;
-
   let minDeflectionDeg = Infinity;
   let maxDeflectionDeg = -Infinity;
 
-  const points: FlybyDebugPoint[] = sortedFlybyDates.map(flybyDate => {
-    const j1 = findClosestIndex(pc1.arrDates, flybyDate);
-    const k2 = findClosestIndex(pc2.depDates, flybyDate);
+  const points: FlybyDebugPoint[] = (samples || []).map(s => {
+    const c3ArrB = Number.isFinite(s.c3ArrB) ? s.c3ArrB : null;
+    const c3DepB = Number.isFinite(s.c3DepB) ? s.c3DepB : null;
+    const isValidArr = s.isPhysicallyValid !== false && c3ArrB !== null;
+    const isValidDep = s.isPhysicallyValid !== false && c3DepB !== null;
 
-    let c3ArrB: number | null = null;
-    let isValidArr = false;
-    let vTransArr: Vector3D | undefined = undefined;
-
-    if (pc1.c3ArrMatrix?.[i1]?.[j1] !== undefined) {
-      const val = pc1.c3ArrMatrix[i1][j1];
-      if (Number.isFinite(val) && !Number.isNaN(val)) {
-        c3ArrB = val;
-        const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
-        isValidArr = valid1 ? !!valid1[i1]?.[j1] : true;
-        minC3 = Math.min(minC3, c3ArrB);
-        maxC3 = Math.max(maxC3, c3ArrB);
-
-        if (isValidArr || c3ArrB < 250) {
-          minFeasibleC3 = Math.min(minFeasibleC3, c3ArrB);
-          maxFeasibleC3 = Math.max(maxFeasibleC3, c3ArrB);
-        }
+    if (c3ArrB !== null) {
+      minC3 = Math.min(minC3, c3ArrB);
+      maxC3 = Math.max(maxC3, c3ArrB);
+      if (isValidArr || c3ArrB < C3_HIGH_FEASIBLE_CUTOFF) {
+        minFeasibleC3 = Math.min(minFeasibleC3, c3ArrB);
+        maxFeasibleC3 = Math.max(maxFeasibleC3, c3ArrB);
       }
     }
-    if (pc1.vTransArrMatrix?.[i1]?.[j1]) {
-      vTransArr = pc1.vTransArrMatrix[i1][j1];
-    }
-
-    let c3DepB: number | null = null;
-    let isValidDep = false;
-    let vTransDep: Vector3D | undefined = undefined;
-
-    if (pc2.c3DepMatrix?.[k2]?.[l2] !== undefined) {
-      const val = pc2.c3DepMatrix[k2][l2];
-      if (Number.isFinite(val) && !Number.isNaN(val)) {
-        c3DepB = val;
-        const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
-        isValidDep = valid2 ? !!valid2[k2]?.[l2] : true;
-        minC3 = Math.min(minC3, c3DepB);
-        maxC3 = Math.max(maxC3, c3DepB);
-
-        if (isValidDep || c3DepB < 250) {
-          minFeasibleC3 = Math.min(minFeasibleC3, c3DepB);
-          maxFeasibleC3 = Math.max(maxFeasibleC3, c3DepB);
-        }
-      }
-    }
-    if (pc2.vTransDepMatrix?.[k2]?.[l2]) {
-      vTransDep = pc2.vTransDepMatrix[k2][l2];
-    }
-
-    // Compute deflection angles and required flyby delta-V via evaluateFlybyAtDate
-    let deflectionAngleDeg: number | null = null;
-    let maxDeflectionAngleDeg: number | null = null;
-    let flybyDvMps: number | null = null;
-
-    if (flybyBodyObj && mainBody) {
-      const stB = getBodyStateAtUT(flybyBodyObj, mainBody, flybyDate);
-      const vBody = stB.vel;
-
-      const hasVArr = vTransArr && (vTransArr.x !== 0 || vTransArr.y !== 0 || vTransArr.z !== 0);
-      const hasVDep = vTransDep && (vTransDep.x !== 0 || vTransDep.y !== 0 || vTransDep.z !== 0);
-
-      if (hasVArr && hasVDep && vTransArr && vTransDep) {
-        const vInfInVec = vecSub(vTransArr, vBody);
-        const vInfOutVec = vecSub(vTransDep, vBody);
-
-        if (vecMag(vInfInVec) > 1e-3 && vecMag(vInfOutVec) > 1e-3) {
-          const evalRes = evaluateFlybyAtDate(flybyBodyObj, vInfInVec, vInfOutVec, flybyDate);
-          deflectionAngleDeg = evalRes.deflectionAngleDeg;
-          maxDeflectionAngleDeg = evalRes.maxDeflectionAngleDeg;
-          flybyDvMps = evalRes.poweredDv;
-        }
+    if (c3DepB !== null) {
+      minC3 = Math.min(minC3, c3DepB);
+      maxC3 = Math.max(maxC3, c3DepB);
+      if (isValidDep || c3DepB < C3_HIGH_FEASIBLE_CUTOFF) {
+        minFeasibleC3 = Math.min(minFeasibleC3, c3DepB);
+        maxFeasibleC3 = Math.max(maxFeasibleC3, c3DepB);
       }
     }
 
-    if (deflectionAngleDeg !== null && Number.isFinite(deflectionAngleDeg)) {
+    const deflectionAngleDeg = Number.isFinite(s.deflectionAngleDeg) ? s.deflectionAngleDeg : null;
+    const maxDeflectionAngleDeg = Number.isFinite(s.maxDeflectionAngleDeg) ? s.maxDeflectionAngleDeg : null;
+    const flybyDvMps = Number.isFinite(s.dv) ? s.dv : null;
+
+    if (deflectionAngleDeg !== null) {
       minDeflectionDeg = Math.min(minDeflectionDeg, deflectionAngleDeg);
       maxDeflectionDeg = Math.max(maxDeflectionDeg, deflectionAngleDeg);
     }
-    if (maxDeflectionAngleDeg !== null && Number.isFinite(maxDeflectionAngleDeg)) {
+    if (maxDeflectionAngleDeg !== null) {
       minDeflectionDeg = Math.min(minDeflectionDeg, maxDeflectionAngleDeg);
       maxDeflectionDeg = Math.max(maxDeflectionDeg, maxDeflectionAngleDeg);
     }
 
     return {
-      flybyDate,
+      flybyDate: s.tFlyby,
       c3ArrB,
       c3DepB,
       isValidArr,
@@ -241,26 +189,14 @@ export function extractFlybyDebugData(
     };
   });
 
-  if (!Number.isFinite(minC3)) minC3 = 0;
-  if (!Number.isFinite(maxC3)) maxC3 = 100;
-
+  if (!Number.isFinite(minC3)) minC3 = DEFAULT_MIN_C3;
+  if (!Number.isFinite(maxC3)) maxC3 = DEFAULT_MAX_C3;
   if (!Number.isFinite(minFeasibleC3)) minFeasibleC3 = minC3;
-  if (!Number.isFinite(maxFeasibleC3)) maxFeasibleC3 = Math.min(maxC3, minFeasibleC3 + 100);
+  if (!Number.isFinite(maxFeasibleC3)) maxFeasibleC3 = Math.min(maxC3, minFeasibleC3 + DEFAULT_MAX_FEASIBLE_C3_SPAN);
+  if (!Number.isFinite(minDeflectionDeg)) minDeflectionDeg = DEFAULT_MIN_DEFLECTION_DEG;
+  if (!Number.isFinite(maxDeflectionDeg)) maxDeflectionDeg = DEFAULT_MAX_DEFLECTION_DEG;
 
-  if (!Number.isFinite(minDeflectionDeg)) minDeflectionDeg = 0;
-  if (!Number.isFinite(maxDeflectionDeg)) maxDeflectionDeg = 180;
-
-  // Find minimum Delta-v point along the debug plot curve
-  let bestPointOnCurve: FlybyDebugPoint | null = null;
-  let minDvOnCurve = Infinity;
-  for (const pt of points) {
-    if (pt.flybyDvMps !== null && Number.isFinite(pt.flybyDvMps) && pt.flybyDvMps < minDvOnCurve) {
-      minDvOnCurve = pt.flybyDvMps;
-      bestPointOnCurve = pt;
-    }
-  }
-
-  // If pathInsts are available, compute/verify the continuous optimal flyby date via evaluateSequenceTransferFromDirectPorkchops
+  // Compute the continuous optimal flyby date via shared evaluateSequenceTransferFromDirectPorkchops
   const seqTransferEval = (pathInsts.length >= 3 && bodies && mainBody)
     ? evaluateSequenceTransferFromDirectPorkchops(
         pathInsts,
@@ -274,7 +210,6 @@ export function extractFlybyDebugData(
     : null;
 
   const storedFlybyDate = seqTransferEval?.flybyDates?.[0]
-    ?? chosenFlybyDateB
     ?? seqPorkchop.flybys[0]?.dateMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const storedFlybyDv = seqTransferEval?.flybyDvs?.[0]
@@ -292,45 +227,20 @@ export function extractFlybyDebugData(
     ?? seqPorkchop.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const storedIsValid = seqTransferEval !== null
-    ? (seqTransferEval.totalDv < 1e6)
+    ? (seqTransferEval.isPhysicallyValid && seqTransferEval.totalDv < MAX_ALLOWED_FLYBY_DV_MPS)
     : seqPorkchop.constraintValidMatrix?.[clampedDepIndex]?.[clampedArrIndex];
 
   const optimalFlybyDate = storedFlybyDate && Number.isFinite(storedFlybyDate)
     ? storedFlybyDate
-    : (bestPointOnCurve?.flybyDate ?? (depDateA + arrDateC) / 2);
+    : (depDateA + arrDateC) / 2;
 
-  const j1Opt = findClosestIndex(pc1.arrDates, optimalFlybyDate);
-  const k2Opt = findClosestIndex(pc2.depDates, optimalFlybyDate);
-
-  const c3DepA = (storedC3DepA !== undefined && Number.isFinite(storedC3DepA))
-    ? storedC3DepA
-    : (pc1.c3DepMatrix?.[i1]?.[j1Opt] ?? 0);
-
-  const c3ArrC = (storedC3ArrC !== undefined && Number.isFinite(storedC3ArrC))
-    ? storedC3ArrC
-    : (pc2.c3ArrMatrix?.[k2Opt]?.[l2] ?? 0);
-
-  const c3ArrB = seqTransferEval?.c3ArrB
-    ?? seqPorkchop.flybys[0]?.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex]
-    ?? pc1.c3ArrMatrix?.[i1]?.[j1Opt];
-
-  const c3DepB = seqTransferEval?.c3DepB
-    ?? seqPorkchop.flybys[0]?.c3DepMatrix?.[clampedDepIndex]?.[clampedArrIndex]
-    ?? pc2.c3DepMatrix?.[k2Opt]?.[l2];
-
-  const flybyDvMps = (storedFlybyDv !== undefined && Number.isFinite(storedFlybyDv))
-    ? storedFlybyDv
-    : (bestPointOnCurve?.flybyDvMps ?? (minDvOnCurve < 1e6 ? minDvOnCurve : 0));
-
-  const totalDv = (storedTotalDv !== undefined && Number.isFinite(storedTotalDv))
-    ? storedTotalDv
-    : flybyDvMps;
-
-  const isValid = storedIsValid !== undefined
-    ? storedIsValid
-    : (totalDv < 1e6 && points.some(p => p.isValidArr && p.isValidDep));
-
-  const hasFeasible = isValid && totalDv < 1e6;
+  const c3DepA = storedC3DepA ?? 0;
+  const c3ArrC = storedC3ArrC ?? 0;
+  const c3ArrB = seqTransferEval?.c3ArrB ?? seqPorkchop.flybys[0]?.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+  const c3DepB = seqTransferEval?.c3DepB ?? seqPorkchop.flybys[0]?.c3DepMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+  const flybyDvMps = storedFlybyDv ?? 0;
+  const totalDv = storedTotalDv ?? flybyDvMps;
+  const hasFeasible = storedIsValid ?? (totalDv < MAX_ALLOWED_FLYBY_DV_MPS);
 
   const optimalSample: FlybyOptimalSample = {
     flybyDate: optimalFlybyDate,
@@ -338,8 +248,6 @@ export function extractFlybyDebugData(
     c3ArrB,
     c3DepB,
     c3ArrC,
-    deflectionAngleDeg: bestPointOnCurve?.deflectionAngleDeg ?? undefined,
-    maxDeflectionAngleDeg: bestPointOnCurve?.maxDeflectionAngleDeg ?? undefined,
     flybyDvMps,
     totalDv,
     isValid: hasFeasible,

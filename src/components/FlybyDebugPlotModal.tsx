@@ -6,6 +6,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { FlybyDebugPlotData, extractFlybyDebugData } from '../utils/flybyDebugPlot';
 import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
+import { computeFlybyPoweredDv, KM2_S2_TO_M2_S2 } from '../physics/flyby';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import {
   X,
@@ -789,7 +790,7 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
     const interpDeflectionAngleDeg = interpNum(p1.deflectionAngleDeg, p2.deflectionAngleDeg);
     const interpMaxDeflectionAngleDeg = interpNum(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg);
 
-    // Recompute flyby delta-V for interpolated line from C3 difference and deflection over max deflection
+    // Recompute flyby delta-V for interpolated line using shared flyby physics
     let interpFlybyDvMps: number | null = null;
     if (
       interpC3ArrB !== null &&
@@ -797,43 +798,19 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
       interpC3ArrB >= 0 &&
       interpC3DepB >= 0
     ) {
-      const vInfInMag = Math.sqrt(interpC3ArrB * 1e6); // m/s
-      const vInfOutMag = Math.sqrt(interpC3DepB * 1e6); // m/s
-
+      const vInfInMag = Math.sqrt(interpC3ArrB * KM2_S2_TO_M2_S2); // m/s
+      const vInfOutMag = Math.sqrt(interpC3DepB * KM2_S2_TO_M2_S2); // m/s
       const muFlyby = data.muFlyby || 3.5316e12;
       const rpMin = data.rpMin || 610000;
 
-      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / rpMin);
-      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / rpMin);
-
-      let excessAngle = 0;
-      if (
-        interpDeflectionAngleDeg !== null &&
-        interpMaxDeflectionAngleDeg !== null &&
-        interpDeflectionAngleDeg > interpMaxDeflectionAngleDeg
-      ) {
-        const excessDeg = interpDeflectionAngleDeg - interpMaxDeflectionAngleDeg;
-        excessAngle = (excessDeg * Math.PI) / 180;
-      }
-
-      if (excessAngle > 1e-5) {
-        interpFlybyDvMps = Math.sqrt(
-          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
-        );
-      } else {
-        interpFlybyDvMps = Math.abs(vpOut - vpIn);
-      }
-
-      // If C3 match closely and deflection is within max deflection, it's unpowered (0 m/s)
-      const deltaC3 = Math.abs(interpC3ArrB - interpC3DepB);
-      if (
-        deltaC3 < 0.0001 &&
-        (interpDeflectionAngleDeg === null ||
-          interpMaxDeflectionAngleDeg === null ||
-          interpDeflectionAngleDeg <= interpMaxDeflectionAngleDeg + 0.1)
-      ) {
-        interpFlybyDvMps = 0;
-      }
+      interpFlybyDvMps = computeFlybyPoweredDv(
+        vInfInMag,
+        vInfOutMag,
+        interpDeflectionAngleDeg ?? 0,
+        interpMaxDeflectionAngleDeg ?? 0,
+        muFlyby,
+        rpMin
+      );
     }
 
     setHoverInfo({

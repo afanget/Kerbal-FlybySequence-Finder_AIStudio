@@ -33,9 +33,51 @@ export interface FlybyEvaluationResult {
   stochasticDv: number; // m/s
 }
 
-const maxdC3inUnpoweredFlyby = 100*100; // if C3 are less than 20m/s different, the flyby is considered unpowered as this manouver
-// can be considered as a correction during prior or after the flyby
-const factorRpForNoDeflexion = 100; // TODO should put SOIradius instead of rpmin*100
+export const MAX_DC3_UNPOWERED_FLYBY = 100 * 100; // m²/s² (if C3 difference is within 100 m/s equivalent, flyby is considered unpowered)
+export const FACTOR_RP_NO_DEFLECTION = 100;
+export const MIN_LEG_TIME_SECONDS = 3600;
+export const MIN_TOTAL_SEQUENCE_TIME_SECONDS = 7200;
+export const DATE_PRECISION_BISECTION_SECONDS = 864; // 1% of a day (864 seconds)
+export const MAX_BISECTION_ITERATIONS = 30;
+export const FREE_FLYBY_MAX_DV_MPS = 1.0;
+export const KM2_S2_TO_M2_S2 = 1e6;
+export const EPSILON_EXCESS_ANGLE = 1e-5;
+export const FEASIBILITY_ANGLE_MARGIN_DEG = 0.01;
+export const MAX_ALLOWED_FLYBY_DV_MPS = 1e6;
+
+/**
+ * Calculates powered delta-V required at flyby periapsis given inbound/outbound speed and turning angles.
+ */
+export function computeFlybyPoweredDv(
+  vInfInMag: number,
+  vInfOutMag: number,
+  deflectionAngleDeg: number,
+  maxDeflectionAngleDeg: number,
+  mu: number,
+  rpMin: number
+): number {
+  if (vInfInMag <= 0 || vInfOutMag <= 0) return Infinity;
+
+  const deltaC3 = Math.abs(vInfInMag * vInfInMag - vInfOutMag * vInfOutMag);
+  const isVInfMatched = deltaC3 < MAX_DC3_UNPOWERED_FLYBY || Math.abs(vInfInMag - vInfOutMag) < 1.0;
+  const isDeflectionFeasible = deflectionAngleDeg <= maxDeflectionAngleDeg + FEASIBILITY_ANGLE_MARGIN_DEG;
+
+  if (isVInfMatched && isDeflectionFeasible) {
+    return 0;
+  }
+
+  const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * mu) / rpMin);
+  const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * mu) / rpMin);
+
+  const excessAngleDeg = Math.max(0, deflectionAngleDeg - maxDeflectionAngleDeg);
+  const excessAngleRad = (excessAngleDeg * Math.PI) / 180;
+
+  if (excessAngleRad > EPSILON_EXCESS_ANGLE) {
+    return Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngleRad));
+  }
+
+  return Math.abs(vpOut - vpIn);
+}
 
 /**
  * Unified evaluation for both unpowered and powered flybys at a specific body and date.
@@ -88,7 +130,7 @@ export function evaluateFlybyAtDate(
   // Determine periapsis radius rp
   let rp = rpMin;
   const deltaC3 = Math.abs(vInMag * vInMag - vOutMag * vOutMag); // m²/s²
-  const isVInfMatched = deltaC3 < maxdC3inUnpoweredFlyby || Math.abs(vInMag - vOutMag) < 1.0;
+  const isVInfMatched = deltaC3 < MAX_DC3_UNPOWERED_FLYBY || Math.abs(vInMag - vOutMag) < 1.0;
 
   if (isVInfMatched && deflectionRad <= maxDeflectionTotalRad + 1e-4) {
     const sinHalf = Math.sin(deflectionRad / 2);
@@ -96,7 +138,7 @@ export function evaluateFlybyAtDate(
     if (sinHalf > 1e-6) {
       rp = (mu / avgVInfSq) * (1 / sinHalf - 1);
     } else {
-      rp = rpMin * factorRpForNoDeflexion;
+      rp = rpMin * FACTOR_RP_NO_DEFLECTION;
     }
   }
 
@@ -104,29 +146,15 @@ export function evaluateFlybyAtDate(
   const periapsisAlt = rp - body.radius;
   const flybyMargin = periapsisAlt - minAlt;
 
-  // Periapsis velocities on inbound and outbound hyperbolas
-  const vpIn = Math.sqrt(vInMag * vInMag + (2 * mu) / rp);
-  const vpOut = Math.sqrt(vOutMag * vOutMag + (2 * mu) / rp);
-
-  // Deflection provided by the orbit geometry at periapsis rp
-  const e1 = 1 + (rp * vInMag * vInMag) / Math.max(1, mu);
-  const e2 = 1 + (rp * vOutMag * vOutMag) / Math.max(1, mu);
-  const delta1 = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / e1)));
-  const delta2 = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / e2)));
-  const deltaTotalPrv = (delta1 + delta2) / 2;
-
-  const excessAngle = Math.max(0, deflectionRad - deltaTotalPrv);
-
   // Powered delta-V required at periapsis
-  let poweredDv = Math.abs(vpOut - vpIn);
-  if (excessAngle > 1e-5) {
-    poweredDv = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
-  }
-
-  // If vInf is matched within maxdC3inUnpoweredFlyby m²/s² and body can deflect enough, no powered maneuver is required
-  if (isVInfMatched && deflectionRad <= maxDeflectionTotalRad + 1e-4) {
-    poweredDv = 0;
-  }
+  const poweredDv = computeFlybyPoweredDv(
+    vInMag,
+    vOutMag,
+    deflectionAngleDeg,
+    maxDeflectionAngleDeg,
+    mu,
+    rp
+  );
 
   const isUnpowered = isVInfMatched && poweredDv < 0.1 && flybyMargin >= -1e-3;
 
@@ -358,7 +386,7 @@ export function matchUnpoweredFlyby(
   let vecVInfOutMatch = vecVInfOut1;
   let deltaC3ForStochastic = 0;
 
-  if (deltaC3_1 >= maxdC3inUnpoweredFlyby) {
+  if (deltaC3_1 >= MAX_DC3_UNPOWERED_FLYBY) {
     // Perform linear regression on v_infinity magnitudes to find crossing date (tMatch)
     const dt = t2 - t1;
     if (dt > 0) {
@@ -469,7 +497,7 @@ export function matchUnpoweredFlyby(
   if (sinHalfDelta > 1e-6) {
     rpRequired = (mu / (vMatch * vMatch)) * (1 / sinHalfDelta - 1);
   } else {
-    rpRequired = rpMin * factorRpForNoDeflexion;
+    rpRequired = rpMin * FACTOR_RP_NO_DEFLECTION;
   }
 
   const periapsisAlt = rpRequired - R;
@@ -906,8 +934,8 @@ export function generateDirectPorkchopFlybySamples(
   if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length !== 3) return null;
   const N = 3;
 
-  // Hard Physical constraint: Total flight time must be at least 2 legs of 3600s
-  if (tArr - tDep < 7200) return null;
+  // Hard Physical constraint: Total flight time must be at least 2 legs of MIN_LEG_TIME_SECONDS
+  if (tArr - tDep < MIN_TOTAL_SEQUENCE_TIME_SECONDS) return null;
 
   const t0 = profiler ? performance.now() : 0;
   const bodyMap = new Map<string, OrbitalBody>();
@@ -946,29 +974,24 @@ export function generateDirectPorkchopFlybySamples(
   const P1 = legPorkchops[1];
   const flybyInst = pathInsts[1];
   const flybyBody = bodyMap.get(flybyInst.bodyName)!;
-  const minFlybyRadius = getMinFlybyRadius(flybyBody, flybyInst.minFlybyAltitude);
+  const minFlybyAltitude = getMinFlybyAlt(flybyBody, flybyInst.minFlybyAltitude);
 
   const samples: DirectPorkchopFlybySample[] = [];
-
   const t2 = profiler ? performance.now() : 0;
 
-  const isDirectGridMatch = P0.arrDates.length === P1.depDates.length &&
-    P0.arrDates.every((val, idx) => val === P1.depDates[idx]);
+  // Collect candidate flyby dates across both connecting legs
+  const flybyDatesSet = new Set<number>([...P0.arrDates, ...P1.depDates]);
+  const sortedFlybyDates = Array.from(flybyDatesSet).sort((a, b) => a - b);
 
-  if (!isDirectGridMatch) {
-    throw new Error(`Mismatched flyby grid dates between P0.arrDates (${P0.arrDates.length}) and P1.depDates (${P1.depDates.length})`);
-  }
-
-  const numCandidates = P0.arrDates.length;
-  for (let k = 0; k < numCandidates; k++) {
-    const tFlyby = P0.arrDates[k];
-    const j0 = k;
-    const i1 = k;
+  for (let k = 0; k < sortedFlybyDates.length; k++) {
+    const tFlyby = sortedFlybyDates[k];
+    const j0 = findClosestDateIndex(P0.arrDates, tFlyby);
+    const i1 = findClosestDateIndex(P1.depDates, tFlyby);
 
     // Hard physical time ordering check
     const dt0 = tFlyby - tDep;
     const dt1 = tArr - tFlyby;
-    const isChronologicallyPossible = dt0 >= 3600 && dt1 >= 3600;
+    const isChronologicallyPossible = dt0 >= MIN_LEG_TIME_SECONDS && dt1 >= MIN_LEG_TIME_SECONDS;
 
     const isP0Phys = P0.physicalValidMatrix ? (P0.physicalValidMatrix[i0]?.[j0] ?? false) : true;
     const isP1Phys = P1.physicalValidMatrix ? (P1.physicalValidMatrix[i1]?.[j_last] ?? false) : true;
@@ -1002,7 +1025,7 @@ export function generateDirectPorkchopFlybySamples(
     const vInfIn = vecSub(vTransArr0, stBody.vel);
     const vInfOut = vecSub(vTransDep1, stBody.vel);
 
-    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyAltitude);
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
     const isPhysValid = isChronologicallyPossible && isP0Phys && isP1Phys && flybyEval.isValid;
 
@@ -1016,7 +1039,7 @@ export function generateDirectPorkchopFlybySamples(
       deflectionAngleDeg: flybyEval.deflectionAngleDeg,
       maxDeflectionAngleDeg: flybyEval.maxDeflectionAngleDeg,
       dv: dvFinite ? flybyEval.poweredDv : Infinity,
-      isValid: isPhysValid && dvFinite && flybyEval.poweredDv < 1e6,
+      isValid: isPhysValid && dvFinite && flybyEval.poweredDv < MAX_ALLOWED_FLYBY_DV_MPS,
       isPhysicallyValid: isPhysValid,
     });
   }
@@ -1087,7 +1110,6 @@ export function evaluateSequenceTransferFromDirectPorkchops(
   // --- BLOCK 4: Local Minima & Zero-Crossing Detection ---
   const t6 = profiler ? performance.now() : 0;
 
-  // Step 4: Find all local minima in sampled flyby delta-v array and C3 zero-crossings
   const M = samples.length;
   const localMinIndices: number[] = [];
   const rootDates: number[] = [];
@@ -1145,7 +1167,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
 
   const interp = (v1: number, v2: number, alpha: number) => v1 + alpha * (v2 - v1);
 
-  // Continuous evaluator using linear interpolation of sample curves
+  // Continuous evaluator using linear interpolation of sample curves and unified flyby physics
   const evalExtrapolatedAtDate = (t: number) => {
     let s = 0;
     while (s < M - 2 && samples[s + 1].tFlyby <= t) {
@@ -1164,31 +1186,18 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
     const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
 
-    let totalDv = 0;
+    let totalDv = NaN;
     if (c3ArrB >= 0 && c3DepB >= 0) {
-      const vInfInMag = Math.sqrt(c3ArrB * 1e6);
-      const vInfOutMag = Math.sqrt(c3DepB * 1e6);
-
-      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
-      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
-
-      let excessAngle = 0;
-      if (deflectionAngleDeg > maxDeflectionAngleDeg) {
-        excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
-      }
-
-      if (excessAngle > 1e-5) {
-        totalDv = Math.sqrt(
-          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
-        );
-      } else {
-        totalDv = Math.abs(vpOut - vpIn);
-      }
-
-      const deltaC3 = Math.abs(c3ArrB - c3DepB);
-      if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
-        totalDv = 0;
-      }
+      const vInfInMag = Math.sqrt(c3ArrB * KM2_S2_TO_M2_S2);
+      const vInfOutMag = Math.sqrt(c3DepB * KM2_S2_TO_M2_S2);
+      totalDv = computeFlybyPoweredDv(
+        vInfInMag,
+        vInfOutMag,
+        deflectionAngleDeg,
+        maxDeflectionAngleDeg,
+        muFlyby,
+        minFlybyRadius
+      );
     }
 
     return {
@@ -1207,13 +1216,38 @@ export function evaluateSequenceTransferFromDirectPorkchops(
 
   const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
     if (!res) return null;
-    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= 1.0;
+    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= FREE_FLYBY_MAX_DV_MPS;
     return {
       ...res,
       isPhysicallyValid: true,
       isConstraintValid: isFreeFlyby,
     };
   };
+
+  // Seed with discrete valid samples first
+  for (const s of validSamples) {
+    if (s.dv < bestOverallDv) {
+      bestOverallDv = s.dv;
+      bestResult = {
+        c3DepA: s.c3DepA,
+        c3ArrB: s.c3ArrB,
+        c3DepB: s.c3DepB,
+        c3ArrFinal: s.c3ArrFinal,
+        totalDv: s.dv,
+        flybyDvs: [s.dv],
+        flybyDates: [s.tFlyby],
+      };
+    }
+  }
+
+  // If already zero-cost / unpowered, return immediately
+  if (bestOverallDv <= FREE_FLYBY_MAX_DV_MPS && bestResult) {
+    if (profiler) {
+      profiler.continuousOptimizationMs += (performance.now() - t8);
+      profiler.totalMethodMs += (performance.now() - methodStart);
+    }
+    return finalizeResult(bestResult);
+  }
 
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
@@ -1222,7 +1256,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       bestOverallDv = res.totalDv;
       bestResult = res;
     }
-    if (res.totalDv <= 1.0) {
+    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -1236,11 +1270,10 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     let a = candIndex > 0 ? samples[candIndex - 1].tFlyby : samples[0].tFlyby;
     let b = candIndex < M - 1 ? samples[candIndex + 1].tFlyby : samples[M - 1].tFlyby;
 
-    const datePrecision = 864; // 1% of a day (864 seconds)
     let currentBest = evalExtrapolatedAtDate((a + b) / 2);
 
     let iter = 0;
-    while (b - a > datePrecision && iter < 30) {
+    while (b - a > DATE_PRECISION_BISECTION_SECONDS && iter < MAX_BISECTION_ITERATIONS) {
       iter++;
       const delta = (b - a) * 0.001;
       const mid = (a + b) / 2;
@@ -1253,8 +1286,8 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      // Stop early if dv <= 1 m/s (perfect unpowered flyby)
-      if (res1.totalDv <= 1.0 || res2.totalDv <= 1.0) {
+      // Stop early if unpowered free flyby found
+      if (res1.totalDv <= FREE_FLYBY_MAX_DV_MPS || res2.totalDv <= FREE_FLYBY_MAX_DV_MPS) {
         break;
       }
 
@@ -1265,7 +1298,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       }
     }
 
-    if (currentBest.totalDv <= 1.0) {
+    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -1368,7 +1401,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
   if (j_last < 0) j_last = 0;
 
   const flybyBody = bodyMap.get(fbInst.bodyName)!;
-  const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
+  const minFlybyAltitude = getMinFlybyAlt(flybyBody, fbInst.minFlybyAltitude);
 
   if (profiler) {
     profiler.matrixLookupMs += (performance.now() - t0);
@@ -1474,7 +1507,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
     const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
     const vInfIn = vecSub(vTransArr, stBody.vel);
     const vInfOut = vecSub(vTransDep, stBody.vel);
-    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyAltitude);
 
     const c3ArrInSmooth = c3ArrIn ?? ((vecMag(vInfIn) ** 2) / 1e6);
     const c3DepOutSmooth = c3DepOut ?? ((vecMag(vInfOut) ** 2) / 1e6);
@@ -1647,29 +1680,16 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
 
     let currentFlybyDv = 0;
     if (c3ArrB >= 0 && c3DepB >= 0) {
-      const vInfInMag = Math.sqrt(c3ArrB * 1e6);
-      const vInfOutMag = Math.sqrt(c3DepB * 1e6);
-
-      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
-      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
-
-      let excessAngle = 0;
-      if (deflectionAngleDeg > maxDeflectionAngleDeg) {
-        excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
-      }
-
-      if (excessAngle > 1e-5) {
-        currentFlybyDv = Math.sqrt(
-          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
-        );
-      } else {
-        currentFlybyDv = Math.abs(vpOut - vpIn);
-      }
-
-      const deltaC3 = Math.abs(c3ArrB - c3DepB);
-      if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
-        currentFlybyDv = 0;
-      }
+      const vInfInMag = Math.sqrt(c3ArrB * KM2_S2_TO_M2_S2);
+      const vInfOutMag = Math.sqrt(c3DepB * KM2_S2_TO_M2_S2);
+      currentFlybyDv = computeFlybyPoweredDv(
+        vInfInMag,
+        vInfOutMag,
+        deflectionAngleDeg,
+        maxDeflectionAngleDeg,
+        muFlyby,
+        minFlybyRadius
+      );
     }
 
     const totalDv = priorCost + currentFlybyDv;
@@ -1859,7 +1879,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
   if (j_suffix < 0) j_suffix = 0;
 
   const flybyBody = bodyMap.get(fbInst.bodyName)!;
-  const minFlybyRadius = getMinFlybyRadius(flybyBody, fbInst.minFlybyAltitude);
+  const minFlybyAltitude = getMinFlybyAlt(flybyBody, fbInst.minFlybyAltitude);
 
   if (profiler) {
     profiler.matrixLookupMs += (performance.now() - t0);
@@ -1968,7 +1988,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const stBody = getBodyStateAtUT(flybyBody, mainBody, tFlyby);
     const vInfIn = vecSub(vTransArr, stBody.vel);
     const vInfOut = vecSub(vTransDep, stBody.vel);
-    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyRadius);
+    const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyAltitude);
 
     const c3ArrInSmooth = c3ArrIn ?? ((vecMag(vInfIn) ** 2) / 1e6);
     const c3DepOutSmooth = c3DepOut ?? ((vecMag(vInfOut) ** 2) / 1e6);
@@ -2143,29 +2163,16 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
 
     let currentFlybyDv = 0;
     if (c3ArrB >= 0 && c3DepB >= 0) {
-      const vInfInMag = Math.sqrt(c3ArrB * 1e6);
-      const vInfOutMag = Math.sqrt(c3DepB * 1e6);
-
-      const vpIn = Math.sqrt(vInfInMag * vInfInMag + (2 * muFlyby) / minFlybyRadius);
-      const vpOut = Math.sqrt(vInfOutMag * vInfOutMag + (2 * muFlyby) / minFlybyRadius);
-
-      let excessAngle = 0;
-      if (deflectionAngleDeg > maxDeflectionAngleDeg) {
-        excessAngle = ((deflectionAngleDeg - maxDeflectionAngleDeg) * Math.PI) / 180;
-      }
-
-      if (excessAngle > 1e-5) {
-        currentFlybyDv = Math.sqrt(
-          vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle)
-        );
-      } else {
-        currentFlybyDv = Math.abs(vpOut - vpIn);
-      }
-
-      const deltaC3 = Math.abs(c3ArrB - c3DepB);
-      if (deltaC3 < 0.0001 && deflectionAngleDeg <= maxDeflectionAngleDeg + 0.1) {
-        currentFlybyDv = 0;
-      }
+      const vInfInMag = Math.sqrt(c3ArrB * KM2_S2_TO_M2_S2);
+      const vInfOutMag = Math.sqrt(c3DepB * KM2_S2_TO_M2_S2);
+      currentFlybyDv = computeFlybyPoweredDv(
+        vInfInMag,
+        vInfOutMag,
+        deflectionAngleDeg,
+        maxDeflectionAngleDeg,
+        muFlyby,
+        minFlybyRadius
+      );
     }
 
     const totalDv = suffixCost + currentFlybyDv;

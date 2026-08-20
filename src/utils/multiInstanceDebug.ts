@@ -25,6 +25,7 @@ import {
   evaluateHigherOrderSequenceTransferAddFirstLeg,
   generateHigherOrderAddFirstLegFlybySamples,
   generateHigherOrderAddLastLegFlybySamples,
+  computeFlybyPoweredDv,
   SequenceTransferResult,
 } from '../physics/flyby';
 import {
@@ -437,17 +438,14 @@ export function extractMultiInstanceDebugData(
       }
       if (!result || (!Number.isFinite(dvMps) && hasValidLeg1 && hasValidLeg2)) {
         if (hasValidLeg1 && hasValidLeg2 && c3Arr > 0 && c3Dep > 0) {
-          const vpIn = Math.sqrt(vInMag * vInMag + (2 * mu) / rpMin);
-          const vpOut = Math.sqrt(vOutMag * vOutMag + (2 * mu) / rpMin);
-          const excessAngle = Math.max(0, (deflectionNeededDeg - deflectionMaxDeg) * (Math.PI / 180));
-          if (excessAngle > 1e-5) {
-            dvMps = Math.sqrt(vpIn * vpIn + vpOut * vpOut - 2 * vpIn * vpOut * Math.cos(excessAngle));
-          } else {
-            dvMps = Math.abs(vpOut - vpIn);
-          }
-          if (Math.abs(c3Arr - c3Dep) < 0.0001 && deflectionNeededDeg <= deflectionMaxDeg + 0.1) {
-            dvMps = 0;
-          }
+          dvMps = computeFlybyPoweredDv(
+            vInMag,
+            vOutMag,
+            deflectionNeededDeg,
+            deflectionMaxDeg,
+            mu,
+            rpMin
+          );
         }
       }
 
