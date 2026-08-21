@@ -5,7 +5,7 @@
 
 import { getMinFlybyAlt, getMinFlybyRadius } from '../data/solarSystems';
 import { CelestialBody, OrbitalBody, FlybyDetail, FlyableSequenceResult, PorkchopPlotData, DirectionalLink, InstanceNode, SequenceProfilingStats, SequenceBlockTiming, SequencePorkchopData, SequenceTransferData, Vector3D } from '../types';
-import { vecSub, vecMag, vecDot, getBodyStateAtUT } from './kepler';
+import { vecSub, vecMag, vecDot, getBodyStateAtUT, vecAdd, vecScale } from './kepler';
 import { solveLambert } from './lambert';
 
 export interface FlybyFeasibility {
@@ -40,7 +40,8 @@ export const MIN_TOTAL_SEQUENCE_TIME_SECONDS = 7200;
 export const DATE_PRECISION_BISECTION_SECONDS = 864; // 1% of a day (864 seconds)
 export const MAX_BISECTION_ITERATIONS = 30;
 export const FREE_FLYBY_MAX_DV_MPS = 1.0;
-export const KM2_S2_TO_M2_S2 = 1e6;
+export const KM_S_TO_M_S = 1000;
+export const KM2_S2_TO_M2_S2 = KM_S_TO_M_S*KM_S_TO_M_S;
 export const EPSILON_EXCESS_ANGLE = 1e-5;
 export const FEASIBILITY_ANGLE_MARGIN_DEG = 0.01;
 export const MAX_ALLOWED_FLYBY_DV_MPS = 1e6;
@@ -185,6 +186,72 @@ export function evaluateFlybyAtDate(
 
 export const DEFAULT_STOCHASTIC_ALT_ERROR = 10000; // 10 km in meters
 export const DEFAULT_STOCHASTIC_VEL_ERROR = 1.0;   // 1 m/s
+
+/**
+ * Computes maximum achievable turning angle (in degrees) at a given periapsis radius and v_infinity speed.
+ */
+export function computeMaxDeflectionAngle(
+  rPeri: number,
+  vInfMag: number,
+  mu: number
+): number {
+  if (rPeri <= 0 || vInfMag <= 0 || mu <= 0 || !Number.isFinite(rPeri) || !Number.isFinite(vInfMag) || !Number.isFinite(mu)) return 0;
+  const e = 1 + (rPeri * vInfMag * vInfMag) / mu;
+  if (!Number.isFinite(e) || e <= 1) return 0;
+  const sinHalf = Math.max(-1, Math.min(1, 1 / e));
+  const angleDeg = 2 * Math.asin(sinHalf) * (180 / Math.PI);
+  return Number.isFinite(angleDeg) ? angleDeg : 0;
+}
+
+/**
+ * Computes required periapsis radius from a deflection angle at a given mean v_infinity speed.
+ */
+export function computePeriapsisRadiusFromDeflection(
+  deflectionAngleDeg: number,
+  meanVInfMag: number,
+  mu: number,
+  rPeriMin: number
+): number {
+  if (!Number.isFinite(deflectionAngleDeg) || !Number.isFinite(meanVInfMag) || deflectionAngleDeg <= 0 || meanVInfMag <= 0 || mu <= 0 || rPeriMin <= 0) {
+    return rPeriMin;
+  }
+  const deflectionRad = (deflectionAngleDeg * Math.PI) / 180;
+  const sinHalf = Math.sin(deflectionRad / 2);
+  if (sinHalf <= 1e-6) {
+    return rPeriMin * FACTOR_RP_NO_DEFLECTION;
+  }
+  const denom = meanVInfMag * meanVInfMag;
+  if (denom <= 1e-6) return rPeriMin;
+  const rp = (mu / denom) * (1 / sinHalf - 1);
+  return Number.isFinite(rp) ? Math.max(rPeriMin, rp) : rPeriMin;
+}
+
+/**
+ * Computes total stochastic delta-V for a flyby including position/velocity error perturbations and C3 mismatch.
+ */
+export function computeFlybyStochasticDv(
+  body: CelestialBody,
+  periapsisAlt: number,
+  vInfInMag: number,
+  vInfOutMag: number,
+  stochasticAltError?: number,
+  stochasticVelError?: number
+): number {
+  const safeVIn = Number.isFinite(vInfInMag) && vInfInMag > 0 ? vInfInMag : 0;
+  const safeVOut = Number.isFinite(vInfOutMag) && vInfOutMag > 0 ? vInfOutMag : 0;
+  const safeAlt = Number.isFinite(periapsisAlt) ? periapsisAlt : 0;
+  const { stochasticDv: baseStochDv } = calculateStochasticDvCore(
+    body,
+    safeAlt,
+    safeVIn,
+    safeVOut,
+    stochasticAltError,
+    stochasticVelError
+  );
+  const deltaC3 = Math.abs(safeVIn * safeVIn - safeVOut * safeVOut);
+  const stochDv = baseStochDv + Math.sqrt(deltaC3);
+  return Number.isFinite(stochDv) ? stochDv : 0;
+}
 
 export interface StochasticDvResult {
   stochasticDv: number;
@@ -768,15 +835,17 @@ export function recomputeFlybyDetailsSequentially(
 }
 
 export interface SequenceTransferResult {
-  c3DepA: number;
-  c3ArrB?: number;
-  c3DepB?: number;
-  c3ArrC?: number;
-  c3DepC?: number;
-  c3ArrFinal: number;
+  c3DepA: Vector3D;
+  c3ArrB?: Vector3D;
+  c3DepB?: Vector3D;
+  c3ArrC?: Vector3D;
+  c3DepC?: Vector3D;
+  c3ArrFinal: Vector3D;
   totalDv: number;
   flybyDvs: number[];
   flybyDates: number[];
+  flybyC3Arrs?: Vector3D[];
+  flybyC3Deps?: Vector3D[];
   isPhysicallyValid?: boolean;
   isConstraintValid?: boolean;
 }
@@ -907,10 +976,10 @@ export function findClosestDateIndex(dates: number[], target: number): number {
 export interface DirectPorkchopFlybySample {
   j0: number;
   tFlyby: number;
-  c3DepA: number;
-  c3ArrB: number;
-  c3DepB: number;
-  c3ArrFinal: number;
+  c3DepA: Vector3D;
+  c3ArrB: Vector3D;
+  c3DepB: Vector3D;
+  c3ArrFinal: Vector3D;
   deflectionAngleDeg: number;
   maxDeflectionAngleDeg: number;
   dv: number;
@@ -948,7 +1017,7 @@ export function generateDirectPorkchopFlybySamples(
     const tgtInst = pathInsts[k + 1];
     const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
     const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`;
-    const pc = porkchops[linkId];
+    const pc = (link && porkchops[link.id]) || porkchops[linkId] || Object.values(porkchops).find(p => p.sourceBody === srcInst.bodyName && p.targetBody === tgtInst.bodyName);
     if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) {
       if (profiler) profiler.matrixLookupMs += (performance.now() - t0);
       return null;
@@ -1090,13 +1159,15 @@ export function evaluateSequenceTransferFromDirectPorkchops(
   if (validSamples.length === 0) {
     if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
     return {
-      c3DepA: 0,
-      c3ArrB: 0,
-      c3DepB: 0,
-      c3ArrFinal: 0,
+      c3DepA: { x: Infinity, y: Infinity, z: Infinity },
+      c3ArrB: { x: Infinity, y: Infinity, z: Infinity },
+      c3DepB: { x: Infinity, y: Infinity, z: Infinity },
+      c3ArrFinal: { x: Infinity, y: Infinity, z: Infinity },
       totalDv: Infinity,
       flybyDvs: [Infinity],
       flybyDates: [0],
+      flybyC3Arrs: [ { x: 0, y: 0, z: 0 } ],
+      flybyC3Deps: [ { x: 0, y: 0, z: 0 } ],
       isPhysicallyValid: false,
       isConstraintValid: false,
     };
@@ -1119,8 +1190,8 @@ export function evaluateSequenceTransferFromDirectPorkchops(
 
     // Check zero-crossing of C3 (unpowered flyby intersection)
     if (k < M - 1 && samples[k + 1].isValid) {
-      const d1 = samples[k].c3ArrB - samples[k].c3DepB;
-      const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
+      const d1 = vecMag(samples[k].c3ArrB) - vecMag(samples[k].c3DepB);
+      const d2 = vecMag(samples[k + 1].c3ArrB) - vecMag(samples[k + 1].c3DepB);
       if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
         const alpha = Math.abs(d1) / (Math.abs(d1) + Math.abs(d2));
         const tRoot = samples[k].tFlyby + alpha * (samples[k + 1].tFlyby - samples[k].tFlyby);
@@ -1179,17 +1250,17 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     const dt = p2.tFlyby - p1.tFlyby;
     const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlyby) / dt)) : 0;
 
-    const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
-    const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
-    const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
-    const c3ArrFinal = interp(p1.c3ArrFinal, p2.c3ArrFinal, alpha);
+    const c3DepA = vecAdd(vecScale(p1.c3DepA, 1-alpha), vecScale(p2.c3DepA, alpha));
+    const c3ArrB = vecAdd(vecScale(p1.c3ArrB, 1-alpha), vecScale(p2.c3ArrB, alpha));
+    const c3DepB = vecAdd(vecScale(p1.c3DepB, 1-alpha), vecScale(p2.c3DepB, alpha));
+    const c3ArrFinal = vecAdd(vecScale(p1.c3ArrFinal, 1-alpha), vecScale(p2.c3ArrFinal, alpha));
     const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
     const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
 
-    let totalDv = NaN;
-    if (c3ArrB >= 0 && c3DepB >= 0) {
-      const vInfInMag = Math.sqrt(c3ArrB * KM2_S2_TO_M2_S2);
-      const vInfOutMag = Math.sqrt(c3DepB * KM2_S2_TO_M2_S2);
+    let totalDv = Infinity;
+    if (Number.isFinite(vecMag(c3ArrB)) && Number.isFinite(vecMag(c3DepB))) {
+      const vInfInMag = Math.sqrt(vecMag(c3ArrB) * KM2_S2_TO_M2_S2);
+      const vInfOutMag = Math.sqrt(vecMag(c3DepB) * KM2_S2_TO_M2_S2);
       totalDv = computeFlybyPoweredDv(
         vInfInMag,
         vInfOutMag,
@@ -1201,13 +1272,15 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     }
 
     return {
-      c3DepA,
-      c3ArrB,
-      c3DepB,
-      c3ArrFinal,
-      totalDv,
-      flybyDvs: [totalDv],
+      c3DepA: c3DepA,
+      c3ArrB: c3ArrB,
+      c3DepB: c3DepB,
+      c3ArrFinal: c3ArrFinal,
+      totalDv: Number.isFinite(totalDv) ? totalDv : Infinity,
+      flybyDvs: [Number.isFinite(totalDv) ? totalDv : Infinity],
       flybyDates: [t],
+      flybyC3Arrs: [c3ArrB],
+      flybyC3Deps: [c3DepB],
     };
   };
 
@@ -1236,6 +1309,8 @@ export function evaluateSequenceTransferFromDirectPorkchops(
         totalDv: s.dv,
         flybyDvs: [s.dv],
         flybyDates: [s.tFlyby],
+        flybyC3Arrs: [s.c3ArrB],
+        flybyC3Deps: [s.c3DepB],
       };
     }
   }
@@ -1322,10 +1397,10 @@ export function evaluateSequenceTransferFromDirectPorkchops(
 export interface HigherOrderFlybySample {
   j0: number;
   tFlyby: number;
-  c3DepA: number;
-  c3ArrB: number;
-  c3DepB: number;
-  c3ArrFinal: number;
+  c3DepA: Vector3D;
+  c3ArrB: Vector3D;
+  c3DepB: Vector3D;
+  c3ArrFinal: Vector3D;
   deflectionAngleDeg: number;
   maxDeflectionAngleDeg: number;
   currentDv: number;
@@ -1333,6 +1408,8 @@ export interface HigherOrderFlybySample {
   totalDv: number;
   priorFlybyDates: number[];
   priorFlybyDvs: number[];
+  priorFlybyC3Arrs?: Vector3D[];
+  priorFlybyC3Deps?: Vector3D[];
   isValid: boolean;
   isPhysicallyValid?: boolean;
 }
@@ -1441,7 +1518,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
     const c3ArrFinal = P_last.c3ArrMatrix?.[i1]?.[j_last] ?? 0;
     const vTransDep = P_last.vTransDepMatrix?.[i1]?.[j_last];
 
-    // Extract prior flyby dates & DVs
+    // Extract prior flyby dates, DVs, and C3s
     const priorFlybyDates: number[] = subSeq.flybys && subSeq.flybys.length > 0
       ? subSeq.flybys.map(fb => fb.dateMatrix?.[i0]?.[j0] || 0)
       : [];
@@ -1450,9 +1527,17 @@ export function generateHigherOrderAddLastLegFlybySamples(
       ? subSeq.flybys.map(fb => fb.poweredDvMatrix?.[i0]?.[j0] || 0)
       : [];
 
+    const priorFlybyC3Arrs: Vector3D[] = subSeq.flybys && subSeq.flybys.length > 0
+      ? subSeq.flybys.map(fb => fb.c3ArrMatrix?.[i0]?.[j0] || 0)
+      : [];
+
+    const priorFlybyC3Deps: Vector3D[] = subSeq.flybys && subSeq.flybys.length > 0
+      ? subSeq.flybys.map(fb => fb.c3DepMatrix?.[i0]?.[j0] || 0)
+      : [];
+
     // Obtain inbound velocity vector vTransArr entering flybyBody
     let vTransArr: Vector3D | undefined;
-    let c3ArrIn: number | undefined = rawC3ArrIn;
+    let c3ArrIn: Vector3D | undefined = rawC3ArrIn;
     if (P_prevLeg && P_prevLeg.vTransArrMatrix) {
       const prevFbDate = priorFlybyDates[priorFlybyDates.length - 1] || 0;
       const i_prev = prevFbDate ? findClosestDateIndex(P_prevLeg.depDates, prevFbDate) : 0;
@@ -1477,8 +1562,8 @@ export function generateHigherOrderAddLastLegFlybySamples(
         const lambRes = solveLambert(stPrev.pos, stFlyby.pos, dtPrev, muCentral, true);
         if (lambRes && lambRes.isValid && lambRes.v2 && vecMag(lambRes.v2) > 1e-3) {
           vTransArr = lambRes.v2;
-          const vInfInMag = vecMag(vecSub(lambRes.v2, stFlyby.vel));
-          c3ArrIn = (vInfInMag * vInfInMag) / 1e6;
+          const vInfIn = vecSub(lambRes.v2, stFlyby.vel);
+          c3ArrIn = vecScale(vInfIn, vecMag(vInfIn) / 1e6);
         }
       }
     }
@@ -1498,6 +1583,8 @@ export function generateHigherOrderAddLastLegFlybySamples(
         totalDv: Infinity,
         priorFlybyDates,
         priorFlybyDvs,
+        priorFlybyC3Arrs,
+        priorFlybyC3Deps,
         isValid: false,
         isPhysicallyValid: false,
       });
@@ -1530,6 +1617,8 @@ export function generateHigherOrderAddLastLegFlybySamples(
       totalDv,
       priorFlybyDates,
       priorFlybyDvs,
+      priorFlybyC3Arrs,
+      priorFlybyC3Deps,
       isValid: isPhysValid && dvFinite && Number.isFinite(totalDv) && totalDv < 1e6,
       isPhysicallyValid: isPhysValid,
     });
@@ -1585,8 +1674,8 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
   if (validSamples.length === 0) {
     if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
     return {
-      c3DepA: 0,
-      c3ArrFinal: 0,
+      c3DepA: { x: Infinity, y: Infinity, z: Infinity },
+      c3ArrFinal: { x: Infinity, y: Infinity, z: Infinity },
       totalDv: Infinity,
       flybyDvs: Array(N - 2).fill(Infinity),
       flybyDates: Array(N - 2).fill(0),
@@ -1612,8 +1701,8 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
 
     // Check zero-crossing of C3 (unpowered flyby intersection)
     if (k < M - 1 && samples[k + 1].isValid) {
-      const d1 = samples[k].c3ArrB - samples[k].c3DepB;
-      const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
+      const d1 = vecMag(samples[k].c3ArrB) - vecMag(samples[k].c3DepB);
+      const d2 = vecMag(samples[k + 1].c3ArrB) - vecMag(samples[k + 1].c3DepB);
       if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
         const alpha = Math.abs(d1) / (Math.abs(d1) + Math.abs(d2));
         const tRoot = samples[k].tFlyby + alpha * (samples[k + 1].tFlyby - samples[k].tFlyby);
@@ -1670,18 +1759,18 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
     const dt = p2.tFlyby - p1.tFlyby;
     const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlyby) / dt)) : 0;
 
-    const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
-    const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
-    const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
-    const c3ArrFinal = interp(p1.c3ArrFinal, p2.c3ArrFinal, alpha);
+    const c3DepA = vecAdd(vecScale(p1.c3DepA, 1-alpha), vecScale(p2.c3DepA, alpha));
+    const c3ArrB = vecAdd(vecScale(p1.c3ArrB, 1-alpha), vecScale(p2.c3ArrB, alpha));
+    const c3DepB = vecAdd(vecScale(p1.c3DepB, 1-alpha), vecScale(p2.c3DepB, alpha));
+    const c3ArrFinal = vecAdd(vecScale(p1.c3ArrFinal, 1-alpha), vecScale(p2.c3ArrFinal, alpha));
     const priorCost = interp(p1.priorCost, p2.priorCost, alpha);
     const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
     const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
 
-    let currentFlybyDv = 0;
-    if (c3ArrB >= 0 && c3DepB >= 0) {
-      const vInfInMag = Math.sqrt(c3ArrB * KM2_S2_TO_M2_S2);
-      const vInfOutMag = Math.sqrt(c3DepB * KM2_S2_TO_M2_S2);
+    let currentFlybyDv = Infinity;
+    if (Number.isFinite(vecMag(c3ArrB)) && Number.isFinite(vecMag(c3DepB))) {
+      const vInfInMag = Math.sqrt(vecMag(c3ArrB) * KM2_S2_TO_M2_S2);
+      const vInfOutMag = Math.sqrt(vecMag(c3DepB) * KM2_S2_TO_M2_S2);
       currentFlybyDv = computeFlybyPoweredDv(
         vInfInMag,
         vInfOutMag,
@@ -1692,25 +1781,42 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       );
     }
 
-    const totalDv = priorCost + currentFlybyDv;
+    const safePriorCost = Number.isFinite(priorCost) ? priorCost : Infinity;
+    const safeCurrentDv = Number.isFinite(currentFlybyDv) ? currentFlybyDv : Infinity;
+    const totalDv = safePriorCost + safeCurrentDv;
 
     const interpPriorFlybyDates = p1.priorFlybyDates.map((d1, idx) => {
       const d2 = p2.priorFlybyDates[idx] ?? d1;
-      return interp(d1, d2, alpha);
+      const res = interp(d1, d2, alpha);
+      return Number.isFinite(res) ? res : d1;
     });
     const interpPriorFlybyDvs = p1.priorFlybyDvs.map((dv1, idx) => {
       const dv2 = p2.priorFlybyDvs[idx] ?? dv1;
-      return interp(dv1, dv2, alpha);
+      const res = interp(dv1, dv2, alpha);
+      return Number.isFinite(res) ? res : dv1;
+    });
+
+    const interpPriorFlybyC3Arrs = (p1.priorFlybyC3Arrs || []).map((c1, idx) => {
+      const c2 = (p2.priorFlybyC3Arrs || [])[idx] ?? c1;
+      const res = vecAdd(vecScale(c1, 1-alpha), vecScale(c2, alpha));
+      return res;
+    });
+    const interpPriorFlybyC3Deps = (p1.priorFlybyC3Deps || []).map((c1, idx) => {
+      const c2 = (p2.priorFlybyC3Deps || [])[idx] ?? c1;
+      const res = vecAdd(vecScale(c1, 1-alpha), vecScale(c2, alpha));
+      return res;
     });
 
     return {
-      c3DepA,
-      c3ArrB,
-      c3DepB,
-      c3ArrFinal,
-      totalDv,
-      flybyDvs: [...interpPriorFlybyDvs, currentFlybyDv],
+      c3DepA: c3DepA,
+      c3ArrB: c3ArrB,
+      c3DepB: c3DepB,
+      c3ArrFinal: c3ArrFinal,
+      totalDv: Number.isFinite(totalDv) ? totalDv : Infinity,
+      flybyDvs: [...interpPriorFlybyDvs, safeCurrentDv],
       flybyDates: [...interpPriorFlybyDates, t],
+      flybyC3Arrs: [...interpPriorFlybyC3Arrs, c3ArrB],
+      flybyC3Deps: [...interpPriorFlybyC3Deps, c3DepB],
     };
   };
 
@@ -1800,10 +1906,10 @@ export interface HigherOrderFirstLegFlybySample {
   j_first: number;
   i_suffix: number;
   tFlyby: number;
-  c3DepA: number;
-  c3ArrB: number;
-  c3DepB: number;
-  c3ArrFinal: number;
+  c3DepA: Vector3D;
+  c3ArrB: Vector3D;
+  c3DepB: Vector3D;
+  c3ArrFinal: Vector3D;
   deflectionAngleDeg: number;
   maxDeflectionAngleDeg: number;
   currentDv: number;
@@ -1811,6 +1917,8 @@ export interface HigherOrderFirstLegFlybySample {
   totalDv: number;
   suffixFlybyDates: number[];
   suffixFlybyDvs: number[];
+  suffixFlybyC3Arrs?: Vector3D[];
+  suffixFlybyC3Deps?: Vector3D[];
   isPhysicallyValid: boolean;
   isConstraintValid: boolean;
 }
@@ -1921,7 +2029,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const c3ArrFinal = suffixSeq.c3ArrMatrix?.[i1]?.[j_suffix] ?? 0;
     const suffixCost = suffixSeq.totalPoweredDvMatrix?.[i1]?.[j_suffix] ?? 0;
 
-    // Extract suffix flyby dates & DVs (for Inst_2, ..., Inst_{N-2})
+    // Extract suffix flyby dates, DVs, and C3s (for Inst_2, ..., Inst_{N-2})
     const suffixFlybyDates: number[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
       ? suffixSeq.flybys.map(fb => fb.dateMatrix?.[i1]?.[j_suffix] || 0)
       : [];
@@ -1930,9 +2038,17 @@ export function generateHigherOrderAddFirstLegFlybySamples(
       ? suffixSeq.flybys.map(fb => fb.poweredDvMatrix?.[i1]?.[j_suffix] || 0)
       : [];
 
+    const suffixFlybyC3Arrs: Vector3D[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
+      ? suffixSeq.flybys.map(fb => fb.c3ArrMatrix?.[i1]?.[j_suffix] || 0)
+      : [];
+
+    const suffixFlybyC3Deps: Vector3D[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
+      ? suffixSeq.flybys.map(fb => fb.c3DepMatrix?.[i1]?.[j_suffix] || 0)
+      : [];
+
     // Obtain outbound velocity vector vTransDep exiting flybyBody (Inst_1)
     let vTransDep: Vector3D | undefined;
-    let c3DepOut: number | undefined = rawC3DepOut;
+    let c3DepOut: Vector3D | undefined = rawC3DepOut;
     if (P_nextLeg && P_nextLeg.vTransDepMatrix) {
       const nextFbDate = suffixFlybyDates[0] || (suffixSeq.arrDates[j_suffix] || 0);
       const i_next = k; // Direct index on P_nextLeg.depDates (same instance)
@@ -1957,8 +2073,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
         const lambRes = solveLambert(stFlyby.pos, stNext.pos, dtNext, muCentral, true);
         if (lambRes && lambRes.isValid && lambRes.v1 && vecMag(lambRes.v1) > 1e-3) {
           vTransDep = lambRes.v1;
-          const vInfOutMag = vecMag(vecSub(lambRes.v1, stFlyby.vel));
-          c3DepOut = (vInfOutMag * vInfOutMag) / 1e6;
+          const vInfOut = vecSub(lambRes.v1, stFlyby.vel);
+          c3DepOut = vecScale(vInfOut, vecMag(vInfOut) / 1e6);
         }
       }
     }
@@ -1979,6 +2095,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
         totalDv: Infinity,
         suffixFlybyDates,
         suffixFlybyDvs,
+        suffixFlybyC3Arrs,
+        suffixFlybyC3Deps,
         isPhysicallyValid: false,
         isConstraintValid: false,
       });
@@ -2013,6 +2131,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
       totalDv,
       suffixFlybyDates,
       suffixFlybyDvs,
+      suffixFlybyC3Arrs,
+      suffixFlybyC3Deps,
       isPhysicallyValid: isPhysValid,
       isConstraintValid,
     });
@@ -2068,8 +2188,8 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
   if (physicallyValidSamples.length === 0) {
     if (profiler) profiler.totalMethodMs += (performance.now() - methodStart);
     return {
-      c3DepA: 0,
-      c3ArrFinal: 0,
+      c3DepA: {x: Infinity, y: Infinity, z: Infinity},
+      c3ArrFinal: {x: Infinity, y: Infinity, z: Infinity},
       totalDv: Infinity,
       flybyDvs: Array(N - 2).fill(Infinity),
       flybyDates: Array(N - 2).fill(0),
@@ -2095,8 +2215,8 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
 
     // Check zero-crossing of C3 (unpowered flyby intersection)
     if (k < M - 1 && samples[k + 1].isPhysicallyValid) {
-      const d1 = samples[k].c3ArrB - samples[k].c3DepB;
-      const d2 = samples[k + 1].c3ArrB - samples[k + 1].c3DepB;
+      const d1 = vecMag(samples[k].c3ArrB) - vecMag(samples[k].c3DepB);
+      const d2 = vecMag(samples[k + 1].c3ArrB) - vecMag(samples[k + 1].c3DepB);
       if (d1 * d2 <= 0 && Math.abs(d1 - d2) > 1e-9) {
         const alpha = Math.abs(d1) / (Math.abs(d1) + Math.abs(d2));
         const tRoot = samples[k].tFlyby + alpha * (samples[k + 1].tFlyby - samples[k].tFlyby);
@@ -2153,18 +2273,18 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
     const dt = p2.tFlyby - p1.tFlyby;
     const alpha = dt > 0 ? Math.max(0, Math.min(1, (t - p1.tFlyby) / dt)) : 0;
 
-    const c3DepA = interp(p1.c3DepA, p2.c3DepA, alpha);
-    const c3ArrB = interp(p1.c3ArrB, p2.c3ArrB, alpha);
-    const c3DepB = interp(p1.c3DepB, p2.c3DepB, alpha);
-    const c3ArrFinal = interp(p1.c3ArrFinal, p2.c3ArrFinal, alpha);
+    const c3DepA = vecAdd(vecScale(p1.c3DepA, 1-alpha), vecScale(p2.c3DepA, alpha));
+    const c3ArrB = vecAdd(vecScale(p1.c3ArrB, 1-alpha), vecScale(p2.c3ArrB, alpha));
+    const c3DepB = vecAdd(vecScale(p1.c3DepB, 1-alpha), vecScale(p2.c3DepB, alpha));
+    const c3ArrFinal = vecAdd(vecScale(p1.c3ArrFinal, 1-alpha), vecScale(p2.c3ArrFinal, alpha));
     const suffixCost = interp(p1.suffixCost, p2.suffixCost, alpha);
     const deflectionAngleDeg = interp(p1.deflectionAngleDeg, p2.deflectionAngleDeg, alpha);
     const maxDeflectionAngleDeg = interp(p1.maxDeflectionAngleDeg, p2.maxDeflectionAngleDeg, alpha);
 
-    let currentFlybyDv = 0;
-    if (c3ArrB >= 0 && c3DepB >= 0) {
-      const vInfInMag = Math.sqrt(c3ArrB * KM2_S2_TO_M2_S2);
-      const vInfOutMag = Math.sqrt(c3DepB * KM2_S2_TO_M2_S2);
+    let currentFlybyDv = Infinity;
+    if (Number.isFinite(vecMag(c3ArrB)) && Number.isFinite(vecMag(c3DepB))) {
+      const vInfInMag = Math.sqrt(vecMag(c3ArrB) * KM2_S2_TO_M2_S2);
+      const vInfOutMag = Math.sqrt(vecMag(c3DepB) * KM2_S2_TO_M2_S2);
       currentFlybyDv = computeFlybyPoweredDv(
         vInfInMag,
         vInfOutMag,
@@ -2175,25 +2295,42 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       );
     }
 
-    const totalDv = suffixCost + currentFlybyDv;
+    const safeSuffixCost = Number.isFinite(suffixCost) ? suffixCost : Infinity;
+    const safeCurrentDv = Number.isFinite(currentFlybyDv) ? currentFlybyDv : Infinity;
+    const totalDv = safeSuffixCost + safeCurrentDv;
 
     const interpSuffixFlybyDates = p1.suffixFlybyDates.map((d1, idx) => {
       const d2 = p2.suffixFlybyDates[idx] ?? d1;
-      return interp(d1, d2, alpha);
+      const res = interp(d1, d2, alpha);
+      return Number.isFinite(res) ? res : d1;
     });
     const interpSuffixFlybyDvs = p1.suffixFlybyDvs.map((dv1, idx) => {
       const dv2 = p2.suffixFlybyDvs[idx] ?? dv1;
-      return interp(dv1, dv2, alpha);
+      const res = interp(dv1, dv2, alpha);
+      return Number.isFinite(res) ? res : dv1;
+    });
+
+    const interpSuffixFlybyC3Arrs = (p1.suffixFlybyC3Arrs || []).map((c1, idx) => {
+      const c2 = (p2.suffixFlybyC3Arrs || [])[idx] ?? c1;
+      const res = vecAdd(vecScale(c1, 1-alpha), vecScale(c2, alpha));
+      return res;
+    });
+    const interpSuffixFlybyC3Deps = (p1.suffixFlybyC3Deps || []).map((c1, idx) => {
+      const c2 = (p2.suffixFlybyC3Deps || [])[idx] ?? c1;
+      const res = vecAdd(vecScale(c1, 1-alpha), vecScale(c2, alpha));
+      return res;
     });
 
     return {
-      c3DepA,
-      c3ArrB,
-      c3DepB,
-      c3ArrFinal,
-      totalDv,
-      flybyDvs: [currentFlybyDv, ...interpSuffixFlybyDvs],
+      c3DepA: c3DepA,
+      c3ArrB: c3ArrB,
+      c3DepB: c3DepB,
+      c3ArrFinal: c3ArrFinal,
+      totalDv: Number.isFinite(totalDv) ? totalDv : Infinity,
+      flybyDvs: [safeCurrentDv, ...interpSuffixFlybyDvs],
       flybyDates: [t, ...interpSuffixFlybyDates],
+      flybyC3Arrs: [c3ArrB, ...interpSuffixFlybyC3Arrs],
+      flybyC3Deps: [c3DepB, ...interpSuffixFlybyC3Deps],
     };
   };
 

@@ -4,6 +4,7 @@
  */
 
 import { InstanceNode, DirectionalLink, CelestialBody, OrbitalBody, PorkchopPlotData } from '../types';
+import { vecMag } from './kepler';
 import { computeTisserandEnvelopes, findAllSubPathsInGraph, computePorkchopPlot } from './solver';
 
 export interface LinkEndDateRanges {
@@ -133,8 +134,8 @@ export async function computeLinkGridsAndRangesAsync(
       for (let j = 0; j < N_ARR; j++) {
         if (!validMatrix[i]?.[j]) continue;
 
-        const c3Dep = c3DepMatrix[i][j];
-        const c3Arr = c3ArrMatrix[i][j];
+        const c3Dep = vecMag(c3DepMatrix[i][j]);
+        const c3Arr = vecMag(c3ArrMatrix[i][j]);
         if (!isFinite(c3Dep) || !isFinite(c3Arr)) continue;
 
         const vInfDepMag = Math.sqrt(Math.max(0, c3Dep) * 1e6);
@@ -415,8 +416,8 @@ export function computeLinkEndDateRanges(
       for (let j = 0; j < arrDates.length; j++) {
         if (!validMatrix[i]?.[j]) continue;
 
-        const c3Dep = c3DepMatrix[i][j];
-        const c3Arr = c3ArrMatrix[i][j];
+        const c3Dep = vecMag(c3DepMatrix[i][j]);
+        const c3Arr = vecMag(c3ArrMatrix[i][j]);
         if (!isFinite(c3Dep) || !isFinite(c3Arr)) continue;
 
         const vInfDepMag = Math.sqrt(Math.max(0, c3Dep) * 1e6);

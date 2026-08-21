@@ -105,16 +105,24 @@ export interface PorkchopPlotData {
   targetBody: string;
   depDates: number[];
   arrDates: number[];
-  c3DepMatrix: number[][]; // [depIndex][arrIndex]
-  c3ArrMatrix: number[][];
+  c3DepMatrix: Vector3D[][]; // [depIndex][arrIndex]
+  c3ArrMatrix: Vector3D[][];
   dvMatrix: number[][]; // Total transfer v_infinity or C3 sum
   flightTimeMatrix: number[][];
   physicalValidMatrix?: boolean[][]; // Strictly physically possible (dt >= 0, Lambert valid, no central body impact)
   constraintValidMatrix?: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
   vTransDepMatrix?: Vector3D[][];
   vTransArrMatrix?: Vector3D[][];
-  computedSamples?: number;
-  totalSamples?: number;
+  computedSamples: number;
+  totalSamples: number;
+}
+
+export interface SequencePorkchopFlybyData {
+  instance: InstanceNode;
+  poweredDvMatrix: number[][];
+  c3ArrMatrix: Vector3D[][];
+  c3DepMatrix: Vector3D[][];
+  dateMatrix: number[][];
 }
 
 export interface SequencePorkchopData {
@@ -126,15 +134,9 @@ export interface SequencePorkchopData {
   targetBody: InstanceNode;
   depDates: number[];
   arrDates: number[];
-  c3DepMatrix: number[][];
-  c3ArrMatrix: number[][];
-  flybys: { // TODO consider changing that for FlybyDetail[]
-    instance: InstanceNode;
-    poweredDvMatrix: number[][];
-    c3ArrMatrix: number[][];
-    c3DepMatrix: number[][];
-    dateMatrix: number[][];
-  }[];
+  c3DepMatrix: Vector3D[][];
+  c3ArrMatrix: Vector3D[][];
+  flybys: SequencePorkchopFlybyData[]; // TODO consider changing that for FlybyDetail[]
   totalPoweredDvMatrix: number[][];
   flightTimeMatrix: number[][];
   physicalValidMatrix: boolean[][]; // Strictly physically possible (dt >= 0, chronological, no collisions)
@@ -235,8 +237,8 @@ export interface FlyableSequenceResult {
   bodyNames: string[];
   depDate: number;
   arrDate: number;
-  depC3: number; // km^2/s^2 or m^2/s^2
-  arrC3: number;
+  depC3: Vector3D; // km^2/s^2 or m^2/s^2
+  arrC3: Vector3D;
   totalFlightTime: number; // seconds
   totalStochasticDv: number; // m/s
   totalDv: number; // total delta-V sum

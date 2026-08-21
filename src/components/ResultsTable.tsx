@@ -7,7 +7,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, CelestialBody, OrbitalBody, PorkchopPlotData, SequencePorkchopData, DirectionalLink, InstanceNode, SubtaskProgressInfo } from '../types';
 import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
-import { getBodyStateAtUT, stateToOrbitalElements } from '../physics/kepler';
+import { getBodyStateAtUT, stateToOrbitalElements, vecMag } from '../physics/kepler';
 import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath } from '../physics/solver';
 import { compute3BodyConsolidatedRangesAsync, LinkEndDateRanges, Sequence3BodyConsolidatedRange } from '../physics/tisserandRanges';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
@@ -31,17 +31,17 @@ interface ResultsTableProps {
   onClearResults?: () => void;
   isSearching: boolean;
   searchStatusText?: string;
-  bodies?: OrbitalBody[];
-  mainBody?: CelestialBody;
-  porkchops?: Record<string, PorkchopPlotData>;
+  bodies: OrbitalBody[];
+  mainBody: CelestialBody;
+  porkchops: Record<string, PorkchopPlotData>;
   onPorkchopUpdate?: (newPorkchops: Record<string, PorkchopPlotData>) => void;
   sequencePorkchops?: Record<string, SequencePorkchopData>;
   onOpenSequencePorkchop?: (seqPcId: string) => void;
   onComputeSequencePorkchop?: (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => void;
   computingSeqId?: string | null;
   activeSubtask?: SubtaskProgressInfo | null;
-  links?: DirectionalLink[];
-  instances?: InstanceNode[];
+  links: DirectionalLink[];
+  instances: InstanceNode[];
 }
 
 const DEFAULT_COLUMNS: ResultTableColumn[] = [
@@ -69,7 +69,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   onClearResults,
   isSearching,
   searchStatusText,
-  bodies = [],
+  bodies,
   mainBody,
   porkchops,
   onPorkchopUpdate,
@@ -106,7 +106,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   }, [porkchops]);
 
   useEffect(() => {
-    if (!instances || instances.length === 0 || !links || links.length === 0 || !mainBody) {
+    if (instances.length === 0 || links.length === 0) {
       setLinkEndRangesMap({});
       setSequence3BodyRangesList([]);
       setIsCalculatingTisserandRanges(false);
@@ -301,14 +301,11 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     const altErrMeters = Math.max(0, stochasticAltErrorKm * 1000);
     const velErrMs = Math.max(0, stochasticVelErrorMs);
 
-    const mBody = mainBody || bodies[0];
-    if (!mBody) return;
-
     const flybySampling = seq.flybys[0]?.flybyDateSampling || 86400;
     const flybyDebugs = recomputeFlybyDetailsSequentially(
       seq,
       bodies,
-      mBody,
+      mainBody,
       altErrMeters,
       velErrMs,
       flybySampling,
@@ -405,8 +402,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
             valB = b.totalStochasticDv;
             break;
           case 'c3PlusStochDv2':
-            valA = a.depC3 + a.arrC3 + (a.totalStochasticDv / 1000) ** 2;
-            valB = b.depC3 + b.arrC3 + (b.totalStochasticDv / 1000) ** 2;
+            valA = vecMag(a.depC3) + vecMag(a.arrC3) + (a.totalStochasticDv / 1000) ** 2;
+            valB = vecMag(b.depC3) + vecMag(b.arrC3) + (b.totalStochasticDv / 1000) ** 2;
             break;
           case 'flybyHeight':
             valA = a.flybys[0]?.periapsisAlt ?? -Infinity;
@@ -464,7 +461,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         ? seq.flybys.map(f => `${seq.flybys.length > 1 ? f.bodyName + ': ' : ''}${((f.vInfInMag / 1000) ** 2).toFixed(2)} km²/s²`).join('; ')
         : 'N/A';
 
-      const sumC3Stoch = seq.depC3 + seq.arrC3 + (seq.totalStochasticDv / 1000) ** 2;
+      const sumC3Stoch = vecMag(seq.depC3) + vecMag(seq.arrC3) + (seq.totalStochasticDv / 1000) ** 2;
 
       return {
         'Index': idx + 1,
@@ -474,8 +471,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
         'Arrival Date (UT s)': Math.round(seq.arrDate),
         'Arrival Date (Calendar)': arrCal,
         'Flight Duration': formatDuration(seq.totalFlightTime, timeFormatMode),
-        'Departure C3 (km²/s²)': seq.depC3.toFixed(2),
-        'Arrival C3 (km²/s²)': seq.arrC3.toFixed(2),
+        'Departure C3 (km²/s²)': vecMag(seq.depC3).toFixed(2),
+        'Arrival C3 (km²/s²)': vecMag(seq.arrC3).toFixed(2),
         'Stochastic Δv (m/s)': seq.totalStochasticDv.toFixed(1),
         'Sum C3 + Stoch Δv² (km²/s²)': sumC3Stoch.toFixed(3),
         'Flyby Height': flybyHeights,
@@ -619,7 +616,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                   Computing Sequence Porkchop (Main Task):
                 </span>
                 <span className="font-mono text-xs sm:text-sm text-white font-bold truncate block">
-                  {activeComputingSeq.sequenceLabel} ({activeComputingSeq.instanceCount}-Instance {activeComputingSeq.isFullPath ? 'Full Path' : 'Subsequence'})
+                  {activeComputingSeq.sequenceLabel} ({activeComputingSeq.pathInsts.length}-Instance {activeComputingSeq.isFullPath ? 'Full Path' : 'Subsequence'})
                 </span>
               </div>
             </div>
@@ -1421,7 +1418,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
               filteredResults.map((seq, index) => {
                 const isExpanded = expandedSeqId === seq.id;
                 const isLongFlight = seq.totalFlightTime > daysToSeconds(10, timeFormatMode);
-                const sumC3Stoch = seq.depC3 + seq.arrC3 + (seq.totalStochasticDv / 1000) ** 2;
+                const sumC3Stoch = vecMag(seq.depC3) + vecMag(seq.arrC3) + (seq.totalStochasticDv / 1000) ** 2;
 
                 return (
                   <React.Fragment key={seq.id}>
@@ -1457,13 +1454,13 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                           case 'depC3':
                             return (
                               <td key={col.key} className="p-3 text-[#94A3B8]">
-                                {seq.depC3.toFixed(2)}
+                                {vecMag(seq.depC3).toFixed(2)}
                               </td>
                             );
                           case 'arrC3':
                             return (
                               <td key={col.key} className="p-3 text-[#94A3B8]">
-                                {seq.arrC3.toFixed(2)}
+                                {vecMag(seq.arrC3).toFixed(2)}
                               </td>
                             );
                           case 'totalStochasticDv':
@@ -1573,7 +1570,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                       <tr className="bg-[#1A1B1E]">
                         <td colSpan={columns.filter(c => c.visible).length + 2} className="p-4 space-y-4">
                           {/* Solar System Trajectory Visualizer View */}
-                          {bodies.length > 0 && mainBody && (
+                          {bodies.length > 0 && (
                             <SolarSystemTrajectoryView
                               sequence={seq}
                               bodies={bodies}
@@ -1778,7 +1775,6 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                     const incDeg = (elem.inclination * 180) / Math.PI;
                                     const raanDeg = (elem.ascNodeLongitude * 180) / Math.PI;
                                     const argDeg = (elem.argOfPeriapsis * 180) / Math.PI;
-                                    const trueAnomalyDeg = (elem.trueAnomalyEpoch * 180) / Math.PI;
 
                                     return (
                                       <div key={tIdx} className="bg-[#1A1B1E] p-3 rounded border border-[#2D2E33] font-mono text-[11px] space-y-2 text-[#E2E8F0]">
@@ -1816,11 +1812,6 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                           <div className="flex justify-between">
                                             <span className="text-[#94A3B8]">Arg of Periapsis (arg):</span>
                                             <strong>{argDeg.toFixed(3)}°</strong>
-                                          </div>
-
-                                          <div className="flex justify-between">
-                                            <span className="text-[#94A3B8]">trueAnomaly@epoch0:</span>
-                                            <strong className="text-amber-300">{trueAnomalyDeg.toFixed(3)}°</strong>
                                           </div>
 
                                           <div className="flex justify-between">

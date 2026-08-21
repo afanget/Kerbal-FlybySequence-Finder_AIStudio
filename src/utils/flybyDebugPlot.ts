@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody } from '../types';
+import { PorkchopPlotData, SequencePorkchopData, DirectionalLink, CelestialBody, OrbitalBody, Vector3D } from '../types';
 import { generateDirectPorkchopFlybySamples, evaluateSequenceTransferFromDirectPorkchops, MAX_ALLOWED_FLYBY_DV_MPS } from '../physics/flyby';
 import { getMinFlybyRadius } from '../data/solarSystems';
+import { vecMag } from '../physics/kepler';
 
 export const DEFAULT_MIN_C3 = 0;
 export const DEFAULT_MAX_C3 = 100;
@@ -27,10 +28,10 @@ export interface FlybyDebugPoint {
 
 export interface FlybyOptimalSample {
   flybyDate: number;
-  c3DepA: number;
-  c3ArrB?: number;
-  c3DepB?: number;
-  c3ArrC: number;
+  c3DepA: Vector3D;
+  c3ArrB?: Vector3D;
+  c3DepB?: Vector3D;
+  c3ArrC: Vector3D;
   deflectionAngleDeg?: number;
   maxDeflectionAngleDeg?: number;
   flybyDvMps: number;
@@ -142,8 +143,8 @@ export function extractFlybyDebugData(
   let maxDeflectionDeg = -Infinity;
 
   const points: FlybyDebugPoint[] = (samples || []).map(s => {
-    const c3ArrB = Number.isFinite(s.c3ArrB) ? s.c3ArrB : null;
-    const c3DepB = Number.isFinite(s.c3DepB) ? s.c3DepB : null;
+    const c3ArrB = vecMag(s.c3ArrB);
+    const c3DepB = vecMag(s.c3DepB);
     const isValidArr = s.isPhysicallyValid !== false && c3ArrB !== null;
     const isValidDep = s.isPhysicallyValid !== false && c3DepB !== null;
 

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { SequencePorkchopData, PorkchopPlotData, DirectionalLink, CelestialBody, OrbitalBody, InstanceNode, SubtaskProgressInfo } from '../types';
+import { SequencePorkchopData, PorkchopPlotData, DirectionalLink, CelestialBody, OrbitalBody, InstanceNode, SubtaskProgressInfo, Vector3D } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import { X, Compass, Calendar, RefreshCw, RotateCcw, ZoomIn, Timer, Activity, ChevronDown, ChevronUp, Cpu, Zap, BarChart2, Layers, Info } from 'lucide-react';
 import { extractFlybyDebugData, FlybyDebugPlotData } from '../utils/flybyDebugPlot';
@@ -16,6 +16,7 @@ import {
   evaluateHigherOrderSequenceTransferAddLastLeg,
   evaluateHigherOrderSequenceTransferAddFirstLeg
 } from '../physics/flyby';
+import { vecMag } from '../physics/kepler';
 
 interface SequencePorkchopViewerProps {
   seqPorkchop: SequencePorkchopData;
@@ -24,12 +25,12 @@ interface SequencePorkchopViewerProps {
   onRecomputePorkchop?: () => void;
   isComputing?: boolean;
   activeSubtask?: SubtaskProgressInfo | null;
-  porkchops?: Record<string, PorkchopPlotData>;
-  sequencePorkchops?: Record<string, SequencePorkchopData>;
-  links?: DirectionalLink[];
-  instances?: InstanceNode[];
-  bodies?: OrbitalBody[];
-  mainBody?: CelestialBody;
+  porkchops: Record<string, PorkchopPlotData>;
+  sequencePorkchops: Record<string, SequencePorkchopData>;
+  links: DirectionalLink[];
+  instances: InstanceNode[];
+  bodies: OrbitalBody[];
+  mainBody: CelestialBody;
 }
 
 export type SeqViewTab =
@@ -153,7 +154,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     ? Math.min(100, Math.max(0, Math.round((computedSamples / totalSamples) * 100)))
     : (isComputing ? 0 : 100);
 
-  const getMatrixForTab = (tab: SeqViewTab): number[][] => {
+  const getMatrixForTab = (tab: SeqViewTab): number[][] | Vector3D[][] => {
     if (tab === 'totalPoweredDv') return seqPorkchop.totalPoweredDvMatrix || [];
     if (tab === 'c3DepA') return seqPorkchop.c3DepMatrix || [];
     if (tab === 'c3ArrFinal' || tab === 'c3ArrD' || tab === 'c3ArrC') return seqPorkchop.c3ArrMatrix || [];
@@ -172,6 +173,12 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
   };
 
   const currentMatrix = getMatrixForTab(activeTab);
+
+  const getScalarMatrixValue = (value: number | Vector3D | undefined): number | undefined => {
+    if (typeof value === 'number') return value;
+    if (!value) return undefined;
+    return vecMag(value);
+  };
 
   // Compute departure & arrival date windows based on first/last feasible columns (departure) and lines (arrival)
   const dateWindows = useMemo(() => {
@@ -261,8 +268,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
           : (seqPorkchop.constraintValidMatrix ? seqPorkchop.constraintValidMatrix[i]?.[j] : false);
 
         if (isEligible) {
-          const val = currentMatrix[i]?.[j];
-          if (val !== undefined && isFinite(val) && val >= 0) {
+          const val = getScalarMatrixValue(currentMatrix[i]?.[j]);
+          if (val !== undefined && Number.isFinite(val) && val >= 0) {
             validValues.push(val);
           }
         }
@@ -349,7 +356,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
           continue;
         }
 
-        const val = currentMatrix[i]?.[j] ?? 0;
+        const val = getScalarMatrixValue(currentMatrix[i]?.[j]) ?? 0;
 
         let norm = 0;
         if (val <= effectiveMin) {
@@ -618,8 +625,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     tabs.push(
       {
         key: 'poweredDvB',
-        label: `Powered Δv (${flybyBodyNames[0] || seqPorkchop.flybyBody})`,
-        desc: `Powered flyby maneuver at ${flybyBodyNames[0] || seqPorkchop.flybyBody}`,
+        label: `Powered Δv (${flybyBodyNames[0]})`,
+        desc: `Powered flyby maneuver at ${flybyBodyNames[0]}`,
         unit: 'm/s',
       },
       {
@@ -630,14 +637,14 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       },
       {
         key: 'c3ArrB',
-        label: `Arr C3 (${flybyBodyNames[0] || seqPorkchop.flybyBody})`,
-        desc: `Inbound arrival C3 at ${flybyBodyNames[0] || seqPorkchop.flybyBody}`,
+        label: `Arr C3 (${flybyBodyNames[0]})`,
+        desc: `Inbound arrival C3 at ${flybyBodyNames[0]}`,
         unit: 'km²/s²',
       },
       {
         key: 'c3DepB',
-        label: `Dep C3 (${flybyBodyNames[0] || seqPorkchop.flybyBody})`,
-        desc: `Outbound departure C3 from ${flybyBodyNames[0] || seqPorkchop.flybyBody}`,
+        label: `Dep C3 (${flybyBodyNames[0]})`,
+        desc: `Outbound departure C3 from ${flybyBodyNames[0]}`,
         unit: 'km²/s²',
       },
       {

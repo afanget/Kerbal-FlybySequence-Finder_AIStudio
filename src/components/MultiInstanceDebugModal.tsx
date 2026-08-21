@@ -49,15 +49,16 @@ import {
   Search,
   Check,
 } from 'lucide-react';
+import { vecMag } from '../physics/kepler';
 
 interface MultiInstanceDebugModalProps {
   initialData: MultiInstanceDebugData;
   seqPorkchop: SequencePorkchopData;
   porkchops?: Record<string, PorkchopPlotData>;
   links?: DirectionalLink[];
-  bodies?: OrbitalBody[];
-  mainBody?: CelestialBody;
-  sequencePorkchops?: Record<string, SequencePorkchopData>;
+  bodies: OrbitalBody[];
+  mainBody: CelestialBody;
+  sequencePorkchops: Record<string, SequencePorkchopData>;
   timeFormatMode: 'ksp' | 'earth';
   onClose: () => void;
   onRecomputePoint?: (depIndex: number, arrIndex: number) => void;
@@ -131,7 +132,6 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
   };
 
   const applyNewDates = (newDates: number[]) => {
-    if (!bodies || !mainBody) return;
     setCustomDates(newDates);
     const evaluated = evaluateMultiInstanceForDates(
       data.pathInsts,
@@ -154,7 +154,6 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
   };
 
   const updateIndices = (newDepI: number, newArrI: number) => {
-    if (!seqPorkchop || !porkchops || !bodies || !mainBody) return;
     const clampedDepI = Math.max(0, Math.min(seqPorkchop.depDates.length - 1, newDepI));
     const clampedArrI = Math.max(0, Math.min(seqPorkchop.arrDates.length - 1, newArrI));
     setCurrentDepIndex(clampedDepI);
@@ -182,7 +181,6 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
 
   // Step a single flyby date
   const handleStepFlybyDate = (flybyIndex: number, direction: -1 | 1) => {
-    if (!bodies || !mainBody) return;
     const step = getFlybyDateSampleStep(data.pathInsts, flybyIndex, porkchops, links);
     const newDates = [...customDates];
     const prevDate = newDates[flybyIndex - 1];
@@ -197,7 +195,6 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
 
   // Optimize a single flyby date using dichotomic / bisection search
   const handleOptimizeSingleFlyby = (flybyIndex: number) => {
-    if (!bodies || !mainBody) return;
     setOptimizingIndex(flybyIndex);
     setActionFeedback(null);
 
@@ -231,7 +228,6 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
 
   // Auto-optimize all intermediate flyby dates
   const handleOptimizeAllFlybys = () => {
-    if (!bodies || !mainBody) return;
     setIsOptimizingAll(true);
     setActionFeedback(null);
 
@@ -878,7 +874,7 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                                           ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
                                           : 'bg-purple-600/30 hover:bg-purple-600 border border-purple-500/40 text-purple-200 hover:text-white'
                                       }`}
-                                      title={`Set ${data.algorithmInfo.pivotBodyName} date to ${formatShortUT(sample.tFlyby, timeFormatMode)}`}
+                                      title={`Set ${data.algorithmInfo?.pivotBodyName} date to ${formatShortUT(sample.tFlyby, timeFormatMode)}`}
                                     >
                                       {isSelected ? 'Applied' : 'Apply'}
                                     </button>
@@ -901,7 +897,7 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
             <div className="bg-[#09090B] border border-[#27272A] rounded p-2.5 flex flex-col gap-0.5">
               <span className="text-[10px] uppercase font-bold text-[#A1A1AA]">Departure C3</span>
               <span className="font-mono text-sm font-bold text-blue-400">
-                {Number.isFinite(data.c3DepSource) ? `${data.c3DepSource.toFixed(2)} km²/s²` : '—'}
+                {`${vecMag(data.c3DepSource).toFixed(2)} km²/s²`}
               </span>
               <span className="text-[10px] text-[#71717A] truncate">From {srcBody}</span>
             </div>
@@ -909,7 +905,7 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
             <div className="bg-[#09090B] border border-[#27272A] rounded p-2.5 flex flex-col gap-0.5">
               <span className="text-[10px] uppercase font-bold text-[#A1A1AA]">Arrival C3</span>
               <span className="font-mono text-sm font-bold text-emerald-400">
-                {Number.isFinite(data.c3ArrTarget) ? `${data.c3ArrTarget.toFixed(2)} km²/s²` : '—'}
+                {`${vecMag(data.c3ArrTarget).toFixed(2)} km²/s²`}
               </span>
               <span className="text-[10px] text-[#71717A] truncate">At {tgtBody}</span>
             </div>
@@ -941,30 +937,32 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
       {selected3InstanceData && (
         <FlybyDebugPlotModal
           initialData={selected3InstanceData.plotData}
-          seqPorkchop={{
+          seqPorkchop={selected3InstanceData.row.sub3Seq || {
             id: `seq-pc-${selected3InstanceData.row.prevBodyName}-${selected3InstanceData.row.bodyName}-${selected3InstanceData.row.nextBodyName}`,
             sequenceLabel: `${selected3InstanceData.row.prevBodyName} ➔ ${selected3InstanceData.row.bodyName} ➔ ${selected3InstanceData.row.nextBodyName}`,
             isFullPath: false,
             instanceCount: 3,
-            sourceBody: {
-              id: 'src',
+            sourceBody: data.pathInsts[selected3InstanceData.row.instanceIndex - 1] || {
+              id: `inst-${selected3InstanceData.row.prevBodyName}`,
               bodyName: selected3InstanceData.row.prevBodyName,
               label: selected3InstanceData.row.prevBodyName,
               x: 0,
               y: 0,
             },
-            targetBody: {
-              id: 'tgt',
+            targetBody: data.pathInsts[selected3InstanceData.row.instanceIndex + 1] || {
+              id: `inst-${selected3InstanceData.row.nextBodyName}`,
               bodyName: selected3InstanceData.row.nextBodyName,
               label: selected3InstanceData.row.nextBodyName,
               x: 0,
               y: 0,
             },
-            depDates: selected3InstanceData.plotData ? [selected3InstanceData.plotData.depDateA] : [],
-            arrDates: selected3InstanceData.plotData ? [selected3InstanceData.plotData.arrDateC] : [],
+            //depDates: selected3InstanceData.plotData.depDates || [selected3InstanceData.row.prevFlybyOrDepDate],
+            //arrDates: selected3InstanceData.plotData.arrDates || [selected3InstanceData.row.nextFlybyOrArrDate],
+            depDates: [selected3InstanceData.row.prevFlybyOrDepDate],
+            arrDates: [selected3InstanceData.row.nextFlybyOrArrDate],
             flybys: [{
-              instance: {
-                id: 'fb',
+              instance: data.pathInsts[selected3InstanceData.row.instanceIndex] || {
+                id: `inst-${selected3InstanceData.row.bodyName}`,
                 bodyName: selected3InstanceData.row.bodyName,
                 label: selected3InstanceData.row.bodyName,
                 x: 0,

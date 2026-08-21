@@ -4,9 +4,15 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { PorkchopPlotData } from '../types';
+import { PorkchopPlotData, Vector3D } from '../types';
 import { formatShortUT, formatDuration } from '../utils/timeFormat';
 import { X, Activity, Layers, Crosshair, RefreshCw, Calendar, RotateCcw } from 'lucide-react';
+import { vecMag } from '../physics/kepler';
+
+const scalarMatrixValue = (value: number | Vector3D | undefined): number | undefined => {
+  if (typeof value === 'number') return value;
+  return value ? vecMag(value) : undefined;
+};
 
 interface PorkchopViewerProps {
   porkchop: PorkchopPlotData;
@@ -69,7 +75,7 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
 
     const constrValid = porkchop.constraintValidMatrix;
     const physValid = porkchop.physicalValidMatrix;
-    let matrix = porkchop.dvMatrix;
+    let matrix: number[][] | Vector3D[][] = porkchop.dvMatrix;
     if (viewMode === 'c3Dep') matrix = porkchop.c3DepMatrix;
     else if (viewMode === 'c3Arr') matrix = porkchop.c3ArrMatrix;
 
@@ -85,8 +91,8 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
             : (cRow ? cRow[j] : false);
 
           if (isEligible) {
-            const val = mRow[j];
-            if (Number.isFinite(val) && val > 0) {
+            const val = scalarMatrixValue(mRow[j]);
+            if (val !== undefined && Number.isFinite(val) && val > 0) {
               if (val < min) min = val;
               if (val > max) max = val;
             }
@@ -221,8 +227,8 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
         }
 
         let val = 0;
-        if (viewMode === 'c3Dep') val = porkchop.c3DepMatrix[i]?.[j] ?? 0;
-        else if (viewMode === 'c3Arr') val = porkchop.c3ArrMatrix[i]?.[j] ?? 0;
+        if (viewMode === 'c3Dep') val = vecMag(porkchop.c3DepMatrix[i]?.[j]) ?? 0;
+        else if (viewMode === 'c3Arr') val = vecMag(porkchop.c3ArrMatrix[i]?.[j]) ?? 0;
         else val = porkchop.dvMatrix[i]?.[j] ?? 0;
 
         // Logarithmic normalization to [0, 1] where minVal -> 0 (blue) and redCap -> 1 (red)
@@ -309,8 +315,8 @@ export const PorkchopViewer: React.FC<PorkchopViewerProps> = ({
       const depDate = porkchop.depDates[i];
       const arrDate = porkchop.arrDates[j];
       const flightTime = porkchop.flightTimeMatrix[i]?.[j] || (arrDate - depDate);
-      const c3Dep = porkchop.c3DepMatrix[i]?.[j] || 0;
-      const c3Arr = porkchop.c3ArrMatrix[i]?.[j] || 0;
+      const c3Dep = vecMag(porkchop.c3DepMatrix[i]?.[j]) || 0;
+      const c3Arr = vecMag(porkchop.c3ArrMatrix[i]?.[j]) || 0;
       const dt = arrDate - depDate;
 
       const isPhysical = porkchop.physicalValidMatrix

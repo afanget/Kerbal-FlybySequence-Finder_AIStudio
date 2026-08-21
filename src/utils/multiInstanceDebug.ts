@@ -17,6 +17,7 @@ import {
   vecSub,
   vecMag,
   vecDot,
+  vecScale,
 } from '../physics/kepler';
 import { solveLambert } from '../physics/lambert';
 import {
@@ -85,6 +86,7 @@ export interface MultiInstanceFlybyRow {
   minSafeAltKm: number;
   // Sub-3-instance debug data generator
   sub3DebugData: FlybyDebugPlotData | null;
+  sub3Seq?: SequencePorkchopData | null;
 }
 
 export interface MultiInstanceDebugData {
@@ -98,11 +100,11 @@ export interface MultiInstanceDebugData {
   arrDate: number;
   totalFlightTime: number;
   totalDv: number;
-  c3DepSource: number;
-  c3ArrTarget: number;
+  c3DepSource: Vector3D;
+  c3ArrTarget: Vector3D;
   rows: MultiInstanceFlybyRow[];
-  fullResult: SequenceTransferResult | null;
-  algorithmInfo?: HigherOrderAlgorithmInfo | null;
+  fullResult?: SequenceTransferResult;
+  algorithmInfo?: HigherOrderAlgorithmInfo;
 }
 
 /**
@@ -149,10 +151,10 @@ export function extractHigherOrderAlgorithmInfo(
       const sampleObj: PivotCandidateSample = {
         sampleIndex: idx + 1,
         tFlyby: s.tFlyby,
-        c3DepA: s.c3DepA,
-        c3ArrPivot: s.c3ArrB,
-        c3DepPivot: s.c3DepB,
-        c3ArrFinal: s.c3ArrFinal,
+        c3DepA: vecMag(s.c3DepA),
+        c3ArrPivot: vecMag(s.c3ArrB),
+        c3DepPivot: vecMag(s.c3DepB),
+        c3ArrFinal: vecMag(s.c3ArrFinal),
         deflectionAngleDeg: s.deflectionAngleDeg,
         maxDeflectionAngleDeg: s.maxDeflectionAngleDeg,
         pivotDv: s.currentDv,
@@ -213,10 +215,10 @@ export function extractHigherOrderAlgorithmInfo(
       const sampleObj: PivotCandidateSample = {
         sampleIndex: idx + 1,
         tFlyby: s.tFlyby,
-        c3DepA: s.c3DepA,
-        c3ArrPivot: s.c3ArrB,
-        c3DepPivot: s.c3DepB,
-        c3ArrFinal: s.c3ArrFinal,
+        c3DepA: vecMag(s.c3DepA),
+        c3ArrPivot: vecMag(s.c3ArrB),
+        c3DepPivot: vecMag(s.c3DepB),
+        c3ArrFinal: vecMag(s.c3ArrFinal),
         deflectionAngleDeg: s.deflectionAngleDeg,
         maxDeflectionAngleDeg: s.maxDeflectionAngleDeg,
         pivotDv: s.currentDv,
@@ -307,9 +309,8 @@ export function extractMultiInstanceDebugData(
   // Default to suffix (evaluateHigherOrderSequenceTransferAddFirstLeg) when neither is pre-calculated
   const useSuffix = !(hasPrefix && !hasSuffix);
 
-  let result: SequenceTransferResult | null = null;
-  if (useSuffix) {
-    result = evaluateHigherOrderSequenceTransferAddFirstLeg(
+  let result: SequenceTransferResult = useSuffix ?
+    evaluateHigherOrderSequenceTransferAddFirstLeg(
       pathInsts,
       tDep,
       tArr,
@@ -318,9 +319,8 @@ export function extractMultiInstanceDebugData(
       porkchops,
       links,
       sequencePorkchops || {}
-    );
-  } else {
-    result = evaluateHigherOrderSequenceTransferAddLastLeg(
+    )!
+   : evaluateHigherOrderSequenceTransferAddLastLeg(
       pathInsts,
       tDep,
       tArr,
@@ -329,8 +329,7 @@ export function extractMultiInstanceDebugData(
       porkchops,
       links,
       sequencePorkchops || {}
-    );
-  }
+    )!;
 
   const rows: MultiInstanceFlybyRow[] = [];
   const flybyDates = (result?.flybyDates && result.flybyDates.length === N - 2) ? result.flybyDates : [];
@@ -363,10 +362,10 @@ export function extractMultiInstanceDebugData(
       const link2Id = link2?.id || `link-${currInst.id}-${nextInst.id}`;
       const pc2 = porkchops[link2Id] || (link2 ? porkchops[link2.id] : undefined) || Object.values(porkchops).find(p => p.sourceBody === currInst.bodyName && p.targetBody === nextInst.bodyName);
 
-      let c3Arr = 0;
-      let c3Dep = 0;
-      let vInfIn: Vector3D = { x: 0, y: 0, z: 0 };
-      let vInfOut: Vector3D = { x: 0, y: 0, z: 0 };
+      let c3Arr : Vector3D =  { x: Infinity, y: Infinity, z: Infinity };
+      let c3Dep : Vector3D = { x: Infinity, y: Infinity, z: Infinity };
+      let vInfIn: Vector3D = { x: Infinity, y: Infinity, z: Infinity };
+      let vInfOut: Vector3D = { x: Infinity, y: Infinity, z: Infinity };
       let hasValidLeg1 = false;
       let hasValidLeg2 = false;
 
@@ -377,17 +376,15 @@ export function extractMultiInstanceDebugData(
         const j1 = findClosestIndex(pc1.arrDates, tCurr);
         const rawC3 = pc1.c3ArrMatrix?.[i1]?.[j1];
         const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
-        if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid1 || valid1[i1]?.[j1])) {
+        if (rawC3 !== undefined && Number.isFinite(rawC3) && vecMag(rawC3) >= 0 && (!valid1 || valid1[i1]?.[j1])) {
           c3Arr = rawC3;
           hasValidLeg1 = true;
           if (pc1.vTransArrMatrix?.[i1]?.[j1] && vecMag(pc1.vTransArrMatrix[i1][j1]) > 1e-3) {
             vInfIn = vecSub(pc1.vTransArrMatrix[i1][j1], bodyState.vel);
           } else {
-            const vMag = Math.sqrt(c3Arr * 1e6);
+            const vMag = Math.sqrt(vecMag(c3Arr) * 1e6);
             vInfIn = { x: vMag, y: 0, z: 0 };
           }
-        } else {
-          c3Arr = Infinity;
         }
       }
 
@@ -396,17 +393,15 @@ export function extractMultiInstanceDebugData(
         const j2 = findClosestIndex(pc2.arrDates, tNext);
         const rawC3 = pc2.c3DepMatrix?.[i2]?.[j2];
         const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
-        if (rawC3 !== undefined && Number.isFinite(rawC3) && rawC3 >= 0 && (!valid2 || valid2[i2]?.[j2])) {
+        if (rawC3 !== undefined && Number.isFinite(rawC3) && vecMag(rawC3) >= 0 && (!valid2 || valid2[i2]?.[j2])) {
           c3Dep = rawC3;
           hasValidLeg2 = true;
           if (pc2.vTransDepMatrix?.[i2]?.[j2] && vecMag(pc2.vTransDepMatrix[i2][j2]) > 1e-3) {
             vInfOut = vecSub(pc2.vTransDepMatrix[i2][j2], bodyState.vel);
           } else {
-            const vMag = Math.sqrt(c3Dep * 1e6);
+            const vMag = Math.sqrt(vecMag(c3Dep) * 1e6);
             vInfOut = { x: vMag, y: 0, z: 0 };
           }
-        } else {
-          c3Dep = Infinity;
         }
       }
 
@@ -424,7 +419,7 @@ export function extractMultiInstanceDebugData(
       let deflectionMaxDeg = 0;
       let vMinMag = 0;
       if (hasValidLeg1 && hasValidLeg2 && Number.isFinite(c3Arr) && Number.isFinite(c3Dep)) {
-        const minC3 = Math.max(0, Math.min(c3Arr, c3Dep));
+        const minC3 = Math.max(0, Math.min(vecMag(c3Arr), vecMag(c3Dep)));
         vMinMag = Math.sqrt(minC3 * 1e6);
         const eMin = 1 + (rpMin * vMinMag * vMinMag) / Math.max(1, mu);
         const maxDefRad = 2 * Math.asin(Math.max(-1, Math.min(1, 1 / eMin)));
@@ -437,7 +432,7 @@ export function extractMultiInstanceDebugData(
         dvMps = Infinity;
       }
       if (!result || (!Number.isFinite(dvMps) && hasValidLeg1 && hasValidLeg2)) {
-        if (hasValidLeg1 && hasValidLeg2 && c3Arr > 0 && c3Dep > 0) {
+        if (hasValidLeg1 && hasValidLeg2) {
           dvMps = computeFlybyPoweredDv(
             vInMag,
             vOutMag,
@@ -459,8 +454,9 @@ export function extractMultiInstanceDebugData(
 
       // Generate 3-instance debug data for this sub-system [prevInst, currInst, nextInst]
       let sub3DebugData: FlybyDebugPlotData | null = null;
+      let sub3Seq: SequencePorkchopData | null = null;
       if (pc1 && pc2) {
-        const sub3Seq: SequencePorkchopData = {
+        sub3Seq = {
           id: `seq-pc-${prevInst.id}-${currInst.id}-${nextInst.id}`,
           sequenceLabel: `${prevInst.bodyName} ➔ ${currInst.bodyName} ➔ ${nextInst.bodyName}`,
           isFullPath: false,
@@ -511,8 +507,8 @@ export function extractMultiInstanceDebugData(
         nextBodyName: nextInst.bodyName,
         prevFlybyOrDepDate: tPrev,
         nextFlybyOrArrDate: tNext,
-        c3Arr,
-        c3Dep,
+        c3Arr: vecMag(c3Arr),
+        c3Dep: vecMag(c3Dep),
         deflectionNeededDeg,
         deflectionMaxDeg,
         dvMps,
@@ -520,6 +516,7 @@ export function extractMultiInstanceDebugData(
         periapsisAltKm,
         minSafeAltKm: minAlt / 1000,
         sub3DebugData,
+        sub3Seq,
       });
     }
   }
@@ -535,7 +532,7 @@ export function extractMultiInstanceDebugData(
     sequencePorkchops || {},
     useSuffix,
     flybyDates
-  );
+  )!;
 
   return {
     instanceCount: N,
@@ -548,8 +545,8 @@ export function extractMultiInstanceDebugData(
     arrDate: tArr,
     totalFlightTime: tArr - tDep,
     totalDv: result?.totalDv ?? rows.reduce((sum, r) => sum + r.dvMps, 0),
-    c3DepSource: result?.c3DepA ?? (porkchops[`link-${pathInsts[0].id}-${pathInsts[1].id}`]?.c3DepMatrix?.[clampedDepIndex]?.[0] || 0),
-    c3ArrTarget: result?.c3ArrFinal ?? (porkchops[`link-${pathInsts[N - 2].id}-${pathInsts[N - 1].id}`]?.c3ArrMatrix?.[0]?.[clampedArrIndex] || 0),
+    c3DepSource: result?.c3DepA ?? (porkchops[`link-${pathInsts[0].id}-${pathInsts[1].id}`]?.c3DepMatrix?.[clampedDepIndex]?.[0]),
+    c3ArrTarget: result?.c3ArrFinal ?? (porkchops[`link-${pathInsts[N - 2].id}-${pathInsts[N - 1].id}`]?.c3ArrMatrix?.[0]?.[clampedArrIndex]),
     rows,
     fullResult: result,
     algorithmInfo,
@@ -570,8 +567,8 @@ export function evaluateMultiInstanceForDates(
 ): {
   rows: MultiInstanceFlybyRow[];
   totalDv: number;
-  c3DepSource: number;
-  c3ArrTarget: number;
+  c3DepSource: Vector3D;
+  c3ArrTarget: Vector3D;
   totalFlightTime: number;
 } {
   const N = pathInsts.length;
@@ -660,8 +657,9 @@ export function evaluateMultiInstanceForDates(
 
     // Sub-3 debug data
     let sub3DebugData: FlybyDebugPlotData | null = null;
+    let sub3Seq: SequencePorkchopData | null = null;
     if (pc1 && pc2) {
-      const sub3Seq: SequencePorkchopData = {
+      sub3Seq = {
         id: `seq-pc-${prevInst.id}-${currInst.id}-${nextInst.id}`,
         sequenceLabel: `${prevInst.bodyName} ➔ ${currInst.bodyName} ➔ ${nextInst.bodyName}`,
         isFullPath: false,
@@ -721,11 +719,12 @@ export function evaluateMultiInstanceForDates(
       periapsisAltKm: flybyEval.periapsisAlt / 1000,
       minSafeAltKm: getMinFlybyAlt(currBody, currInst.minFlybyAltitude) / 1000,
       sub3DebugData,
+      sub3Seq,
     });
   }
 
   // Calculate departure C3 from source body
-  let c3DepSource = 0;
+  let c3DepSource : Vector3D = { x: Infinity, y: Infinity, z: Infinity };
   const srcBody = bodyMap.get(pathInsts[0].bodyName)!;
   const fb1Body = bodyMap.get(pathInsts[1].bodyName)!;
   const dt0 = customDates[1] - customDates[0];
@@ -735,12 +734,12 @@ export function evaluateMultiInstanceForDates(
     const lamb0 = solveLambert(st0.pos, st1.pos, dt0, muCentral, true);
     if (lamb0 && lamb0.isValid && lamb0.v1) {
       const vInf0 = vecSub(lamb0.v1, st0.vel);
-      c3DepSource = (vecMag(vInf0) ** 2) / 1e6;
+      c3DepSource = vecScale(vInf0, vecMag(vInf0) / 1e6);
     }
   }
 
   // Calculate arrival C3 at target body
-  let c3ArrTarget = 0;
+  let c3ArrTarget : Vector3D = { x: Infinity, y: Infinity, z: Infinity };
   const fbN2Body = bodyMap.get(pathInsts[N - 2].bodyName)!;
   const tgtBody = bodyMap.get(pathInsts[N - 1].bodyName)!;
   const dtLast = customDates[N - 1] - customDates[N - 2];
@@ -750,7 +749,7 @@ export function evaluateMultiInstanceForDates(
     const lambLast = solveLambert(stN2.pos, stN1.pos, dtLast, muCentral, true);
     if (lambLast && lambLast.isValid && lambLast.v2) {
       const vInfTarget = vecSub(lambLast.v2, stN1.vel);
-      c3ArrTarget = (vecMag(vInfTarget) ** 2) / 1e6;
+      c3ArrTarget = vecScale(vInfTarget, vecMag(vInfTarget) / 1e6);
     }
   }
 

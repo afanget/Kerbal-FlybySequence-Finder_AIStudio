@@ -23,14 +23,15 @@ import {
   Compass,
   RefreshCw,
 } from 'lucide-react';
+import { vecMag } from '../physics/kepler';
 
 interface FlybyDebugPlotModalProps {
   initialData: FlybyDebugPlotData | null;
   seqPorkchop: SequencePorkchopData;
-  porkchops?: Record<string, PorkchopPlotData>;
-  links?: DirectionalLink[];
-  bodies?: OrbitalBody[];
-  mainBody?: CelestialBody;
+  porkchops: Record<string, PorkchopPlotData>;
+  links: DirectionalLink[];
+  bodies: OrbitalBody[];
+  mainBody: CelestialBody;
   timeFormatMode: 'ksp' | 'earth';
   onClose: () => void;
   onRecomputePoint?: (depIndex: number, arrIndex: number) => void;
@@ -1090,10 +1091,7 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
                 Direct Transfer Porkchops Not Found
               </p>
               <p className="text-xs max-w-md mx-auto text-[#71717A]">
-                Direct porkchop plots for Link 1 ({data?.bodyA || 'A'} ➔{' '}
-                {data?.bodyB || 'B'}) or Link 2 ({data?.bodyB || 'B'} ➔{' '}
-                {data?.bodyC || 'C'}) must be computed first before inspecting flyby
-                curves.
+                Direct porkchop plots for Link 1 ('A' ➔ 'B') or Link 2 ('B' ➔ 'C') must be computed first before inspecting flyby curves.
               </p>
             </div>
           )}
@@ -1299,14 +1297,14 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
               <div>
                 <span className="text-[#71717A] block text-[9.5px]">Dep C3 ({data?.bodyA || 'Src'}):</span>
                 <span className="text-slate-200 font-semibold">
-                  {data && data.optimalSample ? `${data.optimalSample.c3DepA.toFixed(1)} km²/s²` : '--'}
+                  {data && data.optimalSample ? `${vecMag(data.optimalSample.c3DepA).toFixed(1)} km²/s²` : '--'}
                 </span>
               </div>
 
               <div>
                 <span className="text-[#71717A] block text-[9.5px]">Arr C3 ({data?.bodyC || 'Tgt'}):</span>
                 <span className="text-slate-200 font-semibold">
-                  {data && data.optimalSample ? `${data.optimalSample.c3ArrC.toFixed(1)} km²/s²` : '--'}
+                  {data && data.optimalSample ? `${vecMag(data.optimalSample.c3ArrC).toFixed(1)} km²/s²` : '--'}
                 </span>
               </div>
 
