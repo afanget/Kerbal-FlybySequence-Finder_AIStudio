@@ -456,10 +456,10 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
     if (i >= 0 && i < nDep && j >= 0 && j < nArr) {
       const depDate = seqPorkchop.depDates[i];
       const arrDate = seqPorkchop.arrDates[j];
-      const flightTime = seqPorkchop.flightTimeMatrix?.[i]?.[j] || (arrDate - depDate);
+      const flightTime = seqPorkchop.flightTimeMatrix?.[i]?.[j] ?? (arrDate - depDate);
       const c3DepA = seqPorkchop.c3DepMatrix?.[i]?.[j];
       const c3ArrFinal = seqPorkchop.c3ArrMatrix?.[i]?.[j];
-      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] || Infinity;
+      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] ?? Infinity;
       const minPhysicalDt = 3600 * Math.max(1, instanceCount - 1);
       const dt = arrDate - depDate;
       const isPhysical = seqPorkchop.physicalValidMatrix
@@ -487,11 +487,11 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
           const body = fb.instance?.bodyName || flybyBodyNames[fbIdx] || `Flyby ${fbIdx + 1}`;
           flybyDatesList.push({
             body,
-            date: fb.dateMatrix?.[i]?.[j] || (depDate + arrDate) / 2,
+            date: fb.dateMatrix?.[i]?.[j] ?? (depDate + arrDate) / 2,
           });
           flybyDvsList.push({
             body,
-            dv: fb.poweredDvMatrix?.[i]?.[j] || 0,
+            dv: fb.poweredDvMatrix?.[i]?.[j] ?? Infinity,
           });
         });
       }
@@ -764,21 +764,18 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       if (seqPorkchop.flybys) {
         seqPorkchop.flybys.forEach((fb, fbIdx) => {
           if (fb.poweredDvMatrix && fb.poweredDvMatrix[depIndex]) {
-            fb.poweredDvMatrix[depIndex][arrIndex] = result.flybyDvs[fbIdx] ?? 0;
+            fb.poweredDvMatrix[depIndex][arrIndex] = result.flybyDvs[fbIdx] ?? Infinity;
           }
           if (fb.dateMatrix && fb.dateMatrix[depIndex]) {
             fb.dateMatrix[depIndex][arrIndex] = result.flybyDates[fbIdx] ?? 0;
           }
-          if (fbIdx === 0) {
-            if (fb.c3ArrMatrix && fb.c3ArrMatrix[depIndex] && result.c3ArrB !== undefined) {
-              fb.c3ArrMatrix[depIndex][arrIndex] = result.c3ArrB;
-            }
-            if (fb.c3DepMatrix && fb.c3DepMatrix[depIndex] && result.c3DepB !== undefined) {
-              fb.c3DepMatrix[depIndex][arrIndex] = result.c3DepB;
-            }
-          } else if (fbIdx === 1) {
-            // TODO what to do here
-            throw new Error('Currently only supporting up to 3-body sequences (1 flyby).');
+          const c3Arr = result.flybyC3Arrs?.[fbIdx] ?? (fbIdx === 0 ? result.c3ArrB : undefined);
+          if (c3Arr && fb.c3ArrMatrix && fb.c3ArrMatrix[depIndex]) {
+            fb.c3ArrMatrix[depIndex][arrIndex] = c3Arr;
+          }
+          const c3Dep = result.flybyC3Deps?.[fbIdx] ?? (fbIdx === 0 ? result.c3DepB : undefined);
+          if (c3Dep && fb.c3DepMatrix && fb.c3DepMatrix[depIndex]) {
+            fb.c3DepMatrix[depIndex][arrIndex] = c3Dep;
           }
         });
       }
@@ -786,7 +783,7 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         seqPorkchop.physicalValidMatrix[depIndex][arrIndex] = true;
       }
       if (seqPorkchop.constraintValidMatrix && seqPorkchop.constraintValidMatrix[depIndex]) {
-        seqPorkchop.constraintValidMatrix[depIndex][arrIndex] = result.totalDv < 1e6;
+        seqPorkchop.constraintValidMatrix[depIndex][arrIndex] = result.isConstraintValid ?? false;
       }
       setRenderEpoch(e => e + 1);
     }

@@ -572,8 +572,8 @@ export function propagateC3Bounds(
     if (!env || (env.minMs === 0 && env.maxMs === 0)) {
       return {
         ...inst,
-        computedMinC3: 0,
-        computedMaxC3: !isFlyby ? (inst.maxC3 ?? 0) : 0,
+        computedMinC3: undefined,
+        computedMaxC3: !isFlyby ? inst.maxC3 : undefined,
       };
     }
 
@@ -581,17 +581,17 @@ export function propagateC3Bounds(
     const maxKms = env.maxMs / 1000;
 
     // 2. an instance which is a source or target should have a minimum C3 of 0
-    let minC3 = (isSource || isTarget) ? 0 : minKms * minKms;
-    let maxC3 = maxKms * maxKms;
+    let minC3: number | undefined = (isSource || isTarget) ? 0 : minKms * minKms;
+    let maxC3: number | undefined = maxKms * maxKms;
 
     // 1. maxC3 should not lower the maximum C3 given by the tisserand plot if the instance is a flyby among other roles
     if (!isFlyby && inst.maxC3 !== undefined) {
       maxC3 = Math.min(maxC3, inst.maxC3);
-      if (minC3 > maxC3) minC3 = 0;
+      if (minC3 !== undefined && minC3 > maxC3) minC3 = 0;
     }
 
-    const finalMinC3 = Math.round(Math.max(0, minC3) * 10) / 10;
-    const finalMaxC3 = Math.round(Math.max(finalMinC3, maxC3) * 10) / 10;
+    const finalMinC3 = minC3 !== undefined ? Math.round(Math.max(0, minC3) * 10) / 10 : undefined;
+    const finalMaxC3 = maxC3 !== undefined ? Math.round(Math.max(finalMinC3 ?? 0, maxC3) * 10) / 10 : undefined;
 
     return {
       ...inst,
@@ -1259,7 +1259,7 @@ export async function computeSequence3PorkchopPlot(
     Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })
   ); // Final arrival C3 matrix
   const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () =>
-    Array(N_ARR).fill(0)
+    Array(N_ARR).fill(Infinity)
   ); // Total delta-v matrix
   const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () =>
     Array(N_ARR).fill(0)
@@ -1274,7 +1274,7 @@ export async function computeSequence3PorkchopPlot(
   // Initialize flyby data for intermediate instances
   const flybyData = {
     instance: flybyInst,
-    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Delta-v for each flyby
+    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(Infinity)), // Delta-v for each flyby
     c3ArrMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at arrival
     c3DepMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at departure
     dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Flyby date
@@ -1370,11 +1370,11 @@ export async function computeSequence3PorkchopPlot(
         totalPoweredDvMatrix[i][j] = bestRes.totalDv; // Total delta-v
 
         // Store flyby data for each intermediate instance
-        flybyData.poweredDvMatrix[i][j] = bestRes.flybyDvs[0] || Infinity; // Delta-v for this flyby
-        flybyData.dateMatrix[i][j] = bestRes.flybyDates[0] || 0; // Flyby date
+        flybyData.poweredDvMatrix[i][j] = bestRes.flybyDvs?.[0] ?? Infinity; // Delta-v for this flyby
+        flybyData.dateMatrix[i][j] = bestRes.flybyDates?.[0] ?? 0; // Flyby date
         // Store C3 values for the first two flybys (if they exist)
-        flybyData.c3ArrMatrix[i][j] = bestRes.c3ArrB || { x: Infinity, y: Infinity, z: Infinity };
-        flybyData.c3DepMatrix[i][j] = bestRes.c3DepB || { x: Infinity, y: Infinity, z: Infinity };
+        flybyData.c3ArrMatrix[i][j] = bestRes.c3ArrB ?? { x: Infinity, y: Infinity, z: Infinity };
+        flybyData.c3DepMatrix[i][j] = bestRes.c3DepB ?? { x: Infinity, y: Infinity, z: Infinity };
 
         if (isConstraint) validCount++; // Increment valid trajectory count
       }
@@ -1604,6 +1604,7 @@ export async function computeSequenceNSup3PorkchopPlot(
 
   // --- 5.4. COMPUTE MISSING SUB-CHAIN (SUFFIX OR PREFIX) ---
   if (subChainStrategy === 'suffix') {
+    let suffixSeqObj = suffixSeq;
     if (!hasSuffix) {
       // Compute the suffix sub-sequence if it doesn't exist
       const subtaskName = `${suffixPath.length}-Instance Suffix Subsequence (${suffixPath.map(i => i.bodyName).join(' ➔ ')})`;
@@ -1658,13 +1659,15 @@ export async function computeSequenceNSup3PorkchopPlot(
       // Store the computed sub-sequence
       sequencePorkchops[suffixSeqId] = subSeq;
       sequencePorkchops[suffixKey] = subSeq;
-      firstLeg = subSeq;
-      const Plast_link = links.find(l => l.sourceInstanceId === pathInsts[N - 2].id && l.targetInstanceId === tgtInst.id);
-      lastLeg = porkchops[Plast_link?.id || `link-${pathInsts[N - 2].id}-${tgtInst.id}`]!; // Last leg porkchop
+      suffixSeqObj = subSeq;
       onSequencePorkchopUpdate?.(subSeq);
     }
+    const P0_link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === pathInsts[1].id);
+    firstLeg = porkchops[P0_link?.id || `link-${srcInst.id}-${pathInsts[1].id}`]!; // First leg porkchop
+    lastLeg = suffixSeqObj!;
   } else {
     // Compute the prefix sub-sequence if it doesn't exist
+    let prefixSeqObj = prefixSeq;
     if (!hasPrefix) {
       const subtaskName = `${prefixPath.length}-Instance Prefix Subsequence (${prefixPath.map(i => i.bodyName).join(' ➔ ')})`;
       const initSubInfo: SubtaskProgressInfo = {
@@ -1718,11 +1721,12 @@ export async function computeSequenceNSup3PorkchopPlot(
       // Store the computed sub-sequence
       sequencePorkchops[prefixSeqId] = subSeq;
       sequencePorkchops[prefixKey] = subSeq;
-      const P0_link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === pathInsts[1].id);
-      firstLeg = porkchops[P0_link?.id || `link-${srcInst.id}-${pathInsts[1].id}`]!; // First leg porkchop
-      lastLeg = subSeq;
+      prefixSeqObj = subSeq;
       onSequencePorkchopUpdate?.(subSeq);
     }
+    firstLeg = prefixSeqObj!;
+    const Plast_link = links.find(l => l.sourceInstanceId === pathInsts[N - 2].id && l.targetInstanceId === tgtInst.id);
+    lastLeg = porkchops[Plast_link?.id || `link-${pathInsts[N - 2].id}-${tgtInst.id}`]!; // Last leg porkchop
   }
 
   if (!firstLeg || !lastLeg) { throw new Error(`Failed to compute prerequisite sub-sequence for ${seqLabel}`); }
@@ -1732,7 +1736,7 @@ export async function computeSequenceNSup3PorkchopPlot(
   reportSubtask(null);
 
   // --- 7. INITIALIZE SEQUENCE DATA STRUCTURES ---
-  const flybyInst = pathInsts[pivotIndex]; // Intermediate instance (e.g., Eve)
+  const flybyInsts = pathInsts.slice(1, -1); // All intermediate flyby instances
 
   // Extract departure and arrival dates from the first and last porkchop plots
   const depDates: number[] = firstLeg.depDates; // Departure dates (from first leg)
@@ -1743,23 +1747,33 @@ export async function computeSequenceNSup3PorkchopPlot(
 
   // --- 8. INITIALIZE MATRICES FOR RESULTS ---
   // Matrices to store computed values for each (departure date, arrival date) pair
-  const c3DepAMatrix: Vector3D[][] = (!hasSuffix) ? firstLeg.c3DepMatrix : lastLeg.c3DepMatrix; // Departure C3 matrix
-  const c3ArrFinalMatrix: Vector3D[][] = (!hasSuffix) ? firstLeg.c3ArrMatrix : lastLeg.c3ArrMatrix; // Final arrival C3 matrix
-  const totalPoweredDvMatrix: number[][] = (!hasSuffix) ? (firstLeg as SequencePorkchopData).totalPoweredDvMatrix : (lastLeg as SequencePorkchopData).totalPoweredDvMatrix; // Total delta-v matrix
-  const flightTimeMatrix: number[][] = (!hasSuffix) ? firstLeg.flightTimeMatrix : lastLeg.flightTimeMatrix; // Flight time matrix
-  // TODO pourquoi !
-  const physicalValidMatrix: boolean[][] = (!hasSuffix) ? firstLeg.physicalValidMatrix! : lastLeg.physicalValidMatrix!; // Physical validity matrix (e.g., trajectory is possible)
-  const constraintValidMatrix: boolean[][] = (!hasSuffix) ? firstLeg.constraintValidMatrix! : lastLeg.constraintValidMatrix!; // Constraint validity matrix (e.g., meets user constraints)
+  const c3DepAMatrix: Vector3D[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })
+  ); // Departure C3 matrix
+  const c3ArrFinalMatrix: Vector3D[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })
+  ); // Final arrival C3 matrix
+  const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(Infinity)
+  ); // Total delta-v matrix
+  const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(0)
+  ); // Flight time matrix
+  const physicalValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(false)
+  ); // Physical validity matrix (e.g., trajectory is possible)
+  const constraintValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(false)
+  ); // Constraint validity matrix (e.g., meets user constraints)
 
-  const newFlybyData = {
-    instance: flybyInst,
-    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Delta-v for each flyby
+  // Initialize flyby data for each intermediate instance
+  const flybys: SequencePorkchopFlybyData[] = flybyInsts.map(inst => ({
+    instance: inst,
+    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(Infinity)), // Delta-v for each flyby
     c3ArrMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at arrival
     c3DepMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at departure
     dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Flyby date
-  }
-  // Initialize flyby data for intermediate instances
-  const flybys = (!hasSuffix) ? [...(firstLeg as SequencePorkchopData).flybys, newFlybyData] : [newFlybyData, ...(lastLeg as SequencePorkchopData).flybys];
+  }));
 
   const totalPoints = N_DEP * N_ARR; // Total number of (departure, arrival) pairs to evaluate
 
@@ -1865,10 +1879,12 @@ export async function computeSequenceNSup3PorkchopPlot(
         totalPoweredDvMatrix[i][j] = bestRes.totalDv; // Total delta-v
 
         // Store flyby data for each intermediate instance
-        newFlybyData.poweredDvMatrix[i][j] = bestRes.flybyDvs[0]; // Delta-v for this flyby
-        newFlybyData.dateMatrix[i][j] = bestRes.flybyDates[0]; // Flyby date
-        newFlybyData.c3ArrMatrix[i][j] = bestRes.c3ArrB;
-        newFlybyData.c3DepMatrix[i][j] = bestRes.c3DepB;
+        for (let fb = 0; fb < flybys.length; fb++) {
+          flybys[fb].poweredDvMatrix[i][j] = bestRes.flybyDvs?.[fb] ?? Infinity;
+          flybys[fb].dateMatrix[i][j] = bestRes.flybyDates?.[fb] ?? 0;
+          flybys[fb].c3ArrMatrix[i][j] = bestRes.flybyC3Arrs?.[fb] ?? { x: Infinity, y: Infinity, z: Infinity };
+          flybys[fb].c3DepMatrix[i][j] = bestRes.flybyC3Deps?.[fb] ?? { x: Infinity, y: Infinity, z: Infinity };
+        }
 
         if (isConstraint) validCount++; // Increment valid trajectory count
       }
@@ -1890,10 +1906,12 @@ export async function computeSequenceNSup3PorkchopPlot(
             totalPoweredDvMatrix[r][c] = totalPoweredDvMatrix[i][j];
 
             // Copy flyby data for all intermediate instances
-            newFlybyData.poweredDvMatrix[r][c] = newFlybyData.poweredDvMatrix[i][j];
-            newFlybyData.dateMatrix[r][c] = newFlybyData.dateMatrix[i][j];
-            newFlybyData.c3ArrMatrix[r][c] = newFlybyData.c3ArrMatrix[i][j];
-            newFlybyData.c3DepMatrix[r][c] = newFlybyData.c3DepMatrix[i][j];
+            for (let fb = 0; fb < flybys.length; fb++) {
+              flybys[fb].poweredDvMatrix[r][c] = flybys[fb].poweredDvMatrix[i][j];
+              flybys[fb].dateMatrix[r][c] = flybys[fb].dateMatrix[i][j];
+              flybys[fb].c3ArrMatrix[r][c] = flybys[fb].c3ArrMatrix[i][j];
+              flybys[fb].c3DepMatrix[r][c] = flybys[fb].c3DepMatrix[i][j];
+            }
           }
         }
       }
@@ -3048,6 +3066,22 @@ export function extractSequencesFromSequencePorkchops(
         const depC3 = seqPc.c3DepMatrix?.[r]?.[c];
         const arrC3 = seqPc.c3ArrMatrix?.[r]?.[c];
 
+        const srcInst = pathInsts[0];
+        const tgtInst = pathInsts[numInsts - 1];
+        const TOL_C3 = 0.05;
+
+        // Check source C3 limits
+        const depC3Mag = (depC3 && typeof depC3 === 'object' && Number.isFinite(depC3.x)) ? vecMag(depC3) : Infinity;
+        if (srcInst.computedMinC3 !== undefined && depC3Mag < srcInst.computedMinC3 - TOL_C3) continue;
+        if (srcInst.computedMaxC3 !== undefined && depC3Mag > srcInst.computedMaxC3 + TOL_C3) continue;
+        if (srcInst.maxC3 !== undefined && depC3Mag > srcInst.maxC3 + TOL_C3) continue;
+
+        // Check target C3 limits
+        const arrC3Mag = (arrC3 && typeof arrC3 === 'object' && Number.isFinite(arrC3.x)) ? vecMag(arrC3) : Infinity;
+        if (tgtInst.computedMinC3 !== undefined && arrC3Mag < tgtInst.computedMinC3 - TOL_C3) continue;
+        if (tgtInst.computedMaxC3 !== undefined && arrC3Mag > tgtInst.computedMaxC3 + TOL_C3) continue;
+        if (tgtInst.maxC3 !== undefined && arrC3Mag > tgtInst.maxC3 + TOL_C3) continue;
+
         // Check if each flyby delta-v is <= maxFlybyDvMs (1.0 m/s)
         let passesFlybyDvCheck = true;
         const flybyDetails: FlybyDetail[] = [];
@@ -3070,6 +3104,24 @@ export function extractSequencesFromSequencePorkchops(
             break;
           }
 
+          const c3In = flyby.c3ArrMatrix?.[r]?.[c];
+          const c3Out = flyby.c3DepMatrix?.[r]?.[c];
+          const c3InMag = (c3In && typeof c3In === 'object' && Number.isFinite(c3In.x)) ? vecMag(c3In) : 0;
+          const c3OutMag = (c3Out && typeof c3Out === 'object' && Number.isFinite(c3Out.x)) ? vecMag(c3Out) : 0;
+
+          if (fbInst.computedMinC3 !== undefined && (c3InMag < fbInst.computedMinC3 - TOL_C3 || c3OutMag < fbInst.computedMinC3 - TOL_C3)) {
+            passesFlybyDvCheck = false;
+            break;
+          }
+          if (fbInst.computedMaxC3 !== undefined && (c3InMag > fbInst.computedMaxC3 + TOL_C3 || c3OutMag > fbInst.computedMaxC3 + TOL_C3)) {
+            passesFlybyDvCheck = false;
+            break;
+          }
+          if (fbInst.maxC3 !== undefined && (c3InMag > fbInst.maxC3 + TOL_C3 || c3OutMag > fbInst.maxC3 + TOL_C3)) {
+            passesFlybyDvCheck = false;
+            break;
+          }
+
           totalPoweredDv += fbDv;
 
           const rawFbDate = seqPc.flybys[fb]?.dateMatrix?.[r]?.[c];
@@ -3077,12 +3129,14 @@ export function extractSequencesFromSequencePorkchops(
             ? rawFbDate
             : depDate + (arrDate - depDate) * ((fb + 1) / (numFlybys + 1));
 
-          const c3In = flyby.c3ArrMatrix?.[r]?.[c];
-          const c3Out = flyby.c3DepMatrix?.[r]?.[c];
-          const vInfIn = vecScale(c3In, KM_S_TO_M_S / Math.sqrt(vecMag(c3In)));
-          const vInfOut = vecScale(c3Out, KM_S_TO_M_S / Math.sqrt(vecMag(c3Out)));
-          const vInfInMag = vecMag(vInfIn);
-          const vInfOutMag = vecMag(vInfOut);
+          const vInfIn = (c3In && c3InMag > 1e-12)
+            ? vecScale(c3In, KM_S_TO_M_S / Math.sqrt(c3InMag))
+            : { x: 0, y: 0, z: 0 };
+          const vInfOut = (c3Out && c3OutMag > 1e-12)
+            ? vecScale(c3Out, KM_S_TO_M_S / Math.sqrt(c3OutMag))
+            : { x: 0, y: 0, z: 0 };
+          const vInfInMag = (c3InMag > 1e-12) ? Math.sqrt(c3InMag) * KM_S_TO_M_S : 0;
+          const vInfOutMag = (c3OutMag > 1e-12) ? Math.sqrt(c3OutMag) * KM_S_TO_M_S : 0;
           const meanVInfMag = (vInfInMag + vInfOutMag) / 2;
 
           const muBody = fbBody.stdGravParam;
@@ -3090,7 +3144,9 @@ export function extractSequencesFromSequencePorkchops(
           const maxTurnAngle = computeMaxDeflectionAngle(rPeri, meanVInfMag, muBody);
 
           // Compute deflection angle from flyby delta-V and max turning angle
-          const deflectionAngle = angleBetweenVecs(vInfIn, vInfOut);
+          const deflectionAngle = (vInfInMag > 1e-3 && vInfOutMag > 1e-3)
+            ? angleBetweenVecs(vInfIn, vInfOut)
+            : 0;
 
           // Compute periapsis radius from deflection angle at meanVInfMag
           const periapsisRadius = computePeriapsisRadiusFromDeflection(

@@ -188,6 +188,97 @@ export const DEFAULT_STOCHASTIC_ALT_ERROR = 10000; // 10 km in meters
 export const DEFAULT_STOCHASTIC_VEL_ERROR = 1.0;   // 1 m/s
 
 /**
+ * Checks if a sequence transfer result satisfies all user/computed constraints:
+ * 1. Powered delta-v for each flyby <= maxFlybyDvMps (default 1.0 m/s for free ballistic flybys)
+ * 2. Departure C3 on source instance respects computedMinC3, computedMaxC3, maxC3
+ * 3. Arrival C3 on target instance respects computedMinC3, computedMaxC3, maxC3
+ * 4. Flyby inbound and outbound C3 on all intermediate flyby instances respect computedMinC3, computedMaxC3, maxC3
+ */
+export function isSequenceConstraintValid(
+  pathInsts: InstanceNode[],
+  res: SequenceTransferResult | null,
+  maxFlybyDvMps: number = FREE_FLYBY_MAX_DV_MPS
+): boolean {
+  if (!res) return false;
+  if (!Number.isFinite(res.totalDv) || res.totalDv > maxFlybyDvMps + 1e-4) return false;
+  if (res.flybyDvs && res.flybyDvs.some(dv => !Number.isFinite(dv) || dv > maxFlybyDvMps + 1e-4)) return false;
+
+  const numInsts = pathInsts.length;
+  if (numInsts === 0) return true;
+
+  const TOL_C3 = 0.05; // km^2/s^2 numerical margin
+
+  // 1. Source instance C3 checks
+  const srcInst = pathInsts[0];
+  if (res.c3DepA && Number.isFinite(res.c3DepA.x)) {
+    const c3DepMag = vecMag(res.c3DepA);
+    if (srcInst.computedMinC3 !== undefined && c3DepMag < srcInst.computedMinC3 - TOL_C3) {
+      return false;
+    }
+    if (srcInst.computedMaxC3 !== undefined && c3DepMag > srcInst.computedMaxC3 + TOL_C3) {
+      return false;
+    }
+    if (srcInst.maxC3 !== undefined && c3DepMag > srcInst.maxC3 + TOL_C3) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  // 2. Target instance C3 checks
+  const tgtInst = pathInsts[numInsts - 1];
+  if (res.c3ArrFinal && Number.isFinite(res.c3ArrFinal.x)) {
+    const c3ArrMag = vecMag(res.c3ArrFinal);
+    if (tgtInst.computedMinC3 !== undefined && c3ArrMag < tgtInst.computedMinC3 - TOL_C3) {
+      return false;
+    }
+    if (tgtInst.computedMaxC3 !== undefined && c3ArrMag > tgtInst.computedMaxC3 + TOL_C3) {
+      return false;
+    }
+    if (tgtInst.maxC3 !== undefined && c3ArrMag > tgtInst.maxC3 + TOL_C3) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  // 3. Intermediate flyby instances C3 checks
+  const numFlybys = numInsts - 2;
+  for (let fb = 0; fb < numFlybys; fb++) {
+    const fbInst = pathInsts[fb + 1];
+    const c3In = res.flybyC3Arrs?.[fb] ?? (fb === 0 ? res.c3ArrB : undefined);
+    const c3Out = res.flybyC3Deps?.[fb] ?? (fb === 0 ? res.c3DepB : undefined);
+
+    if (c3In && Number.isFinite(c3In.x)) {
+      const c3InMag = vecMag(c3In);
+      if (fbInst.computedMinC3 !== undefined && c3InMag < fbInst.computedMinC3 - TOL_C3) {
+        return false;
+      }
+      if (fbInst.computedMaxC3 !== undefined && c3InMag > fbInst.computedMaxC3 + TOL_C3) {
+        return false;
+      }
+      if (fbInst.maxC3 !== undefined && c3InMag > fbInst.maxC3 + TOL_C3) {
+        return false;
+      }
+    }
+    if (c3Out && Number.isFinite(c3Out.x)) {
+      const c3OutMag = vecMag(c3Out);
+      if (fbInst.computedMinC3 !== undefined && c3OutMag < fbInst.computedMinC3 - TOL_C3) {
+        return false;
+      }
+      if (fbInst.computedMaxC3 !== undefined && c3OutMag > fbInst.computedMaxC3 + TOL_C3) {
+        return false;
+      }
+      if (fbInst.maxC3 !== undefined && c3OutMag > fbInst.maxC3 + TOL_C3) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
  * Computes maximum achievable turning angle (in degrees) at a given periapsis radius and v_infinity speed.
  */
 export function computeMaxDeflectionAngle(
@@ -1063,10 +1154,10 @@ export function generateDirectPorkchopFlybySamples(
     const isP0Phys = P0.physicalValidMatrix ? (P0.physicalValidMatrix[i0]?.[j0] ?? false) : true;
     const isP1Phys = P1.physicalValidMatrix ? (P1.physicalValidMatrix[i1]?.[j_last] ?? false) : true;
 
-    const c3Dep0 = P0.c3DepMatrix?.[i0]?.[j0] ?? 0;
-    const c3Arr0 = P0.c3ArrMatrix?.[i0]?.[j0] ?? 0;
-    const c3Dep1 = P1.c3DepMatrix?.[i1]?.[j_last] ?? 0;
-    const c3Arr1 = P1.c3ArrMatrix?.[i1]?.[j_last] ?? 0;
+    const c3Dep0: Vector3D = P0.c3DepMatrix?.[i0]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const c3Arr0: Vector3D = P0.c3ArrMatrix?.[i0]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const c3Dep1: Vector3D = P1.c3DepMatrix?.[i1]?.[j_last] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const c3Arr1: Vector3D = P1.c3ArrMatrix?.[i1]?.[j_last] ?? { x: Infinity, y: Infinity, z: Infinity };
 
     const vTransArr0 = P0.vTransArrMatrix?.[i0]?.[j0];
     const vTransDep1 = P1.vTransDepMatrix?.[i1]?.[j_last];
@@ -1284,52 +1375,62 @@ export function evaluateSequenceTransferFromDirectPorkchops(
 
   let bestResult: SequenceTransferResult | null = null;
   let bestOverallDv = Infinity;
+  let bestConstraintResult: SequenceTransferResult | null = null;
+  let bestConstraintDv = Infinity;
 
   const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
     if (!res) return null;
-    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= FREE_FLYBY_MAX_DV_MPS;
+    const isConstraintValid = isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS);
     return {
       ...res,
       isPhysicallyValid: true,
-      isConstraintValid: isFreeFlyby,
+      isConstraintValid,
     };
+  };
+
+  const considerCandidate = (cand: SequenceTransferResult) => {
+    if (cand.totalDv < bestOverallDv) {
+      bestOverallDv = cand.totalDv;
+      bestResult = cand;
+    }
+    if (isSequenceConstraintValid(pathInsts, cand, FREE_FLYBY_MAX_DV_MPS)) {
+      if (cand.totalDv < bestConstraintDv) {
+        bestConstraintDv = cand.totalDv;
+        bestConstraintResult = cand;
+      }
+    }
   };
 
   // Seed with discrete valid samples first
   for (const s of validSamples) {
-    if (s.dv < bestOverallDv) {
-      bestOverallDv = s.dv;
-      bestResult = {
-        c3DepA: s.c3DepA,
-        c3ArrB: s.c3ArrB,
-        c3DepB: s.c3DepB,
-        c3ArrFinal: s.c3ArrFinal,
-        totalDv: s.dv,
-        flybyDvs: [s.dv],
-        flybyDates: [s.tFlyby],
-        flybyC3Arrs: [s.c3ArrB],
-        flybyC3Deps: [s.c3DepB],
-      };
-    }
+    const cand: SequenceTransferResult = {
+      c3DepA: s.c3DepA,
+      c3ArrB: s.c3ArrB,
+      c3DepB: s.c3DepB,
+      c3ArrFinal: s.c3ArrFinal,
+      totalDv: s.dv,
+      flybyDvs: [s.dv],
+      flybyDates: [s.tFlyby],
+      flybyC3Arrs: [s.c3ArrB],
+      flybyC3Deps: [s.c3DepB],
+    };
+    considerCandidate(cand);
   }
 
-  // If already zero-cost / unpowered, return immediately
-  if (bestOverallDv <= FREE_FLYBY_MAX_DV_MPS && bestResult) {
+  // If already zero-cost / unpowered and satisfies constraints, return immediately
+  if (bestConstraintDv <= FREE_FLYBY_MAX_DV_MPS && bestConstraintResult) {
     if (profiler) {
       profiler.continuousOptimizationMs += (performance.now() - t8);
       profiler.totalMethodMs += (performance.now() - methodStart);
     }
-    return finalizeResult(bestResult);
+    return finalizeResult(bestConstraintResult);
   }
 
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
-    if (res.totalDv < bestOverallDv) {
-      bestOverallDv = res.totalDv;
-      bestResult = res;
-    }
-    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS) {
+    considerCandidate(res);
+    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -1344,6 +1445,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     let b = candIndex < M - 1 ? samples[candIndex + 1].tFlyby : samples[M - 1].tFlyby;
 
     let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+    considerCandidate(currentBest);
 
     let iter = 0;
     while (b - a > DATE_PRECISION_BISECTION_SECONDS && iter < MAX_BISECTION_ITERATIONS) {
@@ -1356,11 +1458,15 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       const res1 = evalExtrapolatedAtDate(m1);
       const res2 = evalExtrapolatedAtDate(m2);
 
+      considerCandidate(res1);
+      considerCandidate(res2);
+
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      // Stop early if unpowered free flyby found
-      if (res1.totalDv <= FREE_FLYBY_MAX_DV_MPS || res2.totalDv <= FREE_FLYBY_MAX_DV_MPS) {
+      // Stop early if unpowered free flyby found and satisfies constraints
+      if ((res1.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res1, FREE_FLYBY_MAX_DV_MPS)) ||
+          (res2.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res2, FREE_FLYBY_MAX_DV_MPS))) {
         break;
       }
 
@@ -1371,17 +1477,12 @@ export function evaluateSequenceTransferFromDirectPorkchops(
       }
     }
 
-    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS) {
+    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, currentBest, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
       return finalizeResult(currentBest);
-    }
-
-    if (currentBest.totalDv < bestOverallDv) {
-      bestOverallDv = currentBest.totalDv;
-      bestResult = currentBest;
     }
   }
 
@@ -1389,7 +1490,7 @@ export function evaluateSequenceTransferFromDirectPorkchops(
     profiler.continuousOptimizationMs += (performance.now() - t8);
     profiler.totalMethodMs += (performance.now() - methodStart);
   }
-  return finalizeResult(bestResult);
+  return finalizeResult(bestConstraintResult || bestResult);
 }
 
 export interface HigherOrderFlybySample {
@@ -1508,41 +1609,41 @@ export function generateHigherOrderAddLastLegFlybySamples(
     const isSubSeqPhys = subSeq.physicalValidMatrix ? (subSeq.physicalValidMatrix[i0]?.[j0] ?? false) : true;
     const isPLastPhys = P_last.physicalValidMatrix ? (P_last.physicalValidMatrix[i1]?.[j_last] ?? false) : true;
 
-    const c3DepA = subSeq.c3DepMatrix?.[i0]?.[j0] ?? 0;
-    const rawC3ArrIn = subSeq.c3ArrMatrix?.[i0]?.[j0] ?? 0;
+    const c3DepA: Vector3D = subSeq.c3DepMatrix?.[i0]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const rawC3ArrIn: Vector3D = subSeq.c3ArrMatrix?.[i0]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity };
     const priorCost = subSeq.totalPoweredDvMatrix?.[i0]?.[j0] ?? 0;
 
-    const c3DepOut = P_last.c3DepMatrix?.[i1]?.[j_last] ?? 0;
-    const c3ArrFinal = P_last.c3ArrMatrix?.[i1]?.[j_last] ?? 0;
+    const c3DepOut: Vector3D = P_last.c3DepMatrix?.[i1]?.[j_last] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const c3ArrFinal: Vector3D = P_last.c3ArrMatrix?.[i1]?.[j_last] ?? { x: Infinity, y: Infinity, z: Infinity };
     const vTransDep = P_last.vTransDepMatrix?.[i1]?.[j_last];
 
     // Extract prior flyby dates, DVs, and C3s
     const priorFlybyDates: number[] = subSeq.flybys && subSeq.flybys.length > 0
-      ? subSeq.flybys.map(fb => fb.dateMatrix?.[i0]?.[j0] || 0)
+      ? subSeq.flybys.map(fb => fb.dateMatrix?.[i0]?.[j0] ?? 0)
       : [];
 
     const priorFlybyDvs: number[] = subSeq.flybys && subSeq.flybys.length > 0
-      ? subSeq.flybys.map(fb => fb.poweredDvMatrix?.[i0]?.[j0] || 0)
+      ? subSeq.flybys.map(fb => fb.poweredDvMatrix?.[i0]?.[j0] ?? 0)
       : [];
 
     const priorFlybyC3Arrs: Vector3D[] = subSeq.flybys && subSeq.flybys.length > 0
-      ? subSeq.flybys.map(fb => fb.c3ArrMatrix?.[i0]?.[j0] || 0)
+      ? subSeq.flybys.map(fb => fb.c3ArrMatrix?.[i0]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity })
       : [];
 
     const priorFlybyC3Deps: Vector3D[] = subSeq.flybys && subSeq.flybys.length > 0
-      ? subSeq.flybys.map(fb => fb.c3DepMatrix?.[i0]?.[j0] || 0)
+      ? subSeq.flybys.map(fb => fb.c3DepMatrix?.[i0]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity })
       : [];
 
     // Obtain inbound velocity vector vTransArr entering flybyBody
     let vTransArr: Vector3D | undefined;
-    let c3ArrIn: Vector3D | undefined = rawC3ArrIn;
+    let c3ArrIn: Vector3D = rawC3ArrIn;
     if (P_prevLeg && P_prevLeg.vTransArrMatrix) {
       const prevFbDate = priorFlybyDates[priorFlybyDates.length - 1] || 0;
       const i_prev = prevFbDate ? findClosestDateIndex(P_prevLeg.depDates, prevFbDate) : 0;
       const j_prev = k;
       if (i_prev >= 0 && j_prev >= 0) {
         const vt = P_prevLeg.vTransArrMatrix[i_prev]?.[j_prev];
-        if (vt && vecMag(vt) > 1e-3 && Number.isFinite(P_prevLeg.c3ArrMatrix?.[i_prev]?.[j_prev])) {
+        if (vt && vecMag(vt) > 1e-3 && P_prevLeg.c3ArrMatrix?.[i_prev]?.[j_prev]) {
           vTransArr = vt;
           c3ArrIn = P_prevLeg.c3ArrMatrix[i_prev][j_prev];
         }
@@ -1571,7 +1672,7 @@ export function generateHigherOrderAddLastLegFlybySamples(
         j0,
         tFlyby,
         c3DepA,
-        c3ArrB: c3ArrIn ?? 0,
+        c3ArrB: c3ArrIn,
         c3DepB: c3DepOut,
         c3ArrFinal,
         deflectionAngleDeg: 0,
@@ -1594,8 +1695,8 @@ export function generateHigherOrderAddLastLegFlybySamples(
     const vInfOut = vecSub(vTransDep, stBody.vel);
     const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyAltitude);
 
-    const c3ArrInSmooth = c3ArrIn ?? ((vecMag(vInfIn) ** 2) / 1e6);
-    const c3DepOutSmooth = c3DepOut ?? ((vecMag(vInfOut) ** 2) / 1e6);
+    const c3ArrInSmooth: Vector3D = (c3ArrIn && Number.isFinite(c3ArrIn.x)) ? c3ArrIn : vecScale(vInfIn, vecMag(vInfIn) / 1e6);
+    const c3DepOutSmooth: Vector3D = (c3DepOut && Number.isFinite(c3DepOut.x)) ? c3DepOut : vecScale(vInfOut, vecMag(vInfOut) / 1e6);
 
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
     const totalDv = dvFinite && Number.isFinite(priorCost) ? priorCost + flybyEval.poweredDv : Infinity;
@@ -1820,25 +1921,37 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
 
   let bestResult: SequenceTransferResult | null = null;
   let bestOverallDv = Infinity;
+  let bestConstraintResult: SequenceTransferResult | null = null;
+  let bestConstraintDv = Infinity;
 
   const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
     if (!res) return null;
-    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= 1.0;
+    const isConstraintValid = isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS);
     return {
       ...res,
       isPhysicallyValid: true,
-      isConstraintValid: isFreeFlyby,
+      isConstraintValid,
     };
+  };
+
+  const considerCandidate = (cand: SequenceTransferResult) => {
+    if (cand.totalDv < bestOverallDv) {
+      bestOverallDv = cand.totalDv;
+      bestResult = cand;
+    }
+    if (isSequenceConstraintValid(pathInsts, cand, FREE_FLYBY_MAX_DV_MPS)) {
+      if (cand.totalDv < bestConstraintDv) {
+        bestConstraintDv = cand.totalDv;
+        bestConstraintResult = cand;
+      }
+    }
   };
 
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
-    if (res.totalDv < bestOverallDv) {
-      bestOverallDv = res.totalDv;
-      bestResult = res;
-    }
-    if (res.flybyDvs[res.flybyDvs.length - 1] <= 1.0) {
+    considerCandidate(res);
+    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -1853,6 +1966,7 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
 
     const datePrecision = 864;
     let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+    considerCandidate(currentBest);
 
     let iter = 0;
     while (b - a > datePrecision && iter < 30) {
@@ -1865,10 +1979,15 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       const res1 = evalExtrapolatedAtDate(m1);
       const res2 = evalExtrapolatedAtDate(m2);
 
+      considerCandidate(res1);
+      considerCandidate(res2);
+
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      if (res1.flybyDvs[res1.flybyDvs.length - 1] <= 1.0 || res2.flybyDvs[res2.flybyDvs.length - 1] <= 1.0) {
+      // Stop early if unpowered free flyby found and satisfies constraints
+      if ((res1.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res1, FREE_FLYBY_MAX_DV_MPS)) ||
+          (res2.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res2, FREE_FLYBY_MAX_DV_MPS))) {
         break;
       }
 
@@ -1879,17 +1998,12 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       }
     }
 
-    if (currentBest.flybyDvs[currentBest.flybyDvs.length - 1] <= 1.0) {
+    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, currentBest, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
       return finalizeResult(currentBest);
-    }
-
-    if (currentBest.totalDv < bestOverallDv) {
-      bestOverallDv = currentBest.totalDv;
-      bestResult = currentBest;
     }
   }
 
@@ -1897,7 +2011,7 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
     profiler.continuousOptimizationMs += (performance.now() - t8);
     profiler.totalMethodMs += (performance.now() - methodStart);
   }
-  return finalizeResult(bestResult);
+  return finalizeResult(bestConstraintResult || bestResult);
 }
 
 export interface HigherOrderFirstLegFlybySample {
@@ -2019,41 +2133,41 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const isSuffixPhys = suffixSeq.physicalValidMatrix ? (suffixSeq.physicalValidMatrix[i1]?.[j_suffix] ?? false) : true;
     const isSuffixConstraint = suffixSeq.constraintValidMatrix ? (suffixSeq.constraintValidMatrix[i1]?.[j_suffix] ?? false) : isSuffixPhys;
 
-    const c3DepA = P_first.c3DepMatrix?.[i_first]?.[j0] ?? 0;
-    const c3ArrIn = P_first.c3ArrMatrix?.[i_first]?.[j0] ?? 0;
+    const c3DepA: Vector3D = P_first.c3DepMatrix?.[i_first]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const c3ArrIn: Vector3D = P_first.c3ArrMatrix?.[i_first]?.[j0] ?? { x: Infinity, y: Infinity, z: Infinity };
     const vTransArr: Vector3D | undefined = P_first.vTransArrMatrix?.[i_first]?.[j0];
 
-    const rawC3DepOut = suffixSeq.c3DepMatrix?.[i1]?.[j_suffix] ?? 0;
-    const c3ArrFinal = suffixSeq.c3ArrMatrix?.[i1]?.[j_suffix] ?? 0;
+    const rawC3DepOut: Vector3D = suffixSeq.c3DepMatrix?.[i1]?.[j_suffix] ?? { x: Infinity, y: Infinity, z: Infinity };
+    const c3ArrFinal: Vector3D = suffixSeq.c3ArrMatrix?.[i1]?.[j_suffix] ?? { x: Infinity, y: Infinity, z: Infinity };
     const suffixCost = suffixSeq.totalPoweredDvMatrix?.[i1]?.[j_suffix] ?? 0;
 
     // Extract suffix flyby dates, DVs, and C3s (for Inst_2, ..., Inst_{N-2})
     const suffixFlybyDates: number[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
-      ? suffixSeq.flybys.map(fb => fb.dateMatrix?.[i1]?.[j_suffix] || 0)
+      ? suffixSeq.flybys.map(fb => fb.dateMatrix?.[i1]?.[j_suffix] ?? 0)
       : [];
 
     const suffixFlybyDvs: number[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
-      ? suffixSeq.flybys.map(fb => fb.poweredDvMatrix?.[i1]?.[j_suffix] || 0)
+      ? suffixSeq.flybys.map(fb => fb.poweredDvMatrix?.[i1]?.[j_suffix] ?? 0)
       : [];
 
     const suffixFlybyC3Arrs: Vector3D[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
-      ? suffixSeq.flybys.map(fb => fb.c3ArrMatrix?.[i1]?.[j_suffix] || 0)
+      ? suffixSeq.flybys.map(fb => fb.c3ArrMatrix?.[i1]?.[j_suffix] ?? { x: Infinity, y: Infinity, z: Infinity })
       : [];
 
     const suffixFlybyC3Deps: Vector3D[] = suffixSeq.flybys && suffixSeq.flybys.length > 0
-      ? suffixSeq.flybys.map(fb => fb.c3DepMatrix?.[i1]?.[j_suffix] || 0)
+      ? suffixSeq.flybys.map(fb => fb.c3DepMatrix?.[i1]?.[j_suffix] ?? { x: Infinity, y: Infinity, z: Infinity })
       : [];
 
     // Obtain outbound velocity vector vTransDep exiting flybyBody (Inst_1)
     let vTransDep: Vector3D | undefined;
-    let c3DepOut: Vector3D | undefined = rawC3DepOut;
+    let c3DepOut: Vector3D = rawC3DepOut;
     if (P_nextLeg && P_nextLeg.vTransDepMatrix) {
       const nextFbDate = suffixFlybyDates[0] || (suffixSeq.arrDates[j_suffix] || 0);
       const i_next = k; // Direct index on P_nextLeg.depDates (same instance)
       const j_next = nextFbDate ? findClosestDateIndex(P_nextLeg.arrDates, nextFbDate) : 0;
       if (i_next >= 0 && j_next >= 0) {
         const vt = P_nextLeg.vTransDepMatrix[i_next]?.[j_next];
-        if (vt && vecMag(vt) > 1e-3 && Number.isFinite(P_nextLeg.c3DepMatrix?.[i_next]?.[j_next])) {
+        if (vt && vecMag(vt) > 1e-3 && P_nextLeg.c3DepMatrix?.[i_next]?.[j_next]) {
           vTransDep = vt;
           c3DepOut = P_nextLeg.c3DepMatrix[i_next][j_next];
         }
@@ -2084,7 +2198,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
         tFlyby,
         c3DepA,
         c3ArrB: c3ArrIn,
-        c3DepB: c3DepOut ?? 0,
+        c3DepB: c3DepOut,
         c3ArrFinal,
         deflectionAngleDeg: 0,
         maxDeflectionAngleDeg: 0,
@@ -2106,8 +2220,8 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const vInfOut = vecSub(vTransDep, stBody.vel);
     const flybyEval = evaluateFlybyAtDate(flybyBody, vInfIn, vInfOut, tFlyby, minFlybyAltitude);
 
-    const c3ArrInSmooth = c3ArrIn ?? ((vecMag(vInfIn) ** 2) / 1e6);
-    const c3DepOutSmooth = c3DepOut ?? ((vecMag(vInfOut) ** 2) / 1e6);
+    const c3ArrInSmooth: Vector3D = (c3ArrIn && Number.isFinite(c3ArrIn.x)) ? c3ArrIn : vecScale(vInfIn, vecMag(vInfIn) / 1e6);
+    const c3DepOutSmooth: Vector3D = (c3DepOut && Number.isFinite(c3DepOut.x)) ? c3DepOut : vecScale(vInfOut, vecMag(vInfOut) / 1e6);
 
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
     const totalDv = dvFinite && Number.isFinite(suffixCost) ? suffixCost + flybyEval.poweredDv : Infinity;
@@ -2334,25 +2448,37 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
 
   let bestResult: SequenceTransferResult | null = null;
   let bestOverallDv = Infinity;
+  let bestConstraintResult: SequenceTransferResult | null = null;
+  let bestConstraintDv = Infinity;
 
   const finalizeResult = (res: SequenceTransferResult | null): SequenceTransferResult | null => {
     if (!res) return null;
-    const isFreeFlyby = Number.isFinite(res.totalDv) && res.totalDv <= 1.0;
+    const isConstraintValid = isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS);
     return {
       ...res,
       isPhysicallyValid: true,
-      isConstraintValid: isFreeFlyby,
+      isConstraintValid,
     };
+  };
+
+  const considerCandidate = (cand: SequenceTransferResult) => {
+    if (cand.totalDv < bestOverallDv) {
+      bestOverallDv = cand.totalDv;
+      bestResult = cand;
+    }
+    if (isSequenceConstraintValid(pathInsts, cand, FREE_FLYBY_MAX_DV_MPS)) {
+      if (cand.totalDv < bestConstraintDv) {
+        bestConstraintDv = cand.totalDv;
+        bestConstraintResult = cand;
+      }
+    }
   };
 
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
-    if (res.totalDv < bestOverallDv) {
-      bestOverallDv = res.totalDv;
-      bestResult = res;
-    }
-    if (res.flybyDvs[0] <= 1.0) {
+    considerCandidate(res);
+    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -2367,6 +2493,7 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
 
     const datePrecision = 864;
     let currentBest = evalExtrapolatedAtDate((a + b) / 2);
+    considerCandidate(currentBest);
 
     let iter = 0;
     while (b - a > datePrecision && iter < 30) {
@@ -2379,10 +2506,15 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       const res1 = evalExtrapolatedAtDate(m1);
       const res2 = evalExtrapolatedAtDate(m2);
 
+      considerCandidate(res1);
+      considerCandidate(res2);
+
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      if (res1.flybyDvs[0] <= 1.0 || res2.flybyDvs[0] <= 1.0) {
+      // Stop early if unpowered free flyby found and satisfies constraints
+      if ((res1.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res1, FREE_FLYBY_MAX_DV_MPS)) ||
+          (res2.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res2, FREE_FLYBY_MAX_DV_MPS))) {
         break;
       }
 
@@ -2393,17 +2525,12 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       }
     }
 
-    if (currentBest.flybyDvs[0] <= 1.0) {
+    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, currentBest, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
       }
       return finalizeResult(currentBest);
-    }
-
-    if (currentBest.totalDv < bestOverallDv) {
-      bestOverallDv = currentBest.totalDv;
-      bestResult = currentBest;
     }
   }
 
@@ -2411,6 +2538,6 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
     profiler.continuousOptimizationMs += (performance.now() - t8);
     profiler.totalMethodMs += (performance.now() - methodStart);
   }
-  return finalizeResult(bestResult);
+  return finalizeResult(bestConstraintResult || bestResult);
 }
 

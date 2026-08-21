@@ -235,10 +235,10 @@ export function extractFlybyDebugData(
     ? storedFlybyDate
     : (depDateA + arrDateC) / 2;
 
-  const c3DepA = storedC3DepA ?? 0;
-  const c3ArrC = storedC3ArrC ?? 0;
-  const c3ArrB = seqTransferEval?.c3ArrB ?? seqPorkchop.flybys[0]?.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex];
-  const c3DepB = seqTransferEval?.c3DepB ?? seqPorkchop.flybys[0]?.c3DepMatrix?.[clampedDepIndex]?.[clampedArrIndex];
+  const c3DepA: Vector3D = storedC3DepA ?? { x: Infinity, y: Infinity, z: Infinity };
+  const c3ArrC: Vector3D = storedC3ArrC ?? { x: Infinity, y: Infinity, z: Infinity };
+  const c3ArrB: Vector3D = seqTransferEval?.c3ArrB ?? seqPorkchop.flybys[0]?.c3ArrMatrix?.[clampedDepIndex]?.[clampedArrIndex] ?? { x: Infinity, y: Infinity, z: Infinity };
+  const c3DepB: Vector3D = seqTransferEval?.c3DepB ?? seqPorkchop.flybys[0]?.c3DepMatrix?.[clampedDepIndex]?.[clampedArrIndex] ?? { x: Infinity, y: Infinity, z: Infinity };
   const flybyDvMps = storedFlybyDv ?? 0;
   const totalDv = storedTotalDv ?? flybyDvMps;
   const hasFeasible = storedIsValid ?? (totalDv < MAX_ALLOWED_FLYBY_DV_MPS);
