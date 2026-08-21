@@ -146,7 +146,7 @@ export default function App() {
     }
   };
 
-  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => {
+  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], isFullPath: boolean) => {
     if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 3) return;
     setComputingSeqId(seqId);
     setSelectedSeqPorkchopId(seqId);
@@ -188,6 +188,10 @@ export default function App() {
         pathInsts,
         bodies: currentSystem.bodies,
         mainBody,
+        links,
+        porkchops,
+        sequencePorkchops,
+        isFullPath,
         onProgress: (msg) => setSearchStatusText(msg),
         onPartialUpdate: (partialSeq) => {
           setSequencePorkchops(prev => ({
@@ -196,10 +200,6 @@ export default function App() {
           }));
         },
         shouldStop: () => stopSearchRef.current,
-        isFullPath,
-        links,
-        porkchops,
-        sequencePorkchops,
         onSubtaskProgress: (subtask) => {
           setActiveSubtask(subtask);
           setSequencePorkchops(prev => {
@@ -824,7 +824,7 @@ export default function App() {
       </main>
 
       {/* Instance Constraint Modal */}
-      {activeInstance && (
+      {activeInstance && activeInstanceBody && (
         <InstanceModal
           instance={activeInstance}
           body={activeInstanceBody}
@@ -884,8 +884,8 @@ export default function App() {
             const cand = candPaths.find(c => c.id === selectedSeqPorkchopId);
             if (cand && cand.pathInsts && cand.pathInsts.length >= 3) {
               handleComputeSingleSequencePorkchop(cand.id, cand.pathInsts, cand.isFullPath);
-            } else if (seqData.pathInsts && seqData.pathInsts.length >= 3) {
-              handleComputeSingleSequencePorkchop(seqData.id, seqData.pathInsts, seqData.isFullPath);
+            } else if (seqData.flybys && seqData.flybys.length >= 1) {
+              handleComputeSingleSequencePorkchop(seqData.id, [seqData.sourceBody, ...seqData.flybys.map(f => f.instance), seqData.targetBody], seqData.isFullPath);
             }
           }}
         />

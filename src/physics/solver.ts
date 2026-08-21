@@ -1062,13 +1062,13 @@ export interface ComputeSequencePorkchopOptions {
   pathInsts: InstanceNode[];
   bodies: OrbitalBody[];
   mainBody: CelestialBody;
-  links?: DirectionalLink[];
-  porkchops?: Record<string, PorkchopPlotData>;
-  sequencePorkchops?: Record<string, SequencePorkchopData>;
+  links: DirectionalLink[];
+  porkchops: Record<string, PorkchopPlotData>;
+  sequencePorkchops: Record<string, SequencePorkchopData>;
+  isFullPath: boolean;
   onProgress?: ProgressCallback;
   onPartialUpdate?: (seqPc: SequencePorkchopData) => void;
   shouldStop?: () => boolean;
-  isFullPath?: boolean;
   onSubtaskProgress?: (subtask: SubtaskProgressInfo | null) => void;
   onDirectPorkchopUpdate?: (newPcs: Record<string, PorkchopPlotData>) => void;
   onSequencePorkchopUpdate?: (subSeqPc: SequencePorkchopData) => void;
@@ -1076,52 +1076,410 @@ export interface ComputeSequencePorkchopOptions {
 
 /**
  * Unified Sequence Porkchop Plot solver for N-instance sequences (N >= 3).
- * Direct evaluation using precomputed direct transfer porkchops and recursive sub-sequence chains — NO Lambert calculations.
+ * Computes a porkchop plot for a sequence of celestial bodies (e.g., Kerbin -> Eve -> Duna -> Jool)
+ * by evaluating precomputed direct transfer porkchops and recursive sub-sequence chains.
+ * Uses NO Lambert calculations (relies on precomputed data).
+ *
+ * @param options - Configuration object containing:
+ *   - pathInsts: Array of instances (celestial bodies) defining the path.
+ *   - bodies: Celestial body data.
+ *   - mainBody: The main gravitational body (e.g., Sun).
+ *   - links: Predefined links between instances.
+ *   - porkchops: Precomputed porkchop plots for direct transfers.
+ *   - sequencePorkchops: Precomputed porkchop plots for sub-sequences.
+ *   - isFullPath: Whether the sequence is a full path.
+ *   - onProgress: Callback for progress updates.
+ *   - onPartialUpdate: Callback for partial results during computation.
+ *   - shouldStop: Function to check if computation should be aborted.
+ *   - onSubtaskProgress: Callback for subtask progress (e.g., sub-sequence computation).
+ *   - onDirectPorkchopUpdate: Callback for updates to direct porkchop plots.
+ *   - onSequencePorkchopUpdate: Callback for updates to sequence porkchop plots.
+ *
+ * @returns Promise<SequencePorkchopData> - The computed porkchop plot data for the sequence.
  */
 export async function computeSequencePorkchopPlot(
   options: ComputeSequencePorkchopOptions
 ): Promise<SequencePorkchopData> {
+  if (options.pathInsts.length == 3) {
+    return computeSequence3PorkchopPlot(options);
+  } else if (options.pathInsts.length > 3) {
+    return computeSequenceNSup3PorkchopPlot(options);
+  } else {
+    throw new Error(`computeSequencePorkchopPlot: Invalid path length ${options.pathInsts.length}. Must be >= 3.`);
+  }
+}
+
+export async function computeSequence3PorkchopPlot(
+  options: ComputeSequencePorkchopOptions
+): Promise<SequencePorkchopData> {
+  // --- 1. DESTRUCTURE OPTIONS ---
   const {
-    pathInsts,
-    bodies,
-    mainBody,
-    links = [],
-    porkchops,
-    sequencePorkchops,
-    onProgress,
-    onPartialUpdate,
-    shouldStop,
-    isFullPath = false,
-    onSubtaskProgress,
-    onDirectPorkchopUpdate,
-    onSequencePorkchopUpdate,
+    pathInsts,          // Array of path instances (e.g., [Kerbin, Eve, Duna, Jool])
+    bodies,             // Celestial body data (e.g., masses, positions)
+    mainBody,           // Main gravitational body (e.g., Kerbol)
+    links,              // Predefined links between instances (default: empty array)
+    porkchops,          // Precomputed porkchop plots for direct transfers
+    sequencePorkchops,  // Precomputed porkchop plots for sub-sequences
+    isFullPath,         // Whether the sequence is a full path (default: false)
+    onProgress,         // Callback for overall progress updates
+    onPartialUpdate,    // Callback for partial results (e.g., for UI updates)
+    shouldStop,         // Function to check if computation should stop
+    onSubtaskProgress,  // Callback for subtask progress (e.g., sub-sequence computation)
+    onDirectPorkchopUpdate, // Callback for direct porkchop updates
+    onSequencePorkchopUpdate, // Callback for sequence porkchop updates
   } = options;
 
-  const N = pathInsts.length;
-  const seqId = `seq-pc-${pathInsts.map(i => i.id).join('-')}`;
-  const seqLabel = pathInsts.map(i => i.bodyName).join(' ➔ ');
-  const porkchopsMap: Record<string, PorkchopPlotData> = { ...(porkchops || {}) };
-  const sequencePorkchopsMap: Record<string, SequencePorkchopData> = { ...(sequencePorkchops || {}) };
+  // --- 2. INITIALIZE SEQUENCE METADATA ---
+  const seqId = `seq-pc-${pathInsts.map(i => i.id).join('-')}`; // Unique ID for the sequence (e.g., "seq-pc-kerbin-eve-duna")
+  const seqLabel = pathInsts.map(i => i.bodyName).join(' ➔ '); // Human-readable label (e.g., "Kerbin ➔ Eve ➔ Duna")
 
-  // Helper to notify active subtask
+  // --- 3. HELPER FUNCTION: REPORT SUBTASK PROGRESS ---
+  /**
+   * Reports the current subtask progress to the UI.
+   * @param subtask - Subtask info (null to clear the active subtask).
+   */
   const reportSubtask = (subtask: SubtaskProgressInfo | null) => {
     onSubtaskProgress?.(subtask);
   };
 
-  // Step 1: Ensure all direct transfer porkchops exist for each link in pathInsts
-  for (let k = 0; k < N - 1; k++) {
-    const srcInst = pathInsts[k];
-    const tgtInst = pathInsts[k + 1];
+  // --- 4. STEP 1: COMPUTE MISSING DIRECT TRANSFER PORKCHOPS ---
+  // For each pair of consecutive instances in the path, ensure a porkchop plot exists.
+  for (let k = 0; k < 2; k++) {
+    const srcInst = pathInsts[k]; // Source instance (e.g., Kerbin)
+    const tgtInst = pathInsts[k + 1]; // Target instance (e.g., Eve)
+    // Find the link between the current pair of instances
     const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
-    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`;
+    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`; // Generate a unique link ID if not provided
 
-    let pc = porkchopsMap[linkId];
+    // If the porkchop plot for this link doesn't exist or is empty, compute it
+    let pc = porkchops[linkId];
     if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) {
       const subtaskName = `Direct Transfer (${srcInst.bodyName} ➔ ${tgtInst.bodyName})`;
       const subInfo: SubtaskProgressInfo = {
         subtaskId: linkId,
         subtaskName,
-        subtaskType: 'direct_link',
+        subtaskType: 'direct_link', // Type of subtask (direct transfer)
+        computedSamples: 0,
+        totalSamples: 100,
+        progressPct: 0,
+        statusText: `Computing direct transfer Lambert grid for ${srcInst.bodyName} ➔ ${tgtInst.bodyName}...`,
+        parentTaskId: seqId,
+      };
+      reportSubtask(subInfo);
+      onProgress?.(`Computing 3-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
+      await yieldUI(); // Yield to the event loop to avoid blocking the UI
+      if (shouldStop?.()) break; // Abort if requested
+
+      // Create a dummy link if none exists
+      const dummyLink: DirectionalLink = link || {
+        id: linkId,
+        sourceInstanceId: srcInst.id,
+        targetInstanceId: tgtInst.id,
+      };
+
+      // Compute the porkchop plot for this direct transfer
+      pc = await computePorkchopPlot(
+        dummyLink,
+        srcInst,
+        tgtInst,
+        bodies,
+        mainBody,
+        // Callback for progress updates during porkchop computation
+        (msg) => {
+          const total = pc?.totalSamples;
+          const comp = pc?.computedSamples;
+          const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+          reportSubtask({
+            subtaskId: linkId,
+            subtaskName,
+            subtaskType: 'direct_link',
+            computedSamples: comp,
+            totalSamples: total,
+            progressPct: pct,
+            statusText: msg,
+            parentTaskId: seqId,
+          });
+          onProgress?.(`Computing 3-Instance (${seqLabel}) — Subtask: ${subtaskName} (${pct}%)`);
+        },
+        // Callback for partial updates (e.g., intermediate results)
+        (partialPc) => {
+          const total = partialPc.totalSamples;
+          const comp = partialPc.computedSamples;
+          const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+          porkchops[linkId] = partialPc; // Store partial result
+          onDirectPorkchopUpdate?.({ [linkId]: partialPc }); // Notify UI
+          reportSubtask({
+            subtaskId: linkId,
+            subtaskName,
+            subtaskType: 'direct_link',
+            computedSamples: comp,
+            totalSamples: total,
+            progressPct: pct,
+            statusText: `Evaluating direct transfer Lambert grid...`,
+            parentTaskId: seqId,
+          });
+        },
+        shouldStop
+      );
+      // Store the computed porkchop plot
+      porkchops[linkId] = pc;
+      onDirectPorkchopUpdate?.({ [linkId]: pc });
+    }
+  }
+
+  // --- 6. CLEAR ACTIVE SUBTASK ---
+  // Notify that subtasks are complete and main computation is starting
+  reportSubtask(null);
+
+  // --- 7. INITIALIZE SEQUENCE DATA STRUCTURES ---
+  const srcInst = pathInsts[0]; // First instance (e.g., Kerbin)
+  const tgtInst = pathInsts[2]; // Last instance (e.g., Jool)
+  const flybyInst = pathInsts[1]; // Intermediate instances (e.g., [Eve, Duna])
+
+  // Get the first and last direct transfer porkchop plots for departure/arrival dates
+  const P0_link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === pathInsts[1].id);
+  const P0 = porkchops[P0_link?.id || `link-${srcInst.id}-${pathInsts[1].id}`]; // First leg porkchop
+
+  const Plast_link = links.find(l => l.sourceInstanceId === pathInsts[1].id && l.targetInstanceId === tgtInst.id);
+  const Plast = porkchops[Plast_link?.id || `link-${pathInsts[1].id}-${tgtInst.id}`]; // Last leg porkchop
+
+  // Extract departure and arrival dates from the first and last porkchop plots
+  const depDates: number[] = P0?.depDates || []; // Departure dates (from first leg)
+  const arrDates: number[] = Plast?.arrDates || []; // Arrival dates (from last leg)
+
+  const N_DEP = depDates.length; // Number of departure dates
+  const N_ARR = arrDates.length; // Number of arrival dates
+
+  // --- 8. INITIALIZE MATRICES FOR RESULTS ---
+  // Matrices to store computed values for each (departure date, arrival date) pair
+  const c3DepAMatrix: Vector3D[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })
+  ); // Departure C3 matrix
+  const c3ArrFinalMatrix: Vector3D[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })
+  ); // Final arrival C3 matrix
+  const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(0)
+  ); // Total delta-v matrix
+  const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(0)
+  ); // Flight time matrix
+  const physicalValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(false)
+  ); // Physical validity matrix (e.g., trajectory is possible)
+  const constraintValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () =>
+    Array(N_ARR).fill(false)
+  ); // Constraint validity matrix (e.g., meets user constraints)
+
+  // Initialize flyby data for intermediate instances
+  const flybyData = {
+    instance: flybyInst,
+    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Delta-v for each flyby
+    c3ArrMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at arrival
+    c3DepMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at departure
+    dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Flyby date
+  };
+
+  const totalPoints = N_DEP * N_ARR; // Total number of (departure, arrival) pairs to evaluate
+
+  // --- 9. INITIALIZE SEQUENCE DATA OBJECT ---
+  const seqData: SequencePorkchopData = {
+    id: seqId,
+    sequenceLabel: seqLabel,
+    isFullPath,
+    instanceCount: 3,
+    sourceBody: srcInst,
+    targetBody: tgtInst,
+    depDates,
+    arrDates,
+    c3DepMatrix: c3DepAMatrix,
+    c3ArrMatrix: c3ArrFinalMatrix,
+    flybys: [flybyData],
+    totalPoweredDvMatrix,
+    flightTimeMatrix,
+    physicalValidMatrix,
+    constraintValidMatrix,
+    computedSamples: 0,
+    totalSamples: totalPoints,
+    activeSubtask: null,
+  };
+
+  // --- 10. START PROFILING ---
+  const profiler = new SequenceTransferProfiler(); // Track performance metrics
+  const computationStartTime = performance.now(); // Start time for profiling
+
+  // Emit initial state to open the sequence viewer immediately
+  seqData.profiling = profiler.getStats(0, 0);
+  onPartialUpdate?.({ ...seqData });
+
+  // --- 11. HIERARCHICAL GRID EVALUATION ---
+  // Use a hierarchical grid to evaluate points in passes (coarse to fine)
+  const passes = getHierarchicalGridIndices(N_DEP, N_ARR); // Get grid evaluation order (e.g., from low to high resolution)
+  const evaluated = Array.from({ length: N_DEP }, () => new Uint8Array(N_ARR)); // Track evaluated points
+
+  let validCount = 0; // Count of valid (constraint + physical) trajectories
+  let computedPointsCount = 0; // Total points evaluated so far
+  let lastYieldTime = performance.now(); // Track time to yield to UI
+
+  // Loop through each pass (resolution level)
+  for (const pass of passes) {
+    if (shouldStop?.()) break; // Abort if requested
+
+    const S = pass.step; // Current step size (resolution)
+    // Loop through each point in the current pass
+    for (const [i, j] of pass.points) {
+      if (shouldStop?.()) break;
+
+      evaluated[i][j] = 1; // Mark this point as evaluated
+      computedPointsCount++;
+
+      const tDep = depDates[i]; // Departure date
+      const tArr = arrDates[j]; // Arrival date
+      const totalDt = tArr - tDep; // Total flight time
+      flightTimeMatrix[i][j] = totalDt;
+
+      // --- 11.1. EVALUATE SEQUENCE TRANSFER ---
+      // Compute the best transfer for this (departure, arrival) pair
+      let bestRes : SequenceTransferResult | null = null;
+      if (totalDt > 0)
+      {
+        // For 3-instance sequences, use direct porkchop evaluation
+        bestRes = evaluateSequenceTransferFromDirectPorkchops(
+          pathInsts,
+          tDep,
+          tArr,
+          bodies,
+          mainBody,
+          porkchops,
+          links,
+          profiler
+        );
+      }
+
+      // Check if the transfer is physically and constraint-valid
+      const isPhysical = (totalDt > 0) && !!bestRes && (bestRes?.isPhysicallyValid !== false);
+      const isConstraint = isPhysical && (bestRes?.isConstraintValid !== false);
+
+      physicalValidMatrix[i][j] = isPhysical;
+      constraintValidMatrix[i][j] = isConstraint;
+
+      // --- 11.2. STORE RESULTS IF VALID ---
+      if (bestRes) {
+        c3DepAMatrix[i][j] = bestRes.c3DepA; // Departure C3
+        c3ArrFinalMatrix[i][j] = bestRes.c3ArrFinal; // Final arrival C3
+        totalPoweredDvMatrix[i][j] = bestRes.totalDv; // Total delta-v
+
+        // Store flyby data for each intermediate instance
+        flybyData.poweredDvMatrix[i][j] = bestRes.flybyDvs[0] || Infinity; // Delta-v for this flyby
+        flybyData.dateMatrix[i][j] = bestRes.flybyDates[0] || 0; // Flyby date
+        // Store C3 values for the first two flybys (if they exist)
+        flybyData.c3ArrMatrix[i][j] = bestRes.c3ArrB || { x: Infinity, y: Infinity, z: Infinity };
+        flybyData.c3DepMatrix[i][j] = bestRes.c3DepB || { x: Infinity, y: Infinity, z: Infinity };
+
+        if (isConstraint) validCount++; // Increment valid trajectory count
+      }
+
+      // --- 11.3. PREVIEW FILL FOR UNVISITED NEIGHBORS ---
+      // For hierarchical grid: fill in neighboring cells with the same values
+      // to provide a preview for unevaluated points in the current pass.
+      for (let di = 0; di < S && i + di < N_DEP; di++) {
+        const r = i + di; // Row index
+        for (let dj = 0; dj < S && j + dj < N_ARR; dj++) {
+          const c = j + dj; // Column index
+          if (evaluated[r][c] === 0) { // If this neighbor hasn't been evaluated yet
+            // Copy values from the current point (i,j) to the neighbor (r,c)
+            flightTimeMatrix[r][c] = flightTimeMatrix[i][j];
+            physicalValidMatrix[r][c] = physicalValidMatrix[i][j];
+            constraintValidMatrix[r][c] = constraintValidMatrix[i][j];
+            c3DepAMatrix[r][c] = c3DepAMatrix[i][j];
+            c3ArrFinalMatrix[r][c] = c3ArrFinalMatrix[i][j];
+            totalPoweredDvMatrix[r][c] = totalPoweredDvMatrix[i][j];
+
+            // Copy flyby data for all intermediate instances
+            flybyData.poweredDvMatrix[r][c] = flybyData.poweredDvMatrix[i][j];
+            flybyData.dateMatrix[r][c] = flybyData.dateMatrix[i][j];
+            flybyData.c3ArrMatrix[r][c] = flybyData.c3ArrMatrix[i][j];
+            flybyData.c3DepMatrix[r][c] = flybyData.c3DepMatrix[i][j];
+          }
+        }
+      }
+
+      // --- 11.4. YIELD TO UI PERIODICALLY ---
+      // Update progress and yield to the UI every ~50ms to avoid freezing
+      const now = performance.now();
+      if (now - lastYieldTime > 50) {
+        lastYieldTime = now;
+        seqData.computedSamples = computedPointsCount;
+        seqData.totalSamples = totalPoints;
+        seqData.profiling = profiler.getStats(now - computationStartTime, computedPointsCount);
+        const pct = Math.floor((computedPointsCount / totalPoints) * 100);
+        onProgress?.(`Computing sequence porkchop plot for ${seqLabel} (${pct}%, ${validCount} valid)...`);
+        onPartialUpdate?.({ ...seqData }); // Send partial results to UI
+        await yieldUI(); // Yield to the event loop
+      }
+    }
+  }
+
+  // --- 12. FINALIZE AND RETURN RESULTS ---
+  // Update final stats and return the complete sequence porkchop data
+  seqData.computedSamples = totalPoints;
+  seqData.totalSamples = totalPoints;
+  seqData.profiling = profiler.getStats(performance.now() - computationStartTime, totalPoints);
+  onPartialUpdate?.({ ...seqData }); // Final update
+  return seqData;
+}
+
+export async function computeSequenceNSup3PorkchopPlot(
+  options: ComputeSequencePorkchopOptions
+): Promise<SequencePorkchopData> {
+  // --- 1. DESTRUCTURE OPTIONS ---
+  const {
+    pathInsts,          // Array of path instances (e.g., [Kerbin, Eve, Duna, Jool])
+    bodies,             // Celestial body data (e.g., masses, positions)
+    mainBody,           // Main gravitational body (e.g., Kerbol)
+    links,              // Predefined links between instances (default: empty array)
+    porkchops,          // Precomputed porkchop plots for direct transfers
+    sequencePorkchops,  // Precomputed porkchop plots for sub-sequences
+    isFullPath,         // Whether the sequence is a full path (default: false)
+    onProgress,         // Callback for overall progress updates
+    onPartialUpdate,    // Callback for partial results (e.g., for UI updates)
+    shouldStop,         // Function to check if computation should stop
+    onSubtaskProgress,  // Callback for subtask progress (e.g., sub-sequence computation)
+    onDirectPorkchopUpdate, // Callback for direct porkchop updates
+    onSequencePorkchopUpdate, // Callback for sequence porkchop updates
+  } = options;
+
+  // --- 2. INITIALIZE SEQUENCE METADATA ---
+  const N = pathInsts.length; // Number of instances in the path
+  const seqId = `seq-pc-${pathInsts.map(i => i.id).join('-')}`; // Unique ID for the sequence (e.g., "seq-pc-kerbin-eve-duna")
+  const seqLabel = pathInsts.map(i => i.bodyName).join(' ➔ '); // Human-readable label (e.g., "Kerbin ➔ Eve ➔ Duna")
+
+  // --- 3. HELPER FUNCTION: REPORT SUBTASK PROGRESS ---
+  /**
+   * Reports the current subtask progress to the UI.
+   * @param subtask - Subtask info (null to clear the active subtask).
+   */
+  const reportSubtask = (subtask: SubtaskProgressInfo | null) => {
+    onSubtaskProgress?.(subtask);
+  };
+
+  // --- 4. STEP 1: COMPUTE MISSING DIRECT TRANSFER PORKCHOPS ---
+  // For each pair of consecutive instances in the path, ensure a porkchop plot exists.
+  for (let k = 0; k < N - 1; k++) {
+    const srcInst = pathInsts[k]; // Source instance (e.g., Kerbin)
+    const tgtInst = pathInsts[k + 1]; // Target instance (e.g., Eve)
+    // Find the link between the current pair of instances
+    const link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === tgtInst.id);
+    const linkId = link?.id || `link-${srcInst.id}-${tgtInst.id}`; // Generate a unique link ID if not provided
+
+    // If the porkchop plot for this link doesn't exist or is empty, compute it
+    let pc = porkchops[linkId];
+    if (!pc || !pc.c3DepMatrix || pc.c3DepMatrix.length === 0) {
+      const subtaskName = `Direct Transfer (${srcInst.bodyName} ➔ ${tgtInst.bodyName})`;
+      const subInfo: SubtaskProgressInfo = {
+        subtaskId: linkId,
+        subtaskName,
+        subtaskType: 'direct_link', // Type of subtask (direct transfer)
         computedSamples: 0,
         totalSamples: 100,
         progressPct: 0,
@@ -1130,21 +1488,24 @@ export async function computeSequencePorkchopPlot(
       };
       reportSubtask(subInfo);
       onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
-      await yieldUI();
-      if (shouldStop?.()) break;
+      await yieldUI(); // Yield to the event loop to avoid blocking the UI
+      if (shouldStop?.()) break; // Abort if requested
 
+      // Create a dummy link if none exists
       const dummyLink: DirectionalLink = link || {
         id: linkId,
         sourceInstanceId: srcInst.id,
         targetInstanceId: tgtInst.id,
       };
 
+      // Compute the porkchop plot for this direct transfer
       pc = await computePorkchopPlot(
         dummyLink,
         srcInst,
         tgtInst,
         bodies,
         mainBody,
+        // Callback for progress updates during porkchop computation
         (msg) => {
           const total = pc?.totalSamples;
           const comp = pc?.computedSamples;
@@ -1161,12 +1522,13 @@ export async function computeSequencePorkchopPlot(
           });
           onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (${pct}%)`);
         },
+        // Callback for partial updates (e.g., intermediate results)
         (partialPc) => {
           const total = partialPc.totalSamples;
           const comp = partialPc.computedSamples;
           const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
-          porkchopsMap[linkId] = partialPc;
-          onDirectPorkchopUpdate?.({ [linkId]: partialPc });
+          porkchops[linkId] = partialPc; // Store partial result
+          onDirectPorkchopUpdate?.({ [linkId]: partialPc }); // Notify UI
           reportSubtask({
             subtaskId: linkId,
             subtaskName,
@@ -1180,197 +1542,228 @@ export async function computeSequencePorkchopPlot(
         },
         shouldStop
       );
-      porkchopsMap[linkId] = pc;
+      // Store the computed porkchop plot
+      porkchops[linkId] = pc;
       onDirectPorkchopUpdate?.({ [linkId]: pc });
     }
   }
 
-  // Step 1.5: If N > 3, select sub-chain strategy and compute the required (N-1)-bodies sub-sequence
+  // --- 5. STEP 1.5: HANDLE SUB-CHAINS FOR N > 3 ---
+  // For sequences with more than 3 instances, we need to compute sub-sequences recursively.
+  // This improves efficiency by breaking the problem into smaller parts.
   let subChainStrategy: 'prefix' | 'suffix' = 'prefix';
-  if (N > 3) {
-    const prefixPath = pathInsts.slice(0, N - 1);
-    const prefixKey = prefixPath.map(i => i.id).join('-');
-    const prefixSeqId = `seq-pc-${prefixKey}`;
-    const prefixSeq = sequencePorkchopsMap[prefixSeqId] || sequencePorkchopsMap[prefixKey] || Object.values(sequencePorkchopsMap).find(
-      s => s.id === prefixSeqId || s.id === prefixKey || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === prefixKey
-    );
-    const hasPrefix = !!(prefixSeq && prefixSeq.depDates && prefixSeq.depDates.length > 0 && prefixSeq.arrDates && prefixSeq.arrDates.length > 0);
+  let pivotIndex = 1; // Default pivot index (index of the intermediate instance to split the sequence)
+  let firstLeg : SequencePorkchopData | PorkchopPlotData | null = null;
+  let lastLeg : SequencePorkchopData | PorkchopPlotData | null = null;
+  
+  const srcInst = pathInsts[0]; // First instance (e.g., Kerbin)
+  const tgtInst = pathInsts[N - 1]; // Last instance (e.g., Jool)
 
-    const suffixPath = pathInsts.slice(1, N);
-    const suffixKey = suffixPath.map(i => i.id).join('-');
-    const suffixSeqId = `seq-pc-${suffixKey}`;
-    const suffixSeq = sequencePorkchopsMap[suffixSeqId] || sequencePorkchopsMap[suffixKey] || Object.values(sequencePorkchopsMap).find(
-      s => s.id === suffixSeqId || s.id === suffixKey || [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === suffixKey
-    );
-    const hasSuffix = !!(suffixSeq && suffixSeq.depDates && suffixSeq.depDates.length > 0 && suffixSeq.arrDates && suffixSeq.arrDates.length > 0);
+  // --- 5.1. CHECK IF PREFIX SUB-CHAIN EXISTS ---
+  // Prefix: All instances except the last one (e.g., [Kerbin, Eve, Duna] for [Kerbin, Eve, Duna, Jool])
+  const prefixPath = pathInsts.slice(0, N - 1);
+  const prefixKey = prefixPath.map(i => i.id).join('-');
+  const prefixSeqId = `seq-pc-${prefixKey}`;
+  // Try to find an existing prefix sub-sequence in the cache
+  const prefixSeq = sequencePorkchops[prefixSeqId] ||
+                    sequencePorkchops[prefixKey] ||
+                    Object.values(sequencePorkchops).find(
+                      s => s.id === prefixSeqId ||
+                          s.id === prefixKey ||
+                          [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === prefixKey
+                    );
+  const hasPrefix = !!(prefixSeq && prefixSeq.depDates && prefixSeq.depDates.length > 0 &&
+                    prefixSeq.arrDates && prefixSeq.arrDates.length > 0);
 
-    // =========================================================================
-    // TODO: MASSIVE ARCHITECTURAL IMPROVEMENT NEEDED HERE
-    // When neither sub-chain (prefix vs. suffix) is pre-calculated in cache,
-    // the choice of sub-chain direction should be improved and dynamically chosen
-    // according to the estimated computational cost of each option.
-    // (e.g. comparing the product of date window samples or orbital periods of the
-    // remaining legs: leg (0 -> 1) + suffix (1..N-1) vs. prefix (0..N-2) + leg (N-2 -> N-1)).
-    // Currently, defaulting to 'suffix' (evaluateHigherOrderSequenceTransferAddFirstLeg)
-    // when neither is pre-calculated.
-    // =========================================================================
-    if (hasPrefix && !hasSuffix) {
-      subChainStrategy = 'prefix';
-    } else {
-      // Default to suffix (evaluateHigherOrderSequenceTransferAddFirstLeg) if neither is pre-calculated or if suffix is available
-      subChainStrategy = 'suffix';
+  // --- 5.2. CHECK IF SUFFIX SUB-CHAIN EXISTS ---
+  // Suffix: All instances except the first one (e.g., [Eve, Duna, Jool] for [Kerbin, Eve, Duna, Jool])
+  const suffixPath = pathInsts.slice(1, N);
+  const suffixKey = suffixPath.map(i => i.id).join('-');
+  const suffixSeqId = `seq-pc-${suffixKey}`;
+  // Try to find an existing suffix sub-sequence in the cache
+  const suffixSeq = sequencePorkchops[suffixSeqId] ||
+                    sequencePorkchops[suffixKey] ||
+                    Object.values(sequencePorkchops).find(
+                      s => s.id === suffixSeqId ||
+                          s.id === suffixKey ||
+                          [s.sourceBody.id, ...s.flybys.map(f => f.instance.id), s.targetBody.id].join('-') === suffixKey
+                    );
+  const hasSuffix = !!(suffixSeq && suffixSeq.depDates && suffixSeq.depDates.length > 0 &&
+                    suffixSeq.arrDates && suffixSeq.arrDates.length > 0);
+
+  // --- 5.3. CHOOSE SUB-CHAIN STRATEGY ---
+  // TODO: Improve this logic to dynamically choose the most efficient sub-chain (prefix or suffix)
+  // based on computational cost (e.g., compare date window samples or orbital periods).
+  // Currently, defaults to 'suffix' if neither is pre-calculated.
+  if (hasPrefix && !hasSuffix) {
+    subChainStrategy = 'prefix'; // Use prefix if only prefix is available
+  } else {
+    subChainStrategy = 'suffix'; // Default to suffix
+    pivotIndex = N - 2;
+  }
+
+  // --- 5.4. COMPUTE MISSING SUB-CHAIN (SUFFIX OR PREFIX) ---
+  if (subChainStrategy === 'suffix') {
+    if (!hasSuffix) {
+      // Compute the suffix sub-sequence if it doesn't exist
+      const subtaskName = `${suffixPath.length}-Instance Suffix Subsequence (${suffixPath.map(i => i.bodyName).join(' ➔ ')})`;
+      const initSubInfo: SubtaskProgressInfo = {
+        subtaskId: suffixSeqId,
+        subtaskName,
+        subtaskType: 'subsequence',
+        computedSamples: 0,
+        totalSamples: 100,
+        progressPct: 0,
+        statusText: `Computing prerequisite suffix subsequence (${subtaskName})...`,
+        parentTaskId: seqId,
+      };
+      reportSubtask(initSubInfo);
+      onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
+      await yieldUI();
+
+      const subSeq = await computeSequencePorkchopPlot({
+        pathInsts: suffixPath, // Compute the suffix sub-sequence
+        links,
+        bodies,
+        mainBody,
+        onProgress: (msg) => {
+          onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${msg}`);
+        },
+        onPartialUpdate: (subPartial) => {
+          const total = subPartial.totalSamples;
+          const comp = subPartial.computedSamples;
+          const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+          sequencePorkchops[suffixSeqId] = subPartial;
+          sequencePorkchops[suffixKey] = subPartial;
+          onSequencePorkchopUpdate?.(subPartial);
+          reportSubtask({
+            subtaskId: suffixSeqId,
+            subtaskName,
+            subtaskType: 'subsequence',
+            computedSamples: comp,
+            totalSamples: total,
+            progressPct: pct,
+            statusText: `Evaluating multi-body trajectories and flybys...`,
+            parentTaskId: seqId,
+          });
+        },
+        shouldStop,
+        isFullPath: false,
+        porkchops: porkchops,
+        sequencePorkchops: sequencePorkchops,
+        onSubtaskProgress,
+        onDirectPorkchopUpdate,
+        onSequencePorkchopUpdate,
+      });
+      // Store the computed sub-sequence
+      sequencePorkchops[suffixSeqId] = subSeq;
+      sequencePorkchops[suffixKey] = subSeq;
+      firstLeg = subSeq;
+      const Plast_link = links.find(l => l.sourceInstanceId === pathInsts[N - 2].id && l.targetInstanceId === tgtInst.id);
+      lastLeg = porkchops[Plast_link?.id || `link-${pathInsts[N - 2].id}-${tgtInst.id}`]!; // Last leg porkchop
+      onSequencePorkchopUpdate?.(subSeq);
     }
+  } else {
+    // Compute the prefix sub-sequence if it doesn't exist
+    if (!hasPrefix) {
+      const subtaskName = `${prefixPath.length}-Instance Prefix Subsequence (${prefixPath.map(i => i.bodyName).join(' ➔ ')})`;
+      const initSubInfo: SubtaskProgressInfo = {
+        subtaskId: prefixSeqId,
+        subtaskName,
+        subtaskType: 'subsequence',
+        computedSamples: 0,
+        totalSamples: 100,
+        progressPct: 0,
+        statusText: `Computing prerequisite prefix subsequence (${subtaskName})...`,
+        parentTaskId: seqId,
+      };
+      reportSubtask(initSubInfo);
+      onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
+      await yieldUI();
 
-    if (subChainStrategy === 'suffix') {
-      if (!hasSuffix) {
-        const subtaskName = `${suffixPath.length}-Instance Suffix Subsequence (${suffixPath.map(i => i.bodyName).join(' ➔ ')})`;
-        const initSubInfo: SubtaskProgressInfo = {
-          subtaskId: suffixSeqId,
-          subtaskName,
-          subtaskType: 'subsequence',
-          computedSamples: 0,
-          totalSamples: 100,
-          progressPct: 0,
-          statusText: `Computing prerequisite suffix subsequence (${subtaskName})...`,
-          parentTaskId: seqId,
-        };
-        reportSubtask(initSubInfo);
-        onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
-        await yieldUI();
-
-        const subSeq = await computeSequencePorkchopPlot({
-          pathInsts: suffixPath,
-          links,
-          bodies,
-          mainBody,
-          onProgress: (msg) => {
-            onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${msg}`);
-          },
-          onPartialUpdate: (subPartial) => {
-            const total = subPartial.totalSamples;
-            const comp = subPartial.computedSamples;
-            const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
-            sequencePorkchopsMap[suffixSeqId] = subPartial;
-            sequencePorkchopsMap[suffixKey] = subPartial;
-            onSequencePorkchopUpdate?.(subPartial);
-            reportSubtask({
-              subtaskId: suffixSeqId,
-              subtaskName,
-              subtaskType: 'subsequence',
-              computedSamples: comp,
-              totalSamples: total,
-              progressPct: pct,
-              statusText: `Evaluating multi-body trajectories and flybys...`,
-              parentTaskId: seqId,
-            });
-          },
-          shouldStop,
-          isFullPath: false,
-          porkchops: porkchopsMap,
-          sequencePorkchops: sequencePorkchopsMap,
-          onSubtaskProgress,
-          onDirectPorkchopUpdate,
-          onSequencePorkchopUpdate,
-        });
-        sequencePorkchopsMap[suffixSeqId] = subSeq;
-        sequencePorkchopsMap[suffixKey] = subSeq;
-        onSequencePorkchopUpdate?.(subSeq);
-      }
-    } else {
-      if (!hasPrefix) {
-        const subtaskName = `${prefixPath.length}-Instance Prefix Subsequence (${prefixPath.map(i => i.bodyName).join(' ➔ ')})`;
-        const initSubInfo: SubtaskProgressInfo = {
-          subtaskId: prefixSeqId,
-          subtaskName,
-          subtaskType: 'subsequence',
-          computedSamples: 0,
-          totalSamples: 100,
-          progressPct: 0,
-          statusText: `Computing prerequisite prefix subsequence (${subtaskName})...`,
-          parentTaskId: seqId,
-        };
-        reportSubtask(initSubInfo);
-        onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${subtaskName} (0%)`);
-        await yieldUI();
-
-        const subSeq = await computeSequencePorkchopPlot({
-          pathInsts: prefixPath,
-          links,
-          bodies,
-          mainBody,
-          onProgress: (msg) => {
-            onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${msg}`);
-          },
-          onPartialUpdate: (subPartial) => {
-            const total = subPartial.totalSamples;
-            const comp = subPartial.computedSamples;
-            const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
-            sequencePorkchopsMap[prefixSeqId] = subPartial;
-            sequencePorkchopsMap[prefixKey] = subPartial;
-            onSequencePorkchopUpdate?.(subPartial);
-            reportSubtask({
-              subtaskId: prefixSeqId,
-              subtaskName,
-              subtaskType: 'subsequence',
-              computedSamples: comp,
-              totalSamples: total,
-              progressPct: pct,
-              statusText: `Evaluating multi-body trajectories and flybys...`,
-              parentTaskId: seqId,
-            });
-          },
-          shouldStop,
-          isFullPath: false,
-          porkchops: porkchopsMap,
-          sequencePorkchops: sequencePorkchopsMap,
-          onSubtaskProgress,
-          onDirectPorkchopUpdate,
-          onSequencePorkchopUpdate,
-        });
-        sequencePorkchopsMap[prefixSeqId] = subSeq;
-        sequencePorkchopsMap[prefixKey] = subSeq;
-        onSequencePorkchopUpdate?.(subSeq);
-      }
+      const subSeq = await computeSequencePorkchopPlot({
+        pathInsts: prefixPath, // Compute the prefix sub-sequence
+        links,
+        bodies,
+        mainBody,
+        onProgress: (msg) => {
+          onProgress?.(`Computing ${N}-Instance (${seqLabel}) — Subtask: ${msg}`);
+        },
+        onPartialUpdate: (subPartial) => {
+          const total = subPartial.totalSamples;
+          const comp = subPartial.computedSamples;
+          const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((comp / total) * 100))) : 0;
+          sequencePorkchops[prefixSeqId] = subPartial;
+          sequencePorkchops[prefixKey] = subPartial;
+          onSequencePorkchopUpdate?.(subPartial);
+          reportSubtask({
+            subtaskId: prefixSeqId,
+            subtaskName,
+            subtaskType: 'subsequence',
+            computedSamples: comp,
+            totalSamples: total,
+            progressPct: pct,
+            statusText: `Evaluating multi-body trajectories and flybys...`,
+            parentTaskId: seqId,
+          });
+        },
+        shouldStop,
+        isFullPath: false,
+        porkchops: porkchops,
+        sequencePorkchops: sequencePorkchops,
+        onSubtaskProgress,
+        onDirectPorkchopUpdate,
+        onSequencePorkchopUpdate,
+      });
+      // Store the computed sub-sequence
+      sequencePorkchops[prefixSeqId] = subSeq;
+      sequencePorkchops[prefixKey] = subSeq;
+      const P0_link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === pathInsts[1].id);
+      firstLeg = porkchops[P0_link?.id || `link-${srcInst.id}-${pathInsts[1].id}`]!; // First leg porkchop
+      lastLeg = subSeq;
+      onSequencePorkchopUpdate?.(subSeq);
     }
   }
 
-  // Clear active subtask as dependencies are finished and main sequence computation begins
+  if (!firstLeg || !lastLeg) { throw new Error(`Failed to compute prerequisite sub-sequence for ${seqLabel}`); }
+
+  // --- 6. CLEAR ACTIVE SUBTASK ---
+  // Notify that subtasks are complete and main computation is starting
   reportSubtask(null);
 
-  const srcInst = pathInsts[0];
-  const tgtInst = pathInsts[N - 1];
-  const flybyInsts = pathInsts.slice(1, N - 1);
+  // --- 7. INITIALIZE SEQUENCE DATA STRUCTURES ---
+  const flybyInst = pathInsts[pivotIndex]; // Intermediate instance (e.g., Eve)
 
-  // Use departure dates from P0 and arrival dates from P_last
-  const P0_link = links.find(l => l.sourceInstanceId === srcInst.id && l.targetInstanceId === pathInsts[1].id);
-  const P0 = porkchopsMap[P0_link?.id || `link-${srcInst.id}-${pathInsts[1].id}`];
+  // Extract departure and arrival dates from the first and last porkchop plots
+  const depDates: number[] = firstLeg.depDates; // Departure dates (from first leg)
+  const arrDates: number[] = lastLeg.arrDates; // Arrival dates (from last leg)
 
-  const Plast_link = links.find(l => l.sourceInstanceId === pathInsts[N - 2].id && l.targetInstanceId === tgtInst.id);
-  const Plast = porkchopsMap[Plast_link?.id || `link-${pathInsts[N - 2].id}-${tgtInst.id}`];
+  const N_DEP = depDates.length; // Number of departure dates
+  const N_ARR = arrDates.length; // Number of arrival dates
 
-  const depDates: number[] = P0?.depDates || [];
-  const arrDates: number[] = Plast?.arrDates || [];
+  // --- 8. INITIALIZE MATRICES FOR RESULTS ---
+  // Matrices to store computed values for each (departure date, arrival date) pair
+  const c3DepAMatrix: Vector3D[][] = (!hasSuffix) ? firstLeg.c3DepMatrix : lastLeg.c3DepMatrix; // Departure C3 matrix
+  const c3ArrFinalMatrix: Vector3D[][] = (!hasSuffix) ? firstLeg.c3ArrMatrix : lastLeg.c3ArrMatrix; // Final arrival C3 matrix
+  const totalPoweredDvMatrix: number[][] = (!hasSuffix) ? (firstLeg as SequencePorkchopData).totalPoweredDvMatrix : (lastLeg as SequencePorkchopData).totalPoweredDvMatrix; // Total delta-v matrix
+  const flightTimeMatrix: number[][] = (!hasSuffix) ? firstLeg.flightTimeMatrix : lastLeg.flightTimeMatrix; // Flight time matrix
+  // TODO pourquoi !
+  const physicalValidMatrix: boolean[][] = (!hasSuffix) ? firstLeg.physicalValidMatrix! : lastLeg.physicalValidMatrix!; // Physical validity matrix (e.g., trajectory is possible)
+  const constraintValidMatrix: boolean[][] = (!hasSuffix) ? firstLeg.constraintValidMatrix! : lastLeg.constraintValidMatrix!; // Constraint validity matrix (e.g., meets user constraints)
 
-  const N_DEP = depDates.length;
-  const N_ARR = arrDates.length;
+  const newFlybyData = {
+    instance: flybyInst,
+    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Delta-v for each flyby
+    c3ArrMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at arrival
+    c3DepMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })), // C3 at departure
+    dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)), // Flyby date
+  }
+  // Initialize flyby data for intermediate instances
+  const flybys = (!hasSuffix) ? [...(firstLeg as SequencePorkchopData).flybys, newFlybyData] : [newFlybyData, ...(lastLeg as SequencePorkchopData).flybys];
 
-  const c3DepAMatrix: Vector3D[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity }));
-  const c3ArrFinalMatrix: Vector3D[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity }));
-  const totalPoweredDvMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const flightTimeMatrix: number[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0));
-  const physicalValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
-  const constraintValidMatrix: boolean[][] = Array.from({ length: N_DEP }, () => Array(N_ARR).fill(false));
+  const totalPoints = N_DEP * N_ARR; // Total number of (departure, arrival) pairs to evaluate
 
-  const flybys = flybyInsts.map(inst => ({
-    instance: inst,
-    poweredDvMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
-    c3ArrMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })),
-    c3DepMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill({ x: Infinity, y: Infinity, z: Infinity })),
-    dateMatrix: Array.from({ length: N_DEP }, () => Array(N_ARR).fill(0)),
-  }));
-
-  const totalPoints = N_DEP * N_ARR;
-
+  // --- 9. INITIALIZE SEQUENCE DATA OBJECT ---
   const seqData: SequencePorkchopData = {
     id: seqId,
     sequenceLabel: seqLabel,
@@ -1392,78 +1785,103 @@ export async function computeSequencePorkchopPlot(
     activeSubtask: null,
   };
 
-  const profiler = new SequenceTransferProfiler();
-  const computationStartTime = performance.now();
+  // --- 10. START PROFILING ---
+  const profiler = new SequenceTransferProfiler(); // Track performance metrics
+  const computationStartTime = performance.now(); // Start time for profiling
 
-  // Emit immediate state so sequence viewer opens instantly
+  // Emit initial state to open the sequence viewer immediately
   seqData.profiling = profiler.getStats(0, 0);
   onPartialUpdate?.({ ...seqData });
 
-  const passes = getHierarchicalGridIndices(N_DEP, N_ARR);
-  const evaluated = Array.from({ length: N_DEP }, () => new Uint8Array(N_ARR));
+  // --- 11. HIERARCHICAL GRID EVALUATION ---
+  // Use a hierarchical grid to evaluate points in passes (coarse to fine)
+  const passes = getHierarchicalGridIndices(N_DEP, N_ARR); // Get grid evaluation order (e.g., from low to high resolution)
+  const evaluated = Array.from({ length: N_DEP }, () => new Uint8Array(N_ARR)); // Track evaluated points
 
-  let validCount = 0;
-  let computedPointsCount = 0;
-  let lastYieldTime = performance.now();
+  let validCount = 0; // Count of valid (constraint + physical) trajectories
+  let computedPointsCount = 0; // Total points evaluated so far
+  let lastYieldTime = performance.now(); // Track time to yield to UI
 
+  // Loop through each pass (resolution level)
   for (const pass of passes) {
-    if (shouldStop?.()) break;
+    if (shouldStop?.()) break; // Abort if requested
 
-    const S = pass.step;
+    const S = pass.step; // Current step size (resolution)
+    // Loop through each point in the current pass
     for (const [i, j] of pass.points) {
       if (shouldStop?.()) break;
 
-      evaluated[i][j] = 1;
+      evaluated[i][j] = 1; // Mark this point as evaluated
       computedPointsCount++;
 
-      const tDep = depDates[i];
-      const tArr = arrDates[j];
-      const totalDt = tArr - tDep;
+      const tDep = depDates[i]; // Departure date
+      const tArr = arrDates[j]; // Arrival date
+      const totalDt = tArr - tDep; // Total flight time
       flightTimeMatrix[i][j] = totalDt;
 
-      const bestRes = totalDt > 0
-        ? (N === 3
-            ? evaluateSequenceTransferFromDirectPorkchops(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, profiler)
-            : (subChainStrategy === 'suffix'
-                ? evaluateHigherOrderSequenceTransferAddFirstLeg(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, sequencePorkchopsMap, profiler)
-                : evaluateHigherOrderSequenceTransferAddLastLeg(pathInsts, tDep, tArr, bodies, mainBody, porkchopsMap, links, sequencePorkchopsMap, profiler)))
-        : null;
+      // --- 11.1. EVALUATE SEQUENCE TRANSFER ---
+      // Compute the best transfer for this (departure, arrival) pair
+      let bestRes : SequenceTransferResult | null = null;
+      if (totalDt > 0)
+      {
+        if (subChainStrategy === 'suffix') {
+          bestRes = evaluateHigherOrderSequenceTransferAddFirstLeg(
+            pathInsts,
+            tDep,
+            tArr,
+            bodies,
+            mainBody,
+            porkchops,
+            links,
+            sequencePorkchops,
+            profiler
+          );
+        } else {
+          bestRes = evaluateHigherOrderSequenceTransferAddLastLeg(
+            pathInsts,
+            tDep,
+            tArr,
+            bodies,
+            mainBody,
+            porkchops,
+            links,
+            sequencePorkchops,
+            profiler
+          );
+        }
+      }
 
-      const isPhysical = (totalDt > 0) && !!bestRes && (bestRes.isPhysicallyValid !== false);
-      const isConstraint = isPhysical && (bestRes.isConstraintValid !== false);
+      // Check if the transfer is physically and constraint-valid
+      const isPhysical = (totalDt > 0) && !!bestRes && (bestRes?.isPhysicallyValid !== false);
+      const isConstraint = isPhysical && (bestRes?.isConstraintValid !== false);
 
       physicalValidMatrix[i][j] = isPhysical;
       constraintValidMatrix[i][j] = isConstraint;
 
+      // --- 11.2. STORE RESULTS IF VALID ---
       if (bestRes) {
-        c3DepAMatrix[i][j] = bestRes.c3DepA;
-        c3ArrFinalMatrix[i][j] = bestRes.c3ArrFinal;
-        totalPoweredDvMatrix[i][j] = bestRes.totalDv;
+        c3DepAMatrix[i][j] = bestRes.c3DepA; // Departure C3
+        c3ArrFinalMatrix[i][j] = bestRes.c3ArrFinal; // Final arrival C3
+        totalPoweredDvMatrix[i][j] = bestRes.totalDv; // Total delta-v
 
-        for (let fb = 0; fb < flybyInsts.length; fb++) {
-          // TODO guess there is a bug here where we lose previous flyby data
-          if (flybys[fb]) {
-            flybys[fb].poweredDvMatrix[i][j] = bestRes.flybyDvs[fb] || 0;
-            flybys[fb].dateMatrix[i][j] = bestRes.flybyDates[fb] || 0;
-            if (fb === 0) {
-              flybys[fb].c3ArrMatrix[i][j] = bestRes.c3ArrB || 0;
-              flybys[fb].c3DepMatrix[i][j] = bestRes.c3DepB || 0;
-            } else if (fb === 1) {
-              flybys[fb].c3ArrMatrix[i][j] = bestRes.c3ArrC || 0;
-              flybys[fb].c3DepMatrix[i][j] = bestRes.c3DepC || 0;
-            }
-          }
-        }
+        // Store flyby data for each intermediate instance
+        newFlybyData.poweredDvMatrix[i][j] = bestRes.flybyDvs[0]; // Delta-v for this flyby
+        newFlybyData.dateMatrix[i][j] = bestRes.flybyDates[0]; // Flyby date
+        newFlybyData.c3ArrMatrix[i][j] = bestRes.c3ArrB;
+        newFlybyData.c3DepMatrix[i][j] = bestRes.c3DepB;
 
-        if (isConstraint) validCount++;
+        if (isConstraint) validCount++; // Increment valid trajectory count
       }
 
-      // Preview block fill for unvisited neighbor cells in current pass
+      // --- 11.3. PREVIEW FILL FOR UNVISITED NEIGHBORS ---
+      // For hierarchical grid: fill in neighboring cells with the same values
+      // to provide a preview for unevaluated points in the current pass.
       for (let di = 0; di < S && i + di < N_DEP; di++) {
-        const r = i + di;
+        const r = i + di; // Row index
         for (let dj = 0; dj < S && j + dj < N_ARR; dj++) {
-          const c = j + dj;
-          if (evaluated[r][c] === 0) {
+          const c = j + dj; // Column index
+          if (evaluated[r][c] === 0) { // If this neighbor hasn't been evaluated yet
+            // Copy values from the current point (i,j) to the neighbor (r,c)
             flightTimeMatrix[r][c] = flightTimeMatrix[i][j];
             physicalValidMatrix[r][c] = physicalValidMatrix[i][j];
             constraintValidMatrix[r][c] = constraintValidMatrix[i][j];
@@ -1471,18 +1889,17 @@ export async function computeSequencePorkchopPlot(
             c3ArrFinalMatrix[r][c] = c3ArrFinalMatrix[i][j];
             totalPoweredDvMatrix[r][c] = totalPoweredDvMatrix[i][j];
 
-            for (let fb = 0; fb < flybyInsts.length; fb++) {
-              if (flybys[fb]) {
-                flybys[fb].poweredDvMatrix[r][c] = flybys[fb].poweredDvMatrix[i][j];
-                flybys[fb].dateMatrix[r][c] = flybys[fb].dateMatrix[i][j];
-                flybys[fb].c3ArrMatrix[r][c] = flybys[fb].c3ArrMatrix[i][j];
-                flybys[fb].c3DepMatrix[r][c] = flybys[fb].c3DepMatrix[i][j];
-              }s
-            }
+            // Copy flyby data for all intermediate instances
+            newFlybyData.poweredDvMatrix[r][c] = newFlybyData.poweredDvMatrix[i][j];
+            newFlybyData.dateMatrix[r][c] = newFlybyData.dateMatrix[i][j];
+            newFlybyData.c3ArrMatrix[r][c] = newFlybyData.c3ArrMatrix[i][j];
+            newFlybyData.c3DepMatrix[r][c] = newFlybyData.c3DepMatrix[i][j];
           }
         }
       }
 
+      // --- 11.4. YIELD TO UI PERIODICALLY ---
+      // Update progress and yield to the UI every ~50ms to avoid freezing
       const now = performance.now();
       if (now - lastYieldTime > 50) {
         lastYieldTime = now;
@@ -1491,16 +1908,18 @@ export async function computeSequencePorkchopPlot(
         seqData.profiling = profiler.getStats(now - computationStartTime, computedPointsCount);
         const pct = Math.floor((computedPointsCount / totalPoints) * 100);
         onProgress?.(`Computing sequence porkchop plot for ${seqLabel} (${pct}%, ${validCount} valid)...`);
-        onPartialUpdate?.({ ...seqData });
-        await yieldUI();
+        onPartialUpdate?.({ ...seqData }); // Send partial results to UI
+        await yieldUI(); // Yield to the event loop
       }
     }
   }
 
+  // --- 12. FINALIZE AND RETURN RESULTS ---
+  // Update final stats and return the complete sequence porkchop data
   seqData.computedSamples = totalPoints;
   seqData.totalSamples = totalPoints;
   seqData.profiling = profiler.getStats(performance.now() - computationStartTime, totalPoints);
-  onPartialUpdate?.({ ...seqData });
+  onPartialUpdate?.({ ...seqData }); // Final update
   return seqData;
 }
 

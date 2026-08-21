@@ -457,9 +457,9 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
       const depDate = seqPorkchop.depDates[i];
       const arrDate = seqPorkchop.arrDates[j];
       const flightTime = seqPorkchop.flightTimeMatrix?.[i]?.[j] || (arrDate - depDate);
-      const c3DepA = seqPorkchop.c3DepMatrix?.[i]?.[j] || 0;
-      const c3ArrFinal = seqPorkchop.c3ArrMatrix?.[i]?.[j] || 0;
-      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] || 0;
+      const c3DepA = seqPorkchop.c3DepMatrix?.[i]?.[j];
+      const c3ArrFinal = seqPorkchop.c3ArrMatrix?.[i]?.[j];
+      const totalPoweredDv = seqPorkchop.totalPoweredDvMatrix?.[i]?.[j] || Infinity;
       const minPhysicalDt = 3600 * Math.max(1, instanceCount - 1);
       const dt = arrDate - depDate;
       const isPhysical = seqPorkchop.physicalValidMatrix
@@ -501,8 +501,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         flybyDates: flybyDatesList,
         arrDate,
         flightTime,
-        c3DepA,
-        c3ArrFinal,
+        c3DepA : vecMag(c3DepA),
+        c3ArrFinal : vecMag(c3ArrFinal),
         flybyDvs: flybyDvsList,
         totalPoweredDv,
         isValid,
@@ -702,8 +702,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
         tArr,
         bodies,
         mainBody,
-        porkchops || {},
-        links || []
+        porkchops,
+        links,
       );
     } else if (N > 3) {
       const suffixPath = resolvedPathInsts.slice(1, N);
@@ -777,12 +777,8 @@ export const SequencePorkchopViewer: React.FC<SequencePorkchopViewerProps> = ({
               fb.c3DepMatrix[depIndex][arrIndex] = result.c3DepB;
             }
           } else if (fbIdx === 1) {
-            if (fb.c3ArrMatrix && fb.c3ArrMatrix[depIndex] && result.c3ArrC !== undefined) {
-              fb.c3ArrMatrix[depIndex][arrIndex] = result.c3ArrC;
-            }
-            if (fb.c3DepMatrix && fb.c3DepMatrix[depIndex] && result.c3DepC !== undefined) {
-              fb.c3DepMatrix[depIndex][arrIndex] = result.c3DepC;
-            }
+            // TODO what to do here
+            throw new Error('Currently only supporting up to 3-body sequences (1 flyby).');
           }
         });
       }

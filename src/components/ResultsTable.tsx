@@ -37,7 +37,7 @@ interface ResultsTableProps {
   onPorkchopUpdate?: (newPorkchops: Record<string, PorkchopPlotData>) => void;
   sequencePorkchops?: Record<string, SequencePorkchopData>;
   onOpenSequencePorkchop?: (seqPcId: string) => void;
-  onComputeSequencePorkchop?: (seqId: string, pathInsts: InstanceNode[], isFullPath?: boolean) => void;
+  onComputeSequencePorkchop?: (seqId: string, pathInsts: InstanceNode[], isFullPath: boolean) => void;
   computingSeqId?: string | null;
   activeSubtask?: SubtaskProgressInfo | null;
   links: DirectionalLink[];

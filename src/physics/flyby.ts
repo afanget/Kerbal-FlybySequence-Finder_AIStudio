@@ -838,8 +838,6 @@ export interface SequenceTransferResult {
   c3DepA: Vector3D;
   c3ArrB?: Vector3D;
   c3DepB?: Vector3D;
-  c3ArrC?: Vector3D;
-  c3DepC?: Vector3D;
   c3ArrFinal: Vector3D;
   totalDv: number;
   flybyDvs: number[];
@@ -998,7 +996,7 @@ export function generateDirectPorkchopFlybySamples(
   mainBody: CelestialBody,
   porkchops: Record<string, PorkchopPlotData> = {},
   links: DirectionalLink[] = [],
-  profiler?: SequenceTransferProfiler
+  profiler?: SequenceTransferProfiler | null
 ): DirectPorkchopFlybySample[] | null {
   if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length !== 3) return null;
   const N = 3;
@@ -1132,9 +1130,9 @@ export function evaluateSequenceTransferFromDirectPorkchops(
   tArr: number,
   bodies: OrbitalBody[],
   mainBody: CelestialBody,
-  porkchops: Record<string, PorkchopPlotData> = {},
-  links: DirectionalLink[] = [],
-  profiler?: SequenceTransferProfiler
+  porkchops: Record<string, PorkchopPlotData>,
+  links: DirectionalLink[],
+  profiler: SequenceTransferProfiler | null = null
 ): SequenceTransferResult | null {
   const methodStart = profiler ? performance.now() : 0;
   if (profiler) profiler.callsCount++;
@@ -1644,9 +1642,9 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
   tArr: number,
   bodies: OrbitalBody[],
   mainBody: CelestialBody,
-  porkchops: Record<string, PorkchopPlotData> = {},
-  links: DirectionalLink[] = [],
-  sequencePorkchops: Record<string, SequencePorkchopData> = {},
+  porkchops: Record<string, PorkchopPlotData>,
+  links: DirectionalLink[],
+  sequencePorkchops: Record<string, SequencePorkchopData>,
   profiler?: SequenceTransferProfiler
 ): SequenceTransferResult | null {
   const methodStart = profiler ? performance.now() : 0;
@@ -2158,9 +2156,9 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
   tArr: number,
   bodies: OrbitalBody[],
   mainBody: CelestialBody,
-  porkchops: Record<string, PorkchopPlotData> = {},
+  porkchops: Record<string, PorkchopPlotData>,
   links: DirectionalLink[] = [],
-  sequencePorkchops: Record<string, SequencePorkchopData> = {},
+  sequencePorkchops: Record<string, SequencePorkchopData>,
   profiler?: SequenceTransferProfiler
 ): SequenceTransferResult | null {
   const methodStart = profiler ? performance.now() : 0;
