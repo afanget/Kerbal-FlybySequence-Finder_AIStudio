@@ -317,7 +317,7 @@ export function stateToOrbitalElements(
   let M0 = 0;
   if (e < 0.99999) {
     const absA = Math.abs(a);
-    const cosE0 = (x0 / absA) + e;
+    const cosE0 = Math.max(-1, Math.min(1, (x0 / absA) + e));
     const sinE0 = y0 / (absA * Math.sqrt(Math.max(1e-12, 1 - e * e)));
     const E0 = Math.atan2(sinE0, cosE0);
     M0 = E0 - e * Math.sin(E0);

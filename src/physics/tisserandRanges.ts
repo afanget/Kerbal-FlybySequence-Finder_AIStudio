@@ -129,6 +129,16 @@ export async function computeLinkGridsAndRangesAsync(
     const maxSrcVinfMs = srcInst.computedMaxC3 !== undefined ? Math.sqrt(srcInst.computedMaxC3 * 1e6) : srcEnv.maxMs;
     const maxTgtVinfMs = tgtInst.computedMaxC3 !== undefined ? Math.sqrt(tgtInst.computedMaxC3 * 1e6) : tgtEnv.maxMs;
 
+    let depDateMin = Infinity;
+    let depDateMax = -Infinity;
+    let arrDateMin = Infinity;
+    let arrDateMax = -Infinity;
+    let depVinfMin = Infinity;
+    let depVinfMax = -Infinity;
+    let arrVinfMin = Infinity;
+    let arrVinfMax = -Infinity;
+    let validCount = 0;
+
     // Pure parsing of existing direct porkchop grid
     for (let i = 0; i < N_DEP; i++) {
       for (let j = 0; j < N_ARR; j++) {
@@ -150,21 +160,23 @@ export async function computeLinkGridsAndRangesAsync(
                          (vInfArrMag >= minTgtVinfMs - 1.0 && vInfArrMag <= maxTgtVinfMs + 10.0);
 
         if (passSrc && passTgt) {
-          validDepDates.push(depDates[i]);
-          validArrDates.push(arrDates[j]);
-          depVinfAchieved.push(vInfDepMag);
-          arrVinfAchieved.push(vInfArrMag);
+          validCount++;
+          const depD = depDates[i];
+          const arrD = arrDates[j];
+          if (depD < depDateMin) depDateMin = depD;
+          if (depD > depDateMax) depDateMax = depD;
+          if (arrD < arrDateMin) arrDateMin = arrD;
+          if (arrD > arrDateMax) arrDateMax = arrD;
+          if (vInfDepMag < depVinfMin) depVinfMin = vInfDepMag;
+          if (vInfDepMag > depVinfMax) depVinfMax = vInfDepMag;
+          if (vInfArrMag < arrVinfMin) arrVinfMin = vInfArrMag;
+          if (vInfArrMag > arrVinfMax) arrVinfMax = vInfArrMag;
         }
       }
     }
 
-    const hasValidDepRange = validDepDates.length > 0;
-    const hasValidArrRange = validArrDates.length > 0;
-
-    const depDateMin = hasValidDepRange ? Math.min(...validDepDates) : NaN;
-    const depDateMax = hasValidDepRange ? Math.max(...validDepDates) : NaN;
-    const arrDateMin = hasValidArrRange ? Math.min(...validArrDates) : NaN;
-    const arrDateMax = hasValidArrRange ? Math.max(...validArrDates) : NaN;
+    const hasValidDepRange = validCount > 0 && isFinite(depDateMin);
+    const hasValidArrRange = validCount > 0 && isFinite(arrDateMin);
 
     linkEndRangesMap[link.id] = {
       linkId: link.id,
@@ -172,16 +184,16 @@ export async function computeLinkGridsAndRangesAsync(
       targetInstanceId: link.targetInstanceId,
       sourceBodyName: srcInst.bodyName,
       targetBodyName: tgtInst.bodyName,
-      depDateMin,
-      depDateMax,
-      depVinfMin: depVinfAchieved.length > 0 ? Math.min(...depVinfAchieved) : 0,
-      depVinfMax: depVinfAchieved.length > 0 ? Math.max(...depVinfAchieved) : 0,
+      depDateMin: hasValidDepRange ? depDateMin : NaN,
+      depDateMax: hasValidDepRange ? depDateMax : NaN,
+      depVinfMin: validCount > 0 && isFinite(depVinfMin) ? depVinfMin : 0,
+      depVinfMax: validCount > 0 && isFinite(depVinfMax) ? depVinfMax : 0,
       depTargetVinfRange: srcEnv,
       hasValidDepRange,
-      arrDateMin,
-      arrDateMax,
-      arrVinfMin: arrVinfAchieved.length > 0 ? Math.min(...arrVinfAchieved) : 0,
-      arrVinfMax: arrVinfAchieved.length > 0 ? Math.max(...arrVinfAchieved) : 0,
+      arrDateMin: hasValidArrRange ? arrDateMin : NaN,
+      arrDateMax: hasValidArrRange ? arrDateMax : NaN,
+      arrVinfMin: validCount > 0 && isFinite(arrVinfMin) ? arrVinfMin : 0,
+      arrVinfMax: validCount > 0 && isFinite(arrVinfMax) ? arrVinfMax : 0,
       arrTargetVinfRange: tgtEnv,
       hasValidArrRange
     };
@@ -295,46 +307,56 @@ export async function compute3BodyConsolidatedRangesAsync(
 
     if (hasFlybyOverlap && pc1 && pc2) {
       // 1. Consolidated Departure Window at Source Instance (filtering Link 1 porkchop grid for flyby overlap)
-      const validDepDatesForSeq: number[] = [];
+      let seqDepMin = Infinity;
+      let seqDepMax = -Infinity;
+      let hasSeqDep = false;
       const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
       for (let i = 0; i < pc1.depDates.length; i++) {
         for (let j = 0; j < pc1.arrDates.length; j++) {
           if (valid1?.[i]?.[j]) {
             const arrT = pc1.arrDates[j];
             if (arrT >= consolidatedFlybyMin - 1.0 && arrT <= consolidatedFlybyMax + 1.0) {
-              validDepDatesForSeq.push(pc1.depDates[i]);
+              const depT = pc1.depDates[i];
+              if (depT < seqDepMin) seqDepMin = depT;
+              if (depT > seqDepMax) seqDepMax = depT;
+              hasSeqDep = true;
               break;
             }
           }
         }
       }
 
-      if (validDepDatesForSeq.length > 0) {
-        consolidatedDepMin = Math.min(...validDepDatesForSeq);
-        consolidatedDepMax = Math.max(...validDepDatesForSeq);
+      if (hasSeqDep) {
+        consolidatedDepMin = seqDepMin;
+        consolidatedDepMax = seqDepMax;
       } else {
         consolidatedDepMin = range1.depDateMin;
         consolidatedDepMax = range1.depDateMax;
       }
 
       // 2. Consolidated Arrival Window at Target Instance (filtering Link 2 porkchop grid for flyby overlap)
-      const validArrDatesForSeq: number[] = [];
+      let seqArrMin = Infinity;
+      let seqArrMax = -Infinity;
+      let hasSeqArr = false;
       const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
       for (let j = 0; j < pc2.arrDates.length; j++) {
         for (let i = 0; i < pc2.depDates.length; i++) {
           if (valid2?.[i]?.[j]) {
             const depT = pc2.depDates[i];
             if (depT >= consolidatedFlybyMin - 1.0 && depT <= consolidatedFlybyMax + 1.0) {
-              validArrDatesForSeq.push(pc2.arrDates[j]);
+              const arrT = pc2.arrDates[j];
+              if (arrT < seqArrMin) seqArrMin = arrT;
+              if (arrT > seqArrMax) seqArrMax = arrT;
+              hasSeqArr = true;
               break;
             }
           }
         }
       }
 
-      if (validArrDatesForSeq.length > 0) {
-        consolidatedArrMin = Math.min(...validArrDatesForSeq);
-        consolidatedArrMax = Math.max(...validArrDatesForSeq);
+      if (hasSeqArr) {
+        consolidatedArrMin = seqArrMin;
+        consolidatedArrMax = seqArrMax;
       } else {
         consolidatedArrMin = range2.arrDateMin;
         consolidatedArrMax = range2.arrDateMax;
@@ -412,6 +434,16 @@ export function computeLinkEndDateRanges(
     const maxSrcVinfMs = srcInst.computedMaxC3 !== undefined ? Math.sqrt(srcInst.computedMaxC3 * 1e6) : srcEnv.maxMs;
     const maxTgtVinfMs = tgtInst.computedMaxC3 !== undefined ? Math.sqrt(tgtInst.computedMaxC3 * 1e6) : tgtEnv.maxMs;
 
+    let depDateMin = Infinity;
+    let depDateMax = -Infinity;
+    let arrDateMin = Infinity;
+    let arrDateMax = -Infinity;
+    let depVinfMin = Infinity;
+    let depVinfMax = -Infinity;
+    let arrVinfMin = Infinity;
+    let arrVinfMax = -Infinity;
+    let validCount = 0;
+
     for (let i = 0; i < depDates.length; i++) {
       for (let j = 0; j < arrDates.length; j++) {
         if (!validMatrix[i]?.[j]) continue;
@@ -432,16 +464,23 @@ export function computeLinkEndDateRanges(
                          (vInfArrMag >= minTgtVinfMs - 1.0 && vInfArrMag <= maxTgtVinfMs + 10.0);
 
         if (passSrc && passTgt) {
-          validDepDates.push(depDates[i]);
-          validArrDates.push(arrDates[j]);
-          depVinfAchieved.push(vInfDepMag);
-          arrVinfAchieved.push(vInfArrMag);
+          validCount++;
+          const depD = depDates[i];
+          const arrD = arrDates[j];
+          if (depD < depDateMin) depDateMin = depD;
+          if (depD > depDateMax) depDateMax = depD;
+          if (arrD < arrDateMin) arrDateMin = arrD;
+          if (arrD > arrDateMax) arrDateMax = arrD;
+          if (vInfDepMag < depVinfMin) depVinfMin = vInfDepMag;
+          if (vInfDepMag > depVinfMax) depVinfMax = vInfDepMag;
+          if (vInfArrMag < arrVinfMin) arrVinfMin = vInfArrMag;
+          if (vInfArrMag > arrVinfMax) arrVinfMax = vInfArrMag;
         }
       }
     }
 
-    const hasValidDepRange = validDepDates.length > 0;
-    const hasValidArrRange = validArrDates.length > 0;
+    const hasValidDepRange = validCount > 0 && isFinite(depDateMin);
+    const hasValidArrRange = validCount > 0 && isFinite(arrDateMin);
 
     result[link.id] = {
       linkId: link.id,
@@ -449,16 +488,16 @@ export function computeLinkEndDateRanges(
       targetInstanceId: link.targetInstanceId,
       sourceBodyName: srcInst.bodyName,
       targetBodyName: tgtInst.bodyName,
-      depDateMin: hasValidDepRange ? Math.min(...validDepDates) : NaN,
-      depDateMax: hasValidDepRange ? Math.max(...validDepDates) : NaN,
-      depVinfMin: depVinfAchieved.length > 0 ? Math.min(...depVinfAchieved) : 0,
-      depVinfMax: depVinfAchieved.length > 0 ? Math.max(...depVinfAchieved) : 0,
+      depDateMin: hasValidDepRange ? depDateMin : NaN,
+      depDateMax: hasValidDepRange ? depDateMax : NaN,
+      depVinfMin: validCount > 0 && isFinite(depVinfMin) ? depVinfMin : 0,
+      depVinfMax: validCount > 0 && isFinite(depVinfMax) ? depVinfMax : 0,
       depTargetVinfRange: srcEnv,
       hasValidDepRange,
-      arrDateMin: hasValidArrRange ? Math.min(...validArrDates) : NaN,
-      arrDateMax: hasValidArrRange ? Math.max(...validArrDates) : NaN,
-      arrVinfMin: arrVinfAchieved.length > 0 ? Math.min(...arrVinfAchieved) : 0,
-      arrVinfMax: arrVinfAchieved.length > 0 ? Math.max(...arrVinfAchieved) : 0,
+      arrDateMin: hasValidArrRange ? arrDateMin : NaN,
+      arrDateMax: hasValidArrRange ? arrDateMax : NaN,
+      arrVinfMin: validCount > 0 && isFinite(arrVinfMin) ? arrVinfMin : 0,
+      arrVinfMax: validCount > 0 && isFinite(arrVinfMax) ? arrVinfMax : 0,
       arrTargetVinfRange: tgtEnv,
       hasValidArrRange
     };
@@ -534,45 +573,55 @@ export function compute3BodyConsolidatedRanges(
     let consolidatedArrMax = NaN;
 
     if (hasFlybyOverlap && pc1 && pc2) {
-      const validDepDatesForSeq: number[] = [];
+      let seqDepMin = Infinity;
+      let seqDepMax = -Infinity;
+      let hasSeqDep = false;
       const valid1 = pc1.constraintValidMatrix || pc1.physicalValidMatrix;
       for (let i = 0; i < pc1.depDates.length; i++) {
         for (let j = 0; j < pc1.arrDates.length; j++) {
           if (valid1?.[i]?.[j]) {
             const arrT = pc1.arrDates[j];
             if (arrT >= consolidatedFlybyMin - 1.0 && arrT <= consolidatedFlybyMax + 1.0) {
-              validDepDatesForSeq.push(pc1.depDates[i]);
+              const depT = pc1.depDates[i];
+              if (depT < seqDepMin) seqDepMin = depT;
+              if (depT > seqDepMax) seqDepMax = depT;
+              hasSeqDep = true;
               break;
             }
           }
         }
       }
 
-      if (validDepDatesForSeq.length > 0) {
-        consolidatedDepMin = Math.min(...validDepDatesForSeq);
-        consolidatedDepMax = Math.max(...validDepDatesForSeq);
+      if (hasSeqDep) {
+        consolidatedDepMin = seqDepMin;
+        consolidatedDepMax = seqDepMax;
       } else {
         consolidatedDepMin = range1.depDateMin;
         consolidatedDepMax = range1.depDateMax;
       }
 
-      const validArrDatesForSeq: number[] = [];
       const valid2 = pc2.constraintValidMatrix || pc2.physicalValidMatrix;
+      let seqArrMin = Infinity;
+      let seqArrMax = -Infinity;
+      let hasSeqArr = false;
       for (let j = 0; j < pc2.arrDates.length; j++) {
         for (let i = 0; i < pc2.depDates.length; i++) {
           if (valid2?.[i]?.[j]) {
             const depT = pc2.depDates[i];
             if (depT >= consolidatedFlybyMin - 1.0 && depT <= consolidatedFlybyMax + 1.0) {
-              validArrDatesForSeq.push(pc2.arrDates[j]);
+              const arrT = pc2.arrDates[j];
+              if (arrT < seqArrMin) seqArrMin = arrT;
+              if (arrT > seqArrMax) seqArrMax = arrT;
+              hasSeqArr = true;
               break;
             }
           }
         }
       }
 
-      if (validArrDatesForSeq.length > 0) {
-        consolidatedArrMin = Math.min(...validArrDatesForSeq);
-        consolidatedArrMax = Math.max(...validArrDatesForSeq);
+      if (hasSeqArr) {
+        consolidatedArrMin = seqArrMin;
+        consolidatedArrMax = seqArrMax;
       } else {
         consolidatedArrMin = range2.arrDateMin;
         consolidatedArrMax = range2.arrDateMax;

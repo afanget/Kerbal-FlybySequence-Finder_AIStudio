@@ -52,8 +52,8 @@ export interface TransferArcDebugData {
   computedElementsDep: OrbitalElements;
   computedElementsArr: OrbitalElements;
   computedElementsArrAtDepEpoch: OrbitalElements;
-  vTransDepFromTransfer?: [number, number, number];
-  vTransArrFromTransfer?: [number, number, number];
+  vTransDepFromTransfer?: Vector3D;
+  vTransArrFromTransfer?: Vector3D;
   lambertV1?: Vector3D;
   lambertV2?: Vector3D;
 }
@@ -65,7 +65,7 @@ export function shiftOrbitalElementsEpoch(
 ): OrbitalElements {
   const dt = targetEpoch - elements.epoch;
   const absA = Math.abs(elements.semiMajorAxis);
-  if (absA === 0 || mu <= 0) return { ...elements, epoch: targetEpoch };
+  if (absA === 0 || mu <= 0 || !isFinite(absA)) return { ...elements, epoch: targetEpoch };
 
   const n = Math.sqrt(mu / Math.pow(absA, 3));
   let M_new = elements.meanAnomalyEpoch + n * dt;
@@ -81,9 +81,10 @@ export function shiftOrbitalElementsEpoch(
     nu_new = Math.atan2(yOrb, xOrb);
     if (nu_new < 0) nu_new += 2 * Math.PI;
   } else {
-    const H = solveHyperbolicKeplerEquation(M_new, e);
-    const xOrb = absA * (e - Math.cosh(H));
-    const yOrb = absA * Math.sqrt(Math.max(0, e * e - 1)) * Math.sinh(H);
+    const effE = Math.max(1 + 1e-7, e);
+    const H = solveHyperbolicKeplerEquation(M_new, effE);
+    const xOrb = absA * (effE - Math.cosh(H));
+    const yOrb = absA * Math.sqrt(Math.max(0, effE * effE - 1)) * Math.sinh(H);
     nu_new = Math.atan2(yOrb, xOrb);
     if (nu_new < 0) nu_new += 2 * Math.PI;
   }
@@ -125,7 +126,36 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
     const arcs: TransferArc[] = [];
     const debugs: TransferArcDebugData[] = [];
 
-    sequence.transfers.forEach((tr, idx) => {
+    // Ensure we have transfer definitions: either from sequence.transfers or derived from sequence.flybys / sequence.depDate / sequence.arrDate
+    const transfersToProcess: { depDate: number; arrDate: number; vTransDep?: Vector3D; vTransArr?: Vector3D }[] = [];
+
+    if (sequence.transfers && sequence.transfers.length > 0) {
+      sequence.transfers.forEach(tr => {
+        transfersToProcess.push({
+          depDate: tr.depDate,
+          arrDate: tr.arrDate,
+          vTransDep: tr.vTransDep,
+          vTransArr: tr.vTransArr
+        });
+      });
+    } else {
+      // Reconstruct transfer leg dates from flybys and dep/arr dates
+      const dates: number[] = [
+        sequence.depDate,
+        ...(sequence.flybys || []).map(f => f.flybyDate),
+        sequence.arrDate
+      ];
+      for (let k = 0; k < sequence.bodyNames.length - 1; k++) {
+        const d1 = dates[k] !== undefined ? dates[k] : sequence.depDate;
+        const d2 = dates[k + 1] !== undefined ? dates[k + 1] : sequence.arrDate;
+        transfersToProcess.push({
+          depDate: d1,
+          arrDate: d2
+        });
+      }
+    }
+
+    transfersToProcess.forEach((tr, idx) => {
       const sourceName = sequence.bodyNames[idx];
       const targetName = sequence.bodyNames[idx + 1];
       const sourceBody = bodies.find(b => b.name === sourceName);
@@ -144,13 +174,15 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
       const lambertSol = solveLambert(sourceStateAtDep.pos, targetStateAtArr.pos, dt, muCentral, true, minAllowedRadius);
 
       // Departure velocity vector in central frame (use stored solver vector if available)
-      const vSpacecraftDep: Vector3D = tr.vTransDep
-        ? { x: tr.vTransDep[0], y: tr.vTransDep[1], z: tr.vTransDep[2] }
-        : lambertSol.v1;
+      const vSpacecraftDep: Vector3D =
+        tr.vTransDep && typeof tr.vTransDep.x === 'number' && isFinite(tr.vTransDep.x)
+          ? tr.vTransDep
+          : (Array.isArray(tr.vTransDep) ? { x: tr.vTransDep[0], y: tr.vTransDep[1], z: tr.vTransDep[2] } : lambertSol.v1);
 
-      const vSpacecraftArr: Vector3D = tr.vTransArr
-        ? { x: tr.vTransArr[0], y: tr.vTransArr[1], z: tr.vTransArr[2] }
-        : lambertSol.v2;
+      const vSpacecraftArr: Vector3D =
+        tr.vTransArr && typeof tr.vTransArr.x === 'number' && isFinite(tr.vTransArr.x)
+          ? tr.vTransArr
+          : (Array.isArray(tr.vTransArr) ? { x: tr.vTransArr[0], y: tr.vTransArr[1], z: tr.vTransArr[2] } : lambertSol.v2);
 
       const vInfDep = vecSub(vSpacecraftDep, sourceStateAtDep.vel);
       const vInfArr = vecSub(vSpacecraftArr, targetStateAtArr.vel);
@@ -171,7 +203,15 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
       for (let i = 0; i <= sampleCount; i++) {
         const ut = tr.depDate + (i / sampleCount) * dt;
         const pos = getPositionFromOrbitalElements(computedElementsDep, muCentral, ut);
-        points.push({ x: pos.x, y: pos.y, ut });
+        if (isFinite(pos.x) && isFinite(pos.y)) {
+          points.push({ x: pos.x, y: pos.y, ut });
+        } else {
+          // Fallback if Kepler state numerical issue: interpolate linearly between source and target positions
+          const frac = i / sampleCount;
+          const fx = sourceStateAtDep.pos.x + (targetStateAtArr.pos.x - sourceStateAtDep.pos.x) * frac;
+          const fy = sourceStateAtDep.pos.y + (targetStateAtArr.pos.y - sourceStateAtDep.pos.y) * frac;
+          points.push({ x: fx, y: fy, ut });
+        }
       }
 
       arcs.push({
@@ -232,8 +272,10 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
     // Factor transfer arc points into maxSequenceR
     transferArcs.forEach(arc => {
       arc.points.forEach(p => {
-        const r = Math.sqrt(p.x * p.x + p.y * p.y);
-        if (r > maxSequenceR) maxSequenceR = r;
+        if (isFinite(p.x) && isFinite(p.y)) {
+          const r = Math.sqrt(p.x * p.x + p.y * p.y);
+          if (isFinite(r) && r > maxSequenceR) maxSequenceR = r;
+        }
       });
     });
 
@@ -263,7 +305,8 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
       });
     });
 
-    return { maxRadius: maxSequenceR * 1.15, bodyOrbitPaths: orbitPaths };
+    const safeMaxRadius = isFinite(maxSequenceR) && maxSequenceR > 0 ? maxSequenceR * 1.15 : 1e11;
+    return { maxRadius: safeMaxRadius, bodyOrbitPaths: orbitPaths };
   }, [sunOrbiters, sequenceBodyNames, mainBody, muCentral, transferArcs]);
 
   // SVG Dimension Constants
@@ -273,25 +316,33 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
   const cy = height / 2;
 
   // Coordinate transform from physical meters to SVG canvas space
-  const scale = (Math.min(width, height) / 2 - 40) / maxRadius;
+  const scale = (Math.min(width, height) / 2 - 40) / Math.max(1, maxRadius);
 
-  const toSvgX = (xMeters: number) => cx + xMeters * scale * zoom + pan.x;
-  const toSvgY = (yMeters: number) => cy - yMeters * scale * zoom + pan.y;
+  const toSvgX = (xMeters: number) => {
+    if (!isFinite(xMeters)) return cx;
+    return cx + xMeters * scale * zoom + pan.x;
+  };
+  const toSvgY = (yMeters: number) => {
+    if (!isFinite(yMeters)) return cy;
+    return cy - yMeters * scale * zoom + pan.y;
+  };
 
   // Compute current spacecraft position during time scrubbing / animation
   const currentCraftState = useMemo(() => {
     for (const arc of transferArcs) {
-      if (currentUt >= arc.depDate && currentUt <= arc.arrDate) {
+      if (currentUt >= arc.depDate - 1e-3 && currentUt <= arc.arrDate + 1e-3) {
         // Interpolate or find exact point
-        const fraction = (currentUt - arc.depDate) / Math.max(1, arc.arrDate - arc.depDate);
+        const fraction = Math.max(0, Math.min(1, (currentUt - arc.depDate) / Math.max(1, arc.arrDate - arc.depDate)));
         const idx = Math.min(arc.points.length - 1, Math.floor(fraction * (arc.points.length - 1)));
         const p1 = arc.points[idx];
         const p2 = arc.points[Math.min(arc.points.length - 1, idx + 1)];
         const localFrac = (fraction * (arc.points.length - 1)) - idx;
 
-        const x = p1.x + (p2.x - p1.x) * localFrac;
-        const y = p1.y + (p2.y - p1.y) * localFrac;
-        return { active: true, x, y, currentArc: arc };
+        if (p1 && p2 && isFinite(p1.x) && isFinite(p1.y) && isFinite(p2.x) && isFinite(p2.y)) {
+          const x = p1.x + (p2.x - p1.x) * localFrac;
+          const y = p1.y + (p2.y - p1.y) * localFrac;
+          return { active: true, x, y, currentArc: arc };
+        }
       }
     }
     return { active: false, x: 0, y: 0, currentArc: null };
@@ -408,7 +459,7 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
               <ZoomIn className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={() => setZoom(z => Math.max(z / 1.25, 0.05))}
+              onClick={() => setZoom(z => Math.max(z / 1.25, 0.01))}
               className="p-1.5 hover:bg-[#2D2E33] text-[#94A3B8] transition"
               title="Zoom Out"
             >
@@ -653,7 +704,12 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
           </div>
 
           <div className="space-y-4">
-            {transferDebugs.map((dbg) => (
+            {transferDebugs.length === 0 ? (
+              <div className="p-3 bg-[#0D0E11] border border-[#2D2E33] rounded text-[#94A3B8] italic">
+                No transfer leg data could be computed for sequence ({sequence.bodyNames.join(' ➔ ')}). Check body orbits and departure/arrival epochs.
+              </div>
+            ) : (
+              transferDebugs.map((dbg) => (
               <div key={dbg.legIndex} className="bg-[#0D0E11] border border-[#2D2E33] rounded p-3 space-y-3">
                 <div className="flex items-center justify-between border-b border-[#1E293B] pb-2 text-[#E2E8F0]">
                   <span className="font-bold text-xs text-[#38BDF8]">
@@ -793,7 +849,8 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
                   </div>
                 </div>
               </div>
-            ))}
+            ))
+            )}
           </div>
         </div>
       )}

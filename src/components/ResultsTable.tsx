@@ -8,7 +8,7 @@ import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, Celesti
 import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
 import { getBodyStateAtUT, stateToOrbitalElements, vecMag } from '../physics/kepler';
-import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath } from '../physics/solver';
+import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath, filterOptimalDepartureSequenceResults } from '../physics/solver';
 import { compute3BodyConsolidatedRangesAsync, LinkEndDateRanges, Sequence3BodyConsolidatedRange } from '../physics/tisserandRanges';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
 import * as XLSX from 'xlsx';
@@ -86,6 +86,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     { id: 'rule-1', key: 'c3PlusStochDv2', direction: 'asc' }
   ]);
   const [isSortPanelOpen, setIsSortPanelOpen] = useState<boolean>(false);
+  const [isAdditionalFilterActive, setIsAdditionalFilterActive] = useState<boolean>(false);
   const [expandedSeqId, setExpandedSeqId] = useState<string | null>(null);
   const [selectedPathFilter, setSelectedPathFilter] = useState<string>('ALL');
   const [selectedInstanceFilter, setSelectedInstanceFilter] = useState<string>('ALL');
@@ -363,9 +364,15 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
     });
   }, [results, stochasticAltErrorKm, stochasticVelErrorMs, bodies]);
 
+  // Apply Pareto dominance & adjacent departure sample filtering if enabled
+  const paretoFilteredResults = useMemo(() => {
+    if (!isAdditionalFilterActive) return recomputedResults;
+    return filterOptimalDepartureSequenceResults(recomputedResults, instances, links, sequencePorkchops);
+  }, [recomputedResults, isAdditionalFilterActive, instances, links, sequencePorkchops]);
+
   // Multi-Column Sorting Logic
   const sortedResults = useMemo(() => {
-    return [...recomputedResults].sort((a, b) => {
+    return [...paretoFilteredResults].sort((a, b) => {
       if (sortRules.length === 0) return 0;
 
       for (const rule of sortRules) {
@@ -554,6 +561,27 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
               )}
             </div>
           )}
+
+          {/* Optimal Departure Filter Button */}
+          <button
+            id="btn-trigger-additional-filter"
+            onClick={() => setIsAdditionalFilterActive(!isAdditionalFilterActive)}
+            disabled={results.length === 0}
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded text-xs font-mono uppercase tracking-wider shadow transition cursor-pointer border disabled:opacity-40 ${
+              isAdditionalFilterActive
+                ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/50 shadow-amber-500/10 font-bold'
+                : 'bg-[#25262B] hover:bg-[#2D2E33] text-[#94A3B8] hover:text-[#E2E8F0] border-[#2D2E33]'
+            }`}
+            title="Filter out elements departing earlier than others with bigger (C3 + Stoch Δv²), and collapse adjacent departure samples starting from the end"
+          >
+            <ListFilter className={`w-3.5 h-3.5 ${isAdditionalFilterActive ? 'text-amber-400' : 'text-[#60A5FA]'}`} />
+            <span>Filter Out Suboptimal</span>
+            {isAdditionalFilterActive && (
+              <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40 lowercase">
+                ({paretoFilteredResults.length}/{results.length})
+              </span>
+            )}
+          </button>
 
           {/* ODS Export Button */}
           <button
@@ -1375,6 +1403,24 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
               Tip: Hold Shift and click column headers in table to append new sort levels directly!
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Additional Pareto & Adjacent Sample Filter Status Banner */}
+      {isAdditionalFilterActive && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-200 shadow-sm">
+          <div className="flex items-center gap-2">
+            <ListFilter className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <span>
+              <strong>Filter-Out Active:</strong> Pruned earlier departures having higher <span className="font-mono text-amber-300">C3 + Stoch Δv²</span> and collapsed redundant adjacent departure samples starting from the end ({recomputedResults.length - paretoFilteredResults.length} suboptimal solutions removed, {paretoFilteredResults.length} retained).
+            </span>
+          </div>
+          <button
+            onClick={() => setIsAdditionalFilterActive(false)}
+            className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 underline cursor-pointer ml-auto whitespace-nowrap font-medium"
+          >
+            <X className="w-3 h-3" /> Show All ({results.length})
+          </button>
         </div>
       )}
 

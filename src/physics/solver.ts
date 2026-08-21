@@ -3035,11 +3035,11 @@ export function extractSequencesFromSequencePorkchops(
   sequencePorkchops: Record<string, SequencePorkchopData>,
   candidatePaths: CandidateSequencePath[],
   instances: InstanceNode[],
-  bodies: CelestialBody[],
+  bodies: OrbitalBody[],
   mainBody: CelestialBody,
   maxFlybyDvMs: number = 1.0
 ): FlyableSequenceResult[] {
-  const bodyMap = new Map<string, CelestialBody>();
+  const bodyMap = new Map<string, OrbitalBody>();
   bodies.forEach(b => bodyMap.set(b.name, b));
   const results: FlyableSequenceResult[] = [];
 
@@ -3187,6 +3187,49 @@ export function extractSequencesFromSequencePorkchops(
 
         if (!passesFlybyDvCheck) continue;
 
+        // Build transfers list between consecutive bodies
+        const transfers: LambertTransferResult[] = [];
+        const legDates: number[] = [depDate, ...flybyDetails.map(f => f.flybyDate), arrDate];
+        const minAllowedRadius = getMinFlybyRadius(mainBody, undefined);
+
+        for (let legIdx = 0; legIdx < pathInsts.length - 1; legIdx++) {
+          const tDepLeg = legDates[legIdx];
+          const tArrLeg = legDates[legIdx + 1];
+          const legDt = Math.max(1, tArrLeg - tDepLeg);
+
+          const srcBodyLeg = bodyMap.get(pathInsts[legIdx].bodyName);
+          const tgtBodyLeg = bodyMap.get(pathInsts[legIdx + 1].bodyName);
+
+          if (srcBodyLeg && tgtBodyLeg) {
+            const stSrcLeg = getBodyStateAtUT(srcBodyLeg, mainBody, tDepLeg);
+            const stTgtLeg = getBodyStateAtUT(tgtBodyLeg, mainBody, tArrLeg);
+            const legSol = solveLambert(stSrcLeg.pos, stTgtLeg.pos, legDt, mainBody.stdGravParam, true, minAllowedRadius);
+
+            const vDepRel = vecSub(legSol.v1, stSrcLeg.vel);
+            const vArrRel = vecSub(legSol.v2, stTgtLeg.vel);
+
+            transfers.push({
+              linkId: `link-${pathInsts[legIdx].id}-${pathInsts[legIdx + 1].id}`,
+              sourceInstanceId: pathInsts[legIdx].id,
+              targetInstanceId: pathInsts[legIdx + 1].id,
+              depDate: tDepLeg,
+              arrDate: tArrLeg,
+              flightTime: legDt,
+              vInfDep: vDepRel,
+              vInfArr: vArrRel,
+              c3Dep: (vecMag(vDepRel) ** 2) / 1e6,
+              c3Arr: (vecMag(vArrRel) ** 2) / 1e6,
+              depAngle: 0,
+              arrAngle: 0,
+              transferOrbitSemiMajorAxis: legSol.semiMajorAxis,
+              vTransDep: legSol.v1,
+              vTransArr: legSol.v2,
+              isValid: legSol.isValid,
+              sol: legSol
+            });
+          }
+        }
+
         const rawFlightTime = seqPc.flightTimeMatrix?.[r]?.[c];
         const totalFlightTime = Number.isFinite(rawFlightTime) && rawFlightTime !== undefined && rawFlightTime > 0
           ? rawFlightTime
@@ -3204,7 +3247,7 @@ export function extractSequencesFromSequencePorkchops(
           totalStochasticDv: Number.isFinite(totalStochasticDv) ? totalStochasticDv : 0,
           totalDv: Number.isFinite(totalPoweredDv) ? totalPoweredDv : 0,
           flybys: flybyDetails,
-          transfers: []
+          transfers
         });
       }
     }
@@ -3217,4 +3260,152 @@ export function extractSequencesFromSequencePorkchops(
     return costA - costB;
   });
 }
+
+/**
+ * Filters sequence results based on Pareto dominance and adjacent departure date window clustering:
+ * 1. For elements of the same "Flyby sequence Path", sorted by increasing departure date,
+ *    remove elements which depart earlier than others while having a bigger (sum C3 + Stoch dv²).
+ * 2. Then starting by the end, remove an element if the previous element departure date
+ *    has the same departure date or the sample just before.
+ */
+export function filterOptimalDepartureSequenceResults(
+  sequenceResults: FlyableSequenceResult[],
+  instances: InstanceNode[],
+  links: DirectionalLink[],
+  sequencePorkchops?: Record<string, SequencePorkchopData>
+): FlyableSequenceResult[] {
+  if (!sequenceResults || sequenceResults.length === 0) return [];
+
+  const getCost = (seq: FlyableSequenceResult): number => {
+    const depC3Mag = vecMag(seq.depC3);
+    const arrC3Mag = vecMag(seq.arrC3);
+    const stochDvKms = (seq.totalStochasticDv || 0) / 1000;
+    return depC3Mag + arrC3Mag + stochDvKms * stochDvKms;
+  };
+
+  // Group elements by Flyby sequence Path (e.g. "Kerbin ➔ Eve ➔ Duna")
+  const pathGroups = new Map<string, FlyableSequenceResult[]>();
+  for (const seq of sequenceResults) {
+    const pathKey = seq.bodyNames.join(' ➔ ');
+    if (!pathGroups.has(pathKey)) {
+      pathGroups.set(pathKey, []);
+    }
+    pathGroups.get(pathKey)!.push(seq);
+  }
+
+  const keptResults: FlyableSequenceResult[] = [];
+
+  for (const [pathKey, group] of pathGroups.entries()) {
+    if (group.length <= 1) {
+      keptResults.push(...group);
+      continue;
+    }
+
+    // Determine the departure date sampling step for this path
+    let sampleStep = 86400; // default 1 day (seconds)
+    let foundStep = false;
+
+    // Check if matching sequence porkchop exists with depDates
+    if (sequencePorkchops) {
+      const matchedSeqPc = Object.values(sequencePorkchops).find(
+        spc => [spc.sourceBody?.bodyName, ...spc.flybys.map(f => f.instance?.bodyName), spc.targetBody?.bodyName].join(' ➔ ') === pathKey ||
+               [spc.sourceBody?.id, ...spc.flybys.map(f => f.instance?.id), spc.targetBody?.id].join('-') === group[0].instanceIds?.join('-')
+      );
+      if (matchedSeqPc && matchedSeqPc.depDates && matchedSeqPc.depDates.length >= 2) {
+        sampleStep = Math.abs(matchedSeqPc.depDates[1] - matchedSeqPc.depDates[0]);
+        foundStep = true;
+      }
+    }
+
+    // Check source instance date sample configuration
+    if (!foundStep && group[0].instanceIds && group[0].instanceIds.length > 0) {
+      const srcId = group[0].instanceIds[0];
+      const srcInst = instances.find(i => i.id === srcId);
+      if (srcInst) {
+        const minD = srcInst.minDate ?? srcInst.computedMinDate ?? 0;
+        const maxD = srcInst.maxDate ?? srcInst.computedMaxDate ?? (minD + 86400 * 100);
+        if (srcInst.dateSampleCount && srcInst.dateSampleCount > 1) {
+          sampleStep = (maxD - minD) / (srcInst.dateSampleCount - 1);
+          foundStep = true;
+        } else {
+          const firstLink = links.find(l => l.sourceInstanceId === srcId);
+          const nDep = firstLink?.departureSampleCount || 10;
+          if (nDep > 1) {
+            sampleStep = (maxD - minD) / (nDep - 1);
+            foundStep = true;
+          }
+        }
+      }
+    }
+
+    // Fallback: detect from distinct departure dates within this group
+    if (!foundStep) {
+      const sortedDates = Array.from(new Set(group.map(g => g.depDate))).sort((a, b) => a - b);
+      let minDiff = Infinity;
+      for (let i = 1; i < sortedDates.length; i++) {
+        const d = sortedDates[i] - sortedDates[i - 1];
+        if (d > 1e-2 && d < minDiff) {
+          minDiff = d;
+        }
+      }
+      if (isFinite(minDiff)) {
+        sampleStep = minDiff;
+      }
+    }
+
+    // Step 1: Sort by increasing departure date (and lower cost first if same date)
+    const sortedGroup = [...group].sort((a, b) => {
+      const dDate = a.depDate - b.depDate;
+      if (Math.abs(dDate) > 1e-4) return dDate;
+      return getCost(a) - getCost(b);
+    });
+
+    // Remove elements which depart earlier than other while having a bigger (sum C3 + Stoch dv²)
+    // Scanning from right to left (latest departure to earliest departure):
+    const stage1Kept: FlyableSequenceResult[] = [];
+    let minCostLater = Infinity;
+
+    for (let i = sortedGroup.length - 1; i >= 0; i--) {
+      const item = sortedGroup[i];
+      const itemCost = getCost(item);
+
+      // If itemCost is greater than any element departing later, remove it
+      if (itemCost > minCostLater + 1e-6) {
+        continue;
+      }
+
+      stage1Kept.push(item);
+      minCostLater = Math.min(minCostLater, itemCost);
+    }
+
+    // Restore increasing departure date order
+    stage1Kept.reverse();
+
+    if (stage1Kept.length <= 1) {
+      keptResults.push(...stage1Kept);
+      continue;
+    }
+
+    // Step 2: Starting by the end, remove an element if the previous element departure date
+    // has the same departure date or the sample just before
+    const currentList = [...stage1Kept];
+    for (let i = currentList.length - 1; i >= 1; i--) {
+      const curr = currentList[i];
+      const prev = currentList[i - 1];
+      const dateDiff = curr.depDate - prev.depDate;
+
+      const isSameDate = Math.abs(dateDiff) <= 1e-2;
+      const isSampleJustBefore = dateDiff > 1e-2 && dateDiff <= sampleStep * 1.05 + 1.0;
+
+      if (isSameDate || isSampleJustBefore) {
+        currentList.splice(i, 1);
+      }
+    }
+
+    keptResults.push(...currentList);
+  }
+
+  return keptResults;
+}
+
 
