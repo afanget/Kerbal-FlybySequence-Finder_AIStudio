@@ -851,22 +851,6 @@ export function shallowClonePorkchopData(pcData: PorkchopPlotData): PorkchopPlot
   };
 }
 
-export function clonePorkchopData(pcData: PorkchopPlotData): PorkchopPlotData {
-  return {
-    ...pcData,
-    computedSamples: pcData.computedSamples,
-    totalSamples: pcData.totalSamples,
-    c3DepMatrix: pcData.c3DepMatrix.map(row => [...row]),
-    c3ArrMatrix: pcData.c3ArrMatrix.map(row => [...row]),
-    dvMatrix: pcData.dvMatrix.map(row => [...row]),
-    flightTimeMatrix: pcData.flightTimeMatrix.map(row => [...row]),
-    physicalValidMatrix: pcData.physicalValidMatrix?.map(row => [...row]),
-    constraintValidMatrix: pcData.constraintValidMatrix?.map(row => [...row]),
-    vTransDepMatrix: pcData.vTransDepMatrix?.map(row => [...row]),
-    vTransArrMatrix: pcData.vTransArrMatrix?.map(row => [...row]),
-  };
-}
-
 /**
  * STEP 5: Compute Porkchop Plot for a given link using progressive interlaced passes.
  */
@@ -1940,8 +1924,6 @@ export async function computeSequenceNSup3PorkchopPlot(
   onPartialUpdate?.({ ...seqData }); // Final update
   return seqData;
 }
-
-export const computeNBodySequencePorkchopPlot = computeSequencePorkchopPlot;
 
 export type ProgressCallback = (statusMessage: string) => void;
 export type PartialUpdateCallback = (update: {

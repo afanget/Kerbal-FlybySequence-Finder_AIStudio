@@ -13,7 +13,7 @@ import {
   KEJGStep1Result,
   KEJGStep2Result
 } from '../physics/autotest';
-import { parseKSPTimeToUT, formatShortUT } from '../utils/timeFormat';
+import { parseKSPTimeToUT, formatShortUT, daysToSeconds } from '../utils/timeFormat';
 import {
   X,
   CheckCircle2,
@@ -92,10 +92,9 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
   };
 
   const handleAdjustDate = (key: 't1' | 't2' | 't3' | 't4', deltaDays: number) => {
-    const KSP_DAY_SEC = 21600;
     const newUTs = {
       ...step1UTs,
-      [key]: Math.max(0, step1UTs[key] + deltaDays * KSP_DAY_SEC),
+      [key]: Math.max(0, step1UTs[key] + daysToSeconds(deltaDays, 'ksp')),
     };
     setStep1UTs(newUTs);
     setKejgStep1Result(runKEJGStep1(newUTs));

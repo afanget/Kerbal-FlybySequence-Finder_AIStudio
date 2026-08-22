@@ -97,6 +97,45 @@ export function shiftOrbitalElementsEpoch(
   };
 }
 
+function extractTransferVector(v: Vector3D | [number, number, number] | undefined, fallback: Vector3D): Vector3D {
+  if (v && typeof (v as Vector3D).x === 'number' && isFinite((v as Vector3D).x)) {
+    return v as Vector3D;
+  }
+  if (Array.isArray(v) && v.length >= 3 && isFinite(v[0])) {
+    return { x: v[0], y: v[1], z: v[2] };
+  }
+  return fallback;
+}
+
+function getLegTransfersToProcess(sequence: FlyableSequenceResult): {
+  depDate: number;
+  arrDate: number;
+  vTransDep?: Vector3D;
+  vTransArr?: Vector3D;
+}[] {
+  if (sequence.transfers && sequence.transfers.length > 0) {
+    return sequence.transfers.map(tr => ({
+      depDate: tr.depDate,
+      arrDate: tr.arrDate,
+      vTransDep: tr.vTransDep,
+      vTransArr: tr.vTransArr
+    }));
+  }
+
+  const dates: number[] = [
+    sequence.depDate,
+    ...(sequence.flybys || []).map(f => f.flybyDate),
+    sequence.arrDate
+  ];
+  const list: { depDate: number; arrDate: number; vTransDep?: Vector3D; vTransArr?: Vector3D }[] = [];
+  for (let k = 0; k < sequence.bodyNames.length - 1; k++) {
+    const d1 = dates[k] !== undefined ? dates[k] : sequence.depDate;
+    const d2 = dates[k + 1] !== undefined ? dates[k + 1] : sequence.arrDate;
+    list.push({ depDate: d1, arrDate: d2 });
+  }
+  return list;
+}
+
 export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps> = ({
   sequence,
   bodies,
@@ -126,34 +165,7 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
     const arcs: TransferArc[] = [];
     const debugs: TransferArcDebugData[] = [];
 
-    // Ensure we have transfer definitions: either from sequence.transfers or derived from sequence.flybys / sequence.depDate / sequence.arrDate
-    const transfersToProcess: { depDate: number; arrDate: number; vTransDep?: Vector3D; vTransArr?: Vector3D }[] = [];
-
-    if (sequence.transfers && sequence.transfers.length > 0) {
-      sequence.transfers.forEach(tr => {
-        transfersToProcess.push({
-          depDate: tr.depDate,
-          arrDate: tr.arrDate,
-          vTransDep: tr.vTransDep,
-          vTransArr: tr.vTransArr
-        });
-      });
-    } else {
-      // Reconstruct transfer leg dates from flybys and dep/arr dates
-      const dates: number[] = [
-        sequence.depDate,
-        ...(sequence.flybys || []).map(f => f.flybyDate),
-        sequence.arrDate
-      ];
-      for (let k = 0; k < sequence.bodyNames.length - 1; k++) {
-        const d1 = dates[k] !== undefined ? dates[k] : sequence.depDate;
-        const d2 = dates[k + 1] !== undefined ? dates[k + 1] : sequence.arrDate;
-        transfersToProcess.push({
-          depDate: d1,
-          arrDate: d2
-        });
-      }
-    }
+    const transfersToProcess = getLegTransfersToProcess(sequence);
 
     transfersToProcess.forEach((tr, idx) => {
       const sourceName = sequence.bodyNames[idx];
@@ -173,16 +185,9 @@ export const SolarSystemTrajectoryView: React.FC<SolarSystemTrajectoryViewProps>
       const minAllowedRadius = getMinFlybyRadius(mainBody, undefined);
       const lambertSol = solveLambert(sourceStateAtDep.pos, targetStateAtArr.pos, dt, muCentral, true, minAllowedRadius);
 
-      // Departure velocity vector in central frame (use stored solver vector if available)
-      const vSpacecraftDep: Vector3D =
-        tr.vTransDep && typeof tr.vTransDep.x === 'number' && isFinite(tr.vTransDep.x)
-          ? tr.vTransDep
-          : (Array.isArray(tr.vTransDep) ? { x: tr.vTransDep[0], y: tr.vTransDep[1], z: tr.vTransDep[2] } : lambertSol.v1);
-
-      const vSpacecraftArr: Vector3D =
-        tr.vTransArr && typeof tr.vTransArr.x === 'number' && isFinite(tr.vTransArr.x)
-          ? tr.vTransArr
-          : (Array.isArray(tr.vTransArr) ? { x: tr.vTransArr[0], y: tr.vTransArr[1], z: tr.vTransArr[2] } : lambertSol.v2);
+      // Departure and arrival velocity vectors in central frame
+      const vSpacecraftDep = extractTransferVector(tr.vTransDep, lambertSol.v1);
+      const vSpacecraftArr = extractTransferVector(tr.vTransArr, lambertSol.v2);
 
       const vInfDep = vecSub(vSpacecraftDep, sourceStateAtDep.vel);
       const vInfArr = vecSub(vSpacecraftArr, targetStateAtArr.vel);

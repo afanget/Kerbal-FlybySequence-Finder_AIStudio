@@ -8,7 +8,7 @@ import { FlyableSequenceResult, ResultTableColumn, ResultTableColumnKey, Celesti
 import { formatUT, formatShortUT, formatDuration, daysToSeconds, secondsToDays } from '../utils/timeFormat';
 import { computeStochasticDvForFlyby, debugStochasticDvCalculation, StochasticDvDebugInfo, recomputeFlybyDetailsSequentially, SequentialFlybyDebugInfo } from '../physics/flyby';
 import { getBodyStateAtUT, stateToOrbitalElements, vecMag } from '../physics/kepler';
-import { findAllPaths, isInstanceSource, findAllSubPathsInGraph, CandidateSequencePath, filterOptimalDepartureSequenceResults } from '../physics/solver';
+import { findAllSubPathsInGraph, CandidateSequencePath, filterOptimalDepartureSequenceResults } from '../physics/solver';
 import { compute3BodyConsolidatedRangesAsync, LinkEndDateRanges, Sequence3BodyConsolidatedRange } from '../physics/tisserandRanges';
 import { SolarSystemTrajectoryView } from './SolarSystemTrajectoryView';
 import * as XLSX from 'xlsx';
