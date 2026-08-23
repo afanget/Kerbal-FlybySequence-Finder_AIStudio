@@ -27,6 +27,7 @@ import { ResultsTable } from './components/ResultsTable';
 import { TisserandPlot } from './components/TisserandPlot';
 import { AutotestModal } from './components/AutotestModal';
 import { C3DebugModal } from './components/C3DebugModal';
+import { CheckCircle2, RefreshCw, AlertCircle } from 'lucide-react';
 import {
   runSequenceSearch,
   runSequenceSearchAlt,
@@ -50,6 +51,11 @@ export default function App() {
   // Canvas graph state
   const [instances, setInstances] = useState<InstanceNode[]>([]);
   const [links, setLinks] = useState<DirectionalLink[]>([]);
+
+  // Confirmed state for Tisserand Plot & computations
+  const [confirmedInstances, setConfirmedInstances] = useState<InstanceNode[]>([]);
+  const [confirmedLinks, setConfirmedLinks] = useState<DirectionalLink[]>([]);
+  const [hasPendingChanges, setHasPendingChanges] = useState<boolean>(false);
 
   // Selection & Modal States
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
@@ -242,19 +248,21 @@ export default function App() {
     b => b.referenceBody && b.referenceBody.trim().toLowerCase() === mainBodyName.trim().toLowerCase()
   );
 
-  // Load initial preset mission on first mount (Kerbin -> Eve -> Kerbin -> Jool -> Grannus)
-  useEffect(() => {
-    loadPresetMission('kjug');
-    // TODO loadPresetMission('kerbin_grannus');
-  }, []);
+  // Helper to compute and propagate date bounds, link end dates, intersections & C3 bounds
+  const applyDateAndTisserandUpdates = (
+    currentInsts: InstanceNode[],
+    currentLnks: DirectionalLink[],
+    systemToUse: SolarSystem = currentSystem,
+    mainBodyNameToUse: string = mainBodyName
+  ): { updatedInsts: InstanceNode[]; updatedLnks: DirectionalLink[] } => {
+    if (currentInsts.length === 0 || currentLnks.length === 0) {
+      return { updatedInsts: currentInsts, updatedLnks: currentLnks };
+    }
 
-  // Auto-propagate date bounds & candidate sample counts whenever instances/links change outside active search
-  useEffect(() => {
-    if (isSearching || instances.length === 0 || links.length === 0) return;
-    const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
+    const mainBody: CelestialBody = getCelestialBodyByName(systemToUse, mainBodyNameToUse);
 
-    let updatedInsts = propagateDateBounds(instances, links);
-    let updatedLnks = generateLinkEndDates(updatedInsts, links, currentSystem.bodies, mainBody);
+    let updatedInsts = propagateDateBounds(currentInsts, currentLnks);
+    let updatedLnks = generateLinkEndDates(updatedInsts, currentLnks, systemToUse.bodies, mainBody);
     updatedLnks = updatedLnks.map(link => {
       const src = updatedInsts.find(i => i.id === link.sourceInstanceId);
       const tgt = updatedInsts.find(i => i.id === link.targetInstanceId);
@@ -262,47 +270,60 @@ export default function App() {
       const { totalPossible } = countPossibleTransfers(link, src, tgt);
       return { ...link, possibleTransfersCount: link.possibleTransfersCount ?? totalPossible };
     });
-    updatedInsts = intersectInstanceDates(updatedInsts, updatedLnks, currentSystem.bodies, mainBody);
-    updatedInsts = propagateC3Bounds(updatedInsts, updatedLnks, currentSystem.bodies, mainBody);
+    updatedInsts = intersectInstanceDates(updatedInsts, updatedLnks, systemToUse.bodies, mainBody);
+    updatedInsts = propagateC3Bounds(updatedInsts, updatedLnks, systemToUse.bodies, mainBody);
 
-    // Update if computed bounds or sample counts changed
-    setInstances(prev => {
-      const changed = prev.some((inst, idx) => {
-        const u = updatedInsts[idx];
-        return u && (
-          inst.computedMinDate !== u.computedMinDate ||
-          inst.computedMaxDate !== u.computedMaxDate ||
-          inst.computedMinC3 !== u.computedMinC3 ||
-          inst.computedMaxC3 !== u.computedMaxC3
-        );
-      });
-      return changed ? updatedInsts : prev;
-    });
+    return { updatedInsts, updatedLnks };
+  };
 
-    setLinks(prev => {
-      const changed = prev.some((l, idx) => {
-        const u = updatedLnks[idx];
-        return u && (
-          l.departureSampleCount !== u.departureSampleCount ||
-          l.arrivalSampleCount !== u.arrivalSampleCount ||
-          (l.possibleTransfersCount === undefined && u.possibleTransfersCount !== undefined)
-        );
-      });
-      return changed ? updatedLnks : prev;
-    });
-  }, [instances, links, currentSystem, mainBodyName, isSearching]);
+  // Load initial preset mission on first mount (Kerbin -> Eve -> Kerbin -> Jool -> Grannus)
+  useEffect(() => {
+    loadPresetMission('kjug');
+    // TODO loadPresetMission('kerbin_grannus');
+  }, []);
+
+  // Confirm Updates handler (triggered manually by the user confirmation button)
+  const handleConfirmGraphUpdates = () => {
+    if (instances.length === 0 || links.length === 0) {
+      setHasPendingChanges(false);
+      setConfirmedInstances(instances);
+      setConfirmedLinks(links);
+      return;
+    }
+
+    // 1. Deactivate button immediately
+    setHasPendingChanges(false);
+
+    // 2. Launch date updates, link end dates & Tisserand plot envelope calculations
+    const { updatedInsts, updatedLnks } = applyDateAndTisserandUpdates(instances, links, currentSystem, mainBodyName);
+
+    // 3. Update instances and links state with consolidated bounds & update confirmed snapshot
+    setInstances(updatedInsts);
+    setLinks(updatedLnks);
+    setConfirmedInstances(updatedInsts);
+    setConfirmedLinks(updatedLnks);
+
+    // 4. Reset prior sequence search results as graph topology/dates have been updated
+    setResults([]);
+    setPorkchops({});
+    setSequencePorkchops({});
+  };
 
   // Preset Mission Load Handler
   const loadPresetMission = (presetKey: string) => {
     let newInsts: InstanceNode[] = [];
     let newLinks: DirectionalLink[] = [];
+    let targetSys: SolarSystem = currentSystem;
+    let targetMainBodyName: string = mainBodyName;
+    let targetTimeFormat: 'ksp' | 'earth' = timeFormatMode;
 
     if (presetKey === 'kerbin_grannus') {
       // Kerbin -> Duna -> Kerbin -> Eve -> Jool -> Urlum -> Grannus
-      const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
-      setCurrentSystem(grannusSys);
-      setMainBodyName('Sun');
-      setTimeFormatMode('ksp');
+      const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus');
+      if (!grannusSys) throw new Error('Preset solar system stock_opm_grannus not found');
+      targetSys = grannusSys;
+      targetMainBodyName = 'Sun';
+      targetTimeFormat = 'ksp';
 
       const kspDaySec = daysToSeconds(1, 'ksp');
       const kspYearSec = daysToSeconds(426, 'ksp');
@@ -331,10 +352,11 @@ export default function App() {
       ];
     } else if (presetKey === 'kjug') {
       // Kerbin -> Jool -> Urlum -> Grannus
-      const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus') || PRESET_SOLAR_SYSTEMS[3];
-      setCurrentSystem(grannusSys);
-      setMainBodyName('Sun');
-      setTimeFormatMode('ksp');
+      const grannusSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_opm_grannus');
+      if (!grannusSys) throw new Error('Preset solar system stock_opm_grannus not found');
+      targetSys = grannusSys;
+      targetMainBodyName = 'Sun';
+      targetTimeFormat = 'ksp';
 
       const kspDaySec = daysToSeconds(1, 'ksp');
       const kspYearSec = daysToSeconds(426, 'ksp');
@@ -353,12 +375,13 @@ export default function App() {
       ];
     } else if (presetKey === 'kej') {
       // Kerbin -> Eve -> Jool
-      const stockSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_ksp') || PRESET_SOLAR_SYSTEMS[0];
-      setCurrentSystem(stockSys);
-      setMainBodyName('Sun');
-      setTimeFormatMode('ksp');
+      const stockSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'stock_ksp');
+      if (!stockSys) throw new Error('Preset solar system stock_ksp not found');
+      targetSys = stockSys;
+      targetMainBodyName = 'Sun';
+      targetTimeFormat = 'ksp';
 
-      const y10d1 = parseKSPTimeToUT(10, 1, 0, 0, 0, timeFormatMode);
+      const y10d1 = parseKSPTimeToUT(10, 1, 0, 0, 0, targetTimeFormat);
       newInsts = [
         { id: 'inst-0', bodyName: 'Kerbin', x: 150, y: 220, minDate: 0, maxC3: 25 },
         { id: 'inst-1', bodyName: 'Eve', x: 380, y: 140 },
@@ -370,10 +393,11 @@ export default function App() {
       ];
     } else if (presetKey === 'juice') {
       // JUICE Mission in Real Solar System (Earth -> Venus -> Earth -> Earth -> Jupiter)
-      const rssSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'real_solar_system') || PRESET_SOLAR_SYSTEMS[2];
-      setCurrentSystem(rssSys);
-      setMainBodyName('Sun');
-      setTimeFormatMode('earth');
+      const rssSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'real_solar_system');
+      if (!rssSys) throw new Error('Preset solar system real_solar_system not found');
+      targetSys = rssSys;
+      targetMainBodyName = 'Sun';
+      targetTimeFormat = 'earth';
 
       newInsts = [
         { id: 'inst-0', bodyName: 'Earth', x: 120, y: 220, minDate: 0, maxC3: 30 },
@@ -390,10 +414,11 @@ export default function App() {
       ];
     } else if (presetKey === 'grand_tour') {
       // Grand Tour
-      const opmSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'outer_planet_mod') || PRESET_SOLAR_SYSTEMS[1];
-      setCurrentSystem(opmSys);
-      setMainBodyName('Sun');
-      setTimeFormatMode('ksp');
+      const opmSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === 'outer_planet_mod');
+      if (!opmSys) throw new Error('Preset solar system outer_planet_mod not found');
+      targetSys = opmSys;
+      targetMainBodyName = 'Sun';
+      targetTimeFormat = 'ksp';
 
       newInsts = [
         { id: 'inst-0', bodyName: 'Kerbin', x: 120, y: 220, minDate: 0 },
@@ -410,10 +435,19 @@ export default function App() {
       ];
     }
 
-    setInstances(newInsts);
-    setLinks(newLinks);
+    setCurrentSystem(targetSys);
+    setMainBodyName(targetMainBodyName);
+    setTimeFormatMode(targetTimeFormat);
+
+    const { updatedInsts, updatedLnks } = applyDateAndTisserandUpdates(newInsts, newLinks, targetSys, targetMainBodyName);
+    setInstances(updatedInsts);
+    setLinks(updatedLnks);
+    setConfirmedInstances(updatedInsts);
+    setConfirmedLinks(updatedLnks);
+    setHasPendingChanges(false);
     setResults([]);
     setPorkchops({});
+    setSequencePorkchops({});
   };
 
   // Add Instance Node
@@ -430,6 +464,7 @@ export default function App() {
     };
 
     setInstances([...instances, newInst]);
+    setHasPendingChanges(true);
   };
 
   // Remove Instance Node & associated links
@@ -437,6 +472,7 @@ export default function App() {
     setInstances(instances.filter(i => i.id !== instanceId));
     setLinks(links.filter(l => l.sourceInstanceId !== instanceId && l.targetInstanceId !== instanceId));
     if (selectedInstanceId === instanceId) setSelectedInstanceId(null);
+    setHasPendingChanges(true);
   };
 
   // Add Directional Link (preventing loops / self-links)
@@ -463,11 +499,13 @@ export default function App() {
     };
 
     setLinks([...links, newLink]);
+    setHasPendingChanges(true);
   };
 
   const handleRemoveLink = (linkId: string) => {
     setLinks(links.filter(l => l.id !== linkId));
     if (selectedLinkId === linkId) setSelectedLinkId(null);
+    setHasPendingChanges(true);
   };
 
   const handleUpdateInstancePosition = (id: string, x: number, y: number) => {
@@ -476,10 +514,12 @@ export default function App() {
 
   const handleUpdateInstance = (updated: InstanceNode) => {
     setInstances(insts => insts.map(i => i.id === updated.id ? updated : i));
+    setHasPendingChanges(true);
   };
 
   const handleUpdateLink = (updated: DirectionalLink) => {
     setLinks(ls => ls.map(l => l.id === updated.id ? updated : l));
+    setHasPendingChanges(true);
   };
 
   // Export Canvas Configuration JSON
@@ -505,13 +545,22 @@ export default function App() {
   // Import Canvas Configuration JSON
   const handleImportConfig = (config: CanvasGraphConfig) => {
     const foundSys = PRESET_SOLAR_SYSTEMS.find(s => s.id === config.solarSystemId);
+    const targetSys = foundSys || currentSystem;
+    const targetMainBody = config.mainBodyName || mainBodyName;
     if (foundSys) setCurrentSystem(foundSys);
     if (config.mainBodyName) setMainBodyName(config.mainBodyName);
     if (config.timeFormatMode) setTimeFormatMode(config.timeFormatMode);
-    if (config.instances) setInstances(config.instances);
-    if (config.links) setLinks(config.links);
+    const loadedInsts = config.instances || [];
+    const loadedLinks = config.links || [];
+    const { updatedInsts, updatedLnks } = applyDateAndTisserandUpdates(loadedInsts, loadedLinks, targetSys, targetMainBody);
+    setInstances(updatedInsts);
+    setLinks(updatedLnks);
+    setConfirmedInstances(updatedInsts);
+    setConfirmedLinks(updatedLnks);
+    setHasPendingChanges(false);
     setResults([]);
     setPorkchops({});
+    setSequencePorkchops({});
   };
 
   // Execute Search Algorithm (Steps 1 through 8)
@@ -521,21 +570,35 @@ export default function App() {
       return;
     }
 
+    if (hasPendingChanges) {
+      alert('Please confirm your graph updates first using the "Confirm Updates & Calculate Tisserand" button below the node plot.');
+      return;
+    }
+
     stopSearchRef.current = false;
     setIsSearching(true);
     setSearchStatusText('Initializing trajectory search...');
 
     try {
       const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
+      const activeInsts = confirmedInstances.length > 0 ? confirmedInstances : instances;
+      const activeLnks = confirmedLinks.length > 0 ? confirmedLinks : links;
+
       const res = await runSequenceSearch(
-        instances,
-        links,
+        activeInsts,
+        activeLnks,
         currentSystem.bodies,
         mainBody,
         (msg) => setSearchStatusText(msg),
         (partial) => {
-          if (partial.instances) setInstances(partial.instances);
-          if (partial.links) setLinks(partial.links);
+          if (partial.instances) {
+            setInstances(partial.instances);
+            setConfirmedInstances(partial.instances);
+          }
+          if (partial.links) {
+            setLinks(partial.links);
+            setConfirmedLinks(partial.links);
+          }
           if (partial.porkchops) setPorkchops(prev => ({ ...prev, ...partial.porkchops }));
           if (partial.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...partial.sequencePorkchops }));
         },
@@ -544,6 +607,8 @@ export default function App() {
 
       setInstances(res.updatedInstances);
       setLinks(res.updatedLinks);
+      setConfirmedInstances(res.updatedInstances);
+      setConfirmedLinks(res.updatedLinks);
       setPorkchops(res.porkchops);
       if (res.sequencePorkchops) setSequencePorkchops(res.sequencePorkchops);
       setResults(res.sequences);
@@ -562,21 +627,35 @@ export default function App() {
       return;
     }
 
+    if (hasPendingChanges) {
+      alert('Please confirm your graph updates first using the "Confirm Updates & Calculate Tisserand" button below the node plot.');
+      return;
+    }
+
     stopSearchRef.current = false;
     setIsSearching(true);
     setSearchStatusText('Initializing alternative trajectory search (direct optimizer)...');
 
     try {
       const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
+      const activeInsts = confirmedInstances.length > 0 ? confirmedInstances : instances;
+      const activeLnks = confirmedLinks.length > 0 ? confirmedLinks : links;
+
       const res = await runSequenceSearchAlt(
-        instances,
-        links,
+        activeInsts,
+        activeLnks,
         currentSystem.bodies,
         mainBody,
         (msg) => setSearchStatusText(msg),
         (partial) => {
-          if (partial.instances) setInstances(partial.instances);
-          if (partial.links) setLinks(partial.links);
+          if (partial.instances) {
+            setInstances(partial.instances);
+            setConfirmedInstances(partial.instances);
+          }
+          if (partial.links) {
+            setLinks(partial.links);
+            setConfirmedLinks(partial.links);
+          }
           if (partial.porkchops) setPorkchops(prev => ({ ...prev, ...partial.porkchops }));
           if (partial.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...partial.sequencePorkchops }));
         },
@@ -585,6 +664,8 @@ export default function App() {
 
       setInstances(res.updatedInstances);
       setLinks(res.updatedLinks);
+      setConfirmedInstances(res.updatedInstances);
+      setConfirmedLinks(res.updatedLinks);
       if (res.porkchops) setPorkchops(res.porkchops);
       if (res.sequencePorkchops) setSequencePorkchops(res.sequencePorkchops);
       setResults(res.sequences);
@@ -604,7 +685,15 @@ export default function App() {
       return;
     }
 
-    const candPaths = findAllSubPathsInGraph(links, instances);
+    if (hasPendingChanges) {
+      alert('Please confirm your graph updates first using the "Confirm Updates & Calculate Tisserand" button below the node plot.');
+      return;
+    }
+
+    const activeInsts = confirmedInstances.length > 0 ? confirmedInstances : instances;
+    const activeLnks = confirmedLinks.length > 0 ? confirmedLinks : links;
+
+    const candPaths = findAllSubPathsInGraph(activeLnks, activeInsts);
     const fullPathCands = candPaths.filter(c => c.isFullPath && c.pathInsts.length >= 3);
 
     if (fullPathCands.length === 0) {
@@ -639,7 +728,7 @@ export default function App() {
             pathInsts: cand.pathInsts,
             bodies: currentSystem.bodies,
             mainBody,
-            links,
+            links: activeLnks,
             porkchops: activePorkchops,
             sequencePorkchops: activeSequencePorkchops,
             onProgress: (msg) => setSearchStatusText(msg),
@@ -688,7 +777,7 @@ export default function App() {
       const extractedResults = extractSequencesFromSequencePorkchops(
         activeSequencePorkchops,
         fullPathCands,
-        instances,
+        activeInsts,
         currentSystem.bodies,
         mainBody,
         1.0
@@ -740,8 +829,21 @@ export default function App() {
         currentSystem={currentSystem}
         onSelectSystem={(sys) => {
           setCurrentSystem(sys);
-          const defaultMain : CelestialBody = getCelestialBodyByName(sys, 'Sun');
+          const defaultMain: CelestialBody = getCelestialBodyByName(sys, 'Sun');
           setMainBodyName(defaultMain.name);
+          // Filter instances and links to ensure they belong to the selected system
+          const validInsts = instances.filter(i => sys.bodies.some(b => b.name === i.bodyName));
+          const validInstIds = new Set(validInsts.map(i => i.id));
+          const validLnks = links.filter(l => validInstIds.has(l.sourceInstanceId) && validInstIds.has(l.targetInstanceId));
+          const { updatedInsts, updatedLnks } = applyDateAndTisserandUpdates(validInsts, validLnks, sys, defaultMain.name);
+          setInstances(updatedInsts);
+          setLinks(updatedLnks);
+          setConfirmedInstances(updatedInsts);
+          setConfirmedLinks(updatedLnks);
+          setHasPendingChanges(false);
+          setResults([]);
+          setPorkchops({});
+          setSequencePorkchops({});
         }}
         mainBodyName={mainBodyName}
         onSelectMainBody={setMainBodyName}
@@ -762,7 +864,7 @@ export default function App() {
       {/* Main Working Stage */}
       <main className="flex-1 w-full min-w-full px-4 md:px-6 py-4 flex flex-col gap-6">
         {/* Interactive Canvas Graph Editor */}
-        <section id="canvas-section" className="w-full min-w-full">
+        <section id="canvas-section" className="w-full min-w-full flex flex-col gap-3">
           <CanvasGraph
             instances={instances}
             links={links}
@@ -782,13 +884,65 @@ export default function App() {
             }}
             onInspectC3={(instId) => setC3DebugInstanceId(instId)}
           />
+
+          {/* Manual Graph Confirmation Control below the Node Plot */}
+          <div
+            id="graph-confirmation-panel"
+            className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-lg border transition-all duration-200 ${
+              hasPendingChanges
+                ? 'bg-amber-950/40 border-amber-500/50 shadow-lg shadow-amber-950/30'
+                : 'bg-[#1A1B1E] border-[#2D2E33]'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {hasPendingChanges ? (
+                <>
+                  <AlertCircle className="w-5 h-5 text-amber-400 animate-pulse shrink-0" />
+                  <div>
+                    <span className="text-xs font-semibold text-amber-200">
+                      Graph modifications pending confirmation
+                    </span>
+                    <p className="text-[11px] text-amber-300/80">
+                      Click the confirmation button to update dates, transfer bounds, and recalculate the Tisserand plot.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <div>
+                    <span className="text-xs font-semibold text-[#E2E8F0]">
+                      Graph is synchronized & up to date
+                    </span>
+                    <p className="text-[11px] text-[#94A3B8]">
+                      Dates, candidate bounds, and Tisserand envelopes are computed and ready for transfer search.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button
+              id="btn-confirm-graph-updates"
+              onClick={handleConfirmGraphUpdates}
+              disabled={!hasPendingChanges || isSearching}
+              className={`flex items-center gap-2 px-4 py-2 rounded text-xs font-medium uppercase tracking-wider transition-all duration-150 shadow ${
+                hasPendingChanges && !isSearching
+                  ? 'bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-black font-semibold cursor-pointer ring-2 ring-amber-400/40 hover:scale-[1.02]'
+                  : 'bg-[#25262B] text-[#64748B] border border-[#334155] cursor-not-allowed opacity-60'
+              }`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${hasPendingChanges ? 'animate-spin-once' : ''}`} />
+              <span>Confirm Updates & Calculate Tisserand</span>
+            </button>
+          </div>
         </section>
 
         {/* Foldable Tisserand Plot Section */}
         <section id="tisserand-section" className="w-full min-w-full">
           <TisserandPlot
-            instances={instances}
-            links={links}
+            instances={confirmedInstances}
+            links={confirmedLinks}
             bodies={currentSystem.bodies}
             mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
             results={results}
@@ -817,8 +971,8 @@ export default function App() {
             onComputeSequencePorkchop={handleComputeSingleSequencePorkchop}
             computingSeqId={computingSeqId}
             activeSubtask={activeSubtask}
-            links={links}
-            instances={instances}
+            links={confirmedLinks.length > 0 ? confirmedLinks : links}
+            instances={confirmedInstances.length > 0 ? confirmedInstances : instances}
           />
         </section>
       </main>

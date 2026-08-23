@@ -142,6 +142,9 @@ function getRpEFromTheta(
   thetaRad: number,
   mu_main: number
 ): { rpM: number; rpAU: number; rpKm: number; log10rp: number; E: number; E_MJ: number } {
+  if (!body) {
+    throw new Error('body is required and cannot be undefined in getRpEFromTheta');
+  }
   const a_p = body.semiMajorAxis;
   const v_p = Math.sqrt(mu_main / a_p);
   const h = a_p * (v_p + vInfMs * Math.cos(thetaRad));
@@ -186,6 +189,12 @@ function getIntersectionTheta(
   vInfB: number,
   mu_main: number
 ): { thetaA: number; thetaB: number } | null {
+  if (!bodyA) {
+    throw new Error('bodyA is required and cannot be undefined in getIntersectionTheta');
+  }
+  if (!bodyB) {
+    throw new Error('bodyB is required and cannot be undefined in getIntersectionTheta');
+  }
   const aA = bodyA.semiMajorAxis;
   const aB = bodyB.semiMajorAxis;
 

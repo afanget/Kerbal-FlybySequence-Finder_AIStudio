@@ -28,12 +28,20 @@ export function normalizeColor(colorStr?: string): string {
 }
 
 export function getCelestialBodyByName(solarSystem: SolarSystem, name: string): CelestialBody {
-  if (solarSystem.mainBody.name === name) return solarSystem.mainBody;
-  return solarSystem.bodies.find(body => body.name === name)!;
+  if (solarSystem.mainBody && solarSystem.mainBody.name === name) return solarSystem.mainBody;
+  const found = solarSystem.bodies.find(body => body.name === name);
+  if (!found) {
+    throw new Error(`Celestial body "${name}" not found in solar system "${solarSystem.name}".`);
+  }
+  return found;
 }
 
 export function getOrbitalBodyByName(solarSystem: SolarSystem, name: string): OrbitalBody {
-  return solarSystem.bodies.find(body => body.name === name)!;
+  const found = solarSystem.bodies.find(body => body.name === name);
+  if (!found) {
+    throw new Error(`Orbital body "${name}" not found in solar system "${solarSystem.name}".`);
+  }
+  return found;
 }
 
 /**

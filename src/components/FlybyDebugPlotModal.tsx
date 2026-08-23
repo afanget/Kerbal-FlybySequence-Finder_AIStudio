@@ -20,6 +20,8 @@ import {
   HelpCircle,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Compass,
   RefreshCw,
 } from 'lucide-react';
@@ -923,13 +925,21 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
         {data ? (
           <div className="px-4 py-2 bg-[#121215] border-b border-[#27272A] flex flex-wrap items-center justify-between gap-3 text-xs">
             {/* Departure Date A Controls */}
-            <div className="flex items-center gap-2 bg-[#18181B] border border-[#27272A] px-2.5 py-1.5 rounded">
+            <div className="flex items-center gap-1.5 bg-[#18181B] border border-[#27272A] px-2.5 py-1.5 rounded">
               <span className="text-[#71717A] text-[10px] font-semibold uppercase tracking-wider">Dep ({data.bodyA}):</span>
+              <button
+                onClick={() => handleStepDep(-10)}
+                disabled={currentDepIndex <= 0}
+                title="Step Departure Date -10 samples (--)"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
               <button
                 onClick={() => handleStepDep(-1)}
                 disabled={currentDepIndex <= 0}
                 title="Previous Departure Sample (-1 step)"
-                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
@@ -945,9 +955,17 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
                 onClick={() => handleStepDep(1)}
                 disabled={currentDepIndex >= data.maxDepIndex}
                 title="Next Departure Sample (+1 step)"
-                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => handleStepDep(10)}
+                disabled={currentDepIndex >= data.maxDepIndex}
+                title="Step Departure Date +10 samples (++)"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
+              >
+                <ChevronsRight className="w-3.5 h-3.5" />
               </button>
             </div>
 
@@ -958,13 +976,21 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
             </div>
 
             {/* Arrival Date C Controls */}
-            <div className="flex items-center gap-2 bg-[#18181B] border border-[#27272A] px-2.5 py-1.5 rounded">
+            <div className="flex items-center gap-1.5 bg-[#18181B] border border-[#27272A] px-2.5 py-1.5 rounded">
               <span className="text-[#71717A] text-[10px] font-semibold uppercase tracking-wider">Arr ({data.bodyC}):</span>
+              <button
+                onClick={() => handleStepArr(-10)}
+                disabled={currentArrIndex <= 0}
+                title="Step Arrival Date -10 samples (--)"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
               <button
                 onClick={() => handleStepArr(-1)}
                 disabled={currentArrIndex <= 0}
                 title="Previous Arrival Sample (-1 step)"
-                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
@@ -980,9 +1006,17 @@ export const FlybyDebugPlotModal: React.FC<FlybyDebugPlotModalProps> = ({
                 onClick={() => handleStepArr(1)}
                 disabled={currentArrIndex >= data.maxArrIndex}
                 title="Next Arrival Sample (+1 step)"
-                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => handleStepArr(10)}
+                disabled={currentArrIndex >= data.maxArrIndex}
+                title="Step Arrival Date +10 samples (++)"
+                className="p-1 rounded bg-[#27272A] hover:bg-[#3F3F46] disabled:opacity-30 disabled:pointer-events-none text-[#38BDF8] transition cursor-pointer"
+              >
+                <ChevronsRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>

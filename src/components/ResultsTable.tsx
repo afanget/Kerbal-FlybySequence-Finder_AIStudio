@@ -1794,7 +1794,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
                                     const depBodyName = seq.bodyNames[tIdx];
                                     const arrBodyName = seq.bodyNames[tIdx + 1];
 
-                                    const depBody = bodies.find(b => b.name === depBodyName)!;
+                                    const depBody = bodies.find(b => b.name === depBodyName);
+                                    if (!depBody) {
+                                      throw new Error(`Departure body "${depBodyName}" not found in bodies`);
+                                    }
 
                                     const depState = getBodyStateAtUT(depBody, mainBody, tr.depDate);
                                     const vTransDepVec = tr.vTransDep;

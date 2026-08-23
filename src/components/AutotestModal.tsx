@@ -528,18 +528,32 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                       <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t1, 'ksp')}</span>
                       <div className="flex items-center gap-1 ml-1">
                         <button
+                          onClick={() => handleAdjustDate('t1', -10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Subtract 10 days (-216000s)"
+                        >
+                          -10d
+                        </button>
+                        <button
                           onClick={() => handleAdjustDate('t1', -1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Subtract 1 day (-21600s)"
                         >
                           -1d
                         </button>
                         <button
                           onClick={() => handleAdjustDate('t1', 1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Add 1 day (+21600s)"
                         >
                           +1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t1', 10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Add 10 days (+216000s)"
+                        >
+                          +10d
                         </button>
                       </div>
                     </div>
@@ -550,18 +564,32 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                       <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t2, 'ksp')}</span>
                       <div className="flex items-center gap-1 ml-1">
                         <button
+                          onClick={() => handleAdjustDate('t2', -10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Subtract 10 days (-216000s)"
+                        >
+                          -10d
+                        </button>
+                        <button
                           onClick={() => handleAdjustDate('t2', -1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Subtract 1 day (-21600s)"
                         >
                           -1d
                         </button>
                         <button
                           onClick={() => handleAdjustDate('t2', 1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Add 1 day (+21600s)"
                         >
                           +1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t2', 10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Add 10 days (+216000s)"
+                        >
+                          +10d
                         </button>
                       </div>
                     </div>
@@ -572,18 +600,32 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                       <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t3, 'ksp')}</span>
                       <div className="flex items-center gap-1 ml-1">
                         <button
+                          onClick={() => handleAdjustDate('t3', -10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Subtract 10 days (-216000s)"
+                        >
+                          -10d
+                        </button>
+                        <button
                           onClick={() => handleAdjustDate('t3', -1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Subtract 1 day (-21600s)"
                         >
                           -1d
                         </button>
                         <button
                           onClick={() => handleAdjustDate('t3', 1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Add 1 day (+21600s)"
                         >
                           +1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t3', 10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Add 10 days (+216000s)"
+                        >
+                          +10d
                         </button>
                       </div>
                     </div>
@@ -594,18 +636,32 @@ export const AutotestModal: React.FC<AutotestModalProps> = ({ isOpen, onClose })
                       <span className="text-[#E2E8F0] text-[11px]">{formatShortUT(step1UTs.t4, 'ksp')}</span>
                       <div className="flex items-center gap-1 ml-1">
                         <button
+                          onClick={() => handleAdjustDate('t4', -10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Subtract 10 days (-216000s)"
+                        >
+                          -10d
+                        </button>
+                        <button
                           onClick={() => handleAdjustDate('t4', -1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-amber-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Subtract 1 day (-21600s)"
                         >
                           -1d
                         </button>
                         <button
                           onClick={() => handleAdjustDate('t4', 1)}
-                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition"
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
                           title="Add 1 day (+21600s)"
                         >
                           +1d
+                        </button>
+                        <button
+                          onClick={() => handleAdjustDate('t4', 10)}
+                          className="px-1.5 py-0.5 bg-[#25262B] hover:bg-[#32333A] text-emerald-400 border border-[#2D2E33] rounded text-[10px] font-bold transition cursor-pointer"
+                          title="Add 10 days (+216000s)"
+                        >
+                          +10d
                         </button>
                       </div>
                     </div>

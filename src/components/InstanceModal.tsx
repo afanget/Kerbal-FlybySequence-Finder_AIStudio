@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { InstanceNode, OrbitalBody } from '../types';
-import { formatUT, parseKSPTimeToUT } from '../utils/timeFormat';
+import { formatUT, parseKSPTimeToUT, utToYearDay } from '../utils/timeFormat';
 import { X, Calendar, Compass, ShieldAlert, Check } from 'lucide-react';
 import { getMinFlybyAlt } from '../data/solarSystems';
 
@@ -29,11 +29,17 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
   const [minDateSec, setMinDateSec] = useState<string>(instance.minDate !== undefined ? String(instance.minDate) : '');
   const [maxDateSec, setMaxDateSec] = useState<string>(instance.maxDate !== undefined ? String(instance.maxDate) : '');
 
-  // Helper inputs for KSP calendar date entry
-  const [minYear, setMinYear] = useState<number>(1);
-  const [minDay, setMinDay] = useState<number>(1);
-  const [maxYear, setMaxYear] = useState<number>(5);
-  const [maxDay, setMaxDay] = useState<number>(1);
+  // Helper inputs for calendar date entry initialized from existing UT or computed bounds
+  const initialMinUT = instance.minDate !== undefined ? instance.minDate : instance.computedMinDate;
+  const initialMaxUT = instance.maxDate !== undefined ? instance.maxDate : instance.computedMaxDate;
+
+  const initialMinCal = utToYearDay(initialMinUT, timeFormatMode);
+  const initialMaxCal = utToYearDay(initialMaxUT, timeFormatMode);
+
+  const [minYear, setMinYear] = useState<number>(initialMinCal.year);
+  const [minDay, setMinDay] = useState<number>(initialMinCal.day);
+  const [maxYear, setMaxYear] = useState<number>(initialMaxCal.year);
+  const [maxDay, setMaxDay] = useState<number>(initialMaxCal.day);
 
   const [minFlybyAltitude, setMinFlybyAltitude] = useState<string>(String(getMinFlybyAlt(body, instance.minFlybyAltitude)));
 
@@ -43,6 +49,80 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
   );
   const [isSourceOverride, setIsSourceOverride] = useState<boolean | undefined>(instance.isSourceOverride);
   const [isTargetOverride, setIsTargetOverride] = useState<boolean | undefined>(instance.isTargetOverride);
+
+  const handleMinDateSecChange = (val: string) => {
+    setMinDateSec(val);
+    if (val !== '') {
+      const num = parseFloat(val);
+      if (!isNaN(num)) {
+        const cal = utToYearDay(num, timeFormatMode);
+        setMinYear(cal.year);
+        setMinDay(cal.day);
+      }
+    } else {
+      const defaultCal = utToYearDay(instance.computedMinDate, timeFormatMode);
+      setMinYear(defaultCal.year);
+      setMinDay(defaultCal.day);
+    }
+  };
+
+  const handleMaxDateSecChange = (val: string) => {
+    setMaxDateSec(val);
+    if (val !== '') {
+      const num = parseFloat(val);
+      if (!isNaN(num)) {
+        const cal = utToYearDay(num, timeFormatMode);
+        setMaxYear(cal.year);
+        setMaxDay(cal.day);
+      }
+    } else {
+      const defaultCal = utToYearDay(instance.computedMaxDate, timeFormatMode);
+      setMaxYear(defaultCal.year);
+      setMaxDay(defaultCal.day);
+    }
+  };
+
+  const handleUnsetMinDate = () => {
+    setMinDateSec('');
+    const defaultCal = utToYearDay(instance.computedMinDate, timeFormatMode);
+    setMinYear(defaultCal.year);
+    setMinDay(defaultCal.day);
+  };
+
+  const handleUnsetMaxDate = () => {
+    setMaxDateSec('');
+    const defaultCal = utToYearDay(instance.computedMaxDate, timeFormatMode);
+    setMaxYear(defaultCal.year);
+    setMaxDay(defaultCal.day);
+  };
+
+  const handleMinYearChange = (year: number) => {
+    const y = Math.max(1, year);
+    setMinYear(y);
+    const ut = parseKSPTimeToUT(y, minDay, 0, 0, 0, timeFormatMode);
+    setMinDateSec(String(ut));
+  };
+
+  const handleMinDayChange = (day: number) => {
+    const d = Math.max(1, day);
+    setMinDay(d);
+    const ut = parseKSPTimeToUT(minYear, d, 0, 0, 0, timeFormatMode);
+    setMinDateSec(String(ut));
+  };
+
+  const handleMaxYearChange = (year: number) => {
+    const y = Math.max(1, year);
+    setMaxYear(y);
+    const ut = parseKSPTimeToUT(y, maxDay, 0, 0, 0, timeFormatMode);
+    setMaxDateSec(String(ut));
+  };
+
+  const handleMaxDayChange = (day: number) => {
+    const d = Math.max(1, day);
+    setMaxDay(d);
+    const ut = parseKSPTimeToUT(maxYear, d, 0, 0, 0, timeFormatMode);
+    setMaxDateSec(String(ut));
+  };
 
   const handleApplyCalendarMin = () => {
     const ut = parseKSPTimeToUT(minYear, minDay, 0, 0, 0, timeFormatMode);
@@ -103,7 +183,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                   {minDateSec !== '' && (
                     <button
                       type="button"
-                      onClick={() => setMinDateSec('')}
+                      onClick={handleUnsetMinDate}
                       className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
                     >
                       Unset
@@ -113,7 +193,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 <input
                   type="number"
                   value={minDateSec}
-                  onChange={(e) => setMinDateSec(e.target.value)}
+                  onChange={(e) => handleMinDateSecChange(e.target.value)}
                   placeholder="Unconstrained (UT 0)"
                   className="w-full mt-1 bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
                 />
@@ -124,13 +204,15 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
 
               <div className="bg-[#1A1B1E] p-2 rounded border border-[#2D2E33] flex items-center gap-1">
                 <div className="flex-1">
-                  <span className="text-[10px] text-[#94A3B8] block">KSP Calendar:</span>
+                  <span className="text-[10px] text-[#94A3B8] block">
+                    {timeFormatMode === 'ksp' ? 'KSP Calendar:' : 'Earth Calendar:'}
+                  </span>
                   <div className="flex gap-1 mt-1 font-mono">
                     <input
                       type="number"
                       min="1"
                       value={minYear}
-                      onChange={(e) => setMinYear(parseInt(e.target.value) || 1)}
+                      onChange={(e) => handleMinYearChange(parseInt(e.target.value) || 1)}
                       className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
                     />
                     <span className="text-[#64748B]">Y</span>
@@ -138,7 +220,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                       type="number"
                       min="1"
                       value={minDay}
-                      onChange={(e) => setMinDay(parseInt(e.target.value) || 1)}
+                      onChange={(e) => handleMinDayChange(parseInt(e.target.value) || 1)}
                       className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
                     />
                     <span className="text-[#64748B]">D</span>
@@ -147,7 +229,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 <button
                   type="button"
                   onClick={handleApplyCalendarMin}
-                  className="px-2.5 py-1 bg-[#334155] hover:bg-[#475569] text-white text-[10px] font-mono uppercase tracking-wider rounded border border-[#475569]"
+                  className="px-2.5 py-1 bg-[#334155] hover:bg-[#475569] text-white text-[10px] font-mono uppercase tracking-wider rounded border border-[#475569] cursor-pointer"
                 >
                   Set
                 </button>
@@ -162,7 +244,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                   {maxDateSec !== '' && (
                     <button
                       type="button"
-                      onClick={() => setMaxDateSec('')}
+                      onClick={handleUnsetMaxDate}
                       className="text-[10px] text-rose-400 hover:text-rose-300 underline font-mono cursor-pointer"
                     >
                       Unset
@@ -172,7 +254,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 <input
                   type="number"
                   value={maxDateSec}
-                  onChange={(e) => setMaxDateSec(e.target.value)}
+                  onChange={(e) => handleMaxDateSecChange(e.target.value)}
                   placeholder="Unconstrained"
                   className="w-full mt-1 bg-[#1A1B1E] border border-[#2D2E33] rounded p-2 text-[#60A5FA] font-mono text-xs focus:border-[#60A5FA] focus:outline-none"
                 />
@@ -183,13 +265,15 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
 
               <div className="bg-[#1A1B1E] p-2 rounded border border-[#2D2E33] flex items-center gap-1">
                 <div className="flex-1">
-                  <span className="text-[10px] text-[#94A3B8] block">KSP Calendar:</span>
+                  <span className="text-[10px] text-[#94A3B8] block">
+                    {timeFormatMode === 'ksp' ? 'KSP Calendar:' : 'Earth Calendar:'}
+                  </span>
                   <div className="flex gap-1 mt-1 font-mono">
                     <input
                       type="number"
                       min="1"
                       value={maxYear}
-                      onChange={(e) => setMaxYear(parseInt(e.target.value) || 1)}
+                      onChange={(e) => handleMaxYearChange(parseInt(e.target.value) || 1)}
                       className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
                     />
                     <span className="text-[#64748B]">Y</span>
@@ -197,7 +281,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                       type="number"
                       min="1"
                       value={maxDay}
-                      onChange={(e) => setMaxDay(parseInt(e.target.value) || 1)}
+                      onChange={(e) => handleMaxDayChange(parseInt(e.target.value) || 1)}
                       className="w-12 bg-[#25262B] border border-[#2D2E33] text-[#E2E8F0] rounded px-1.5 py-0.5 text-[11px]"
                     />
                     <span className="text-[#64748B]">D</span>
@@ -206,7 +290,7 @@ export const InstanceModal: React.FC<InstanceModalProps> = ({
                 <button
                   type="button"
                   onClick={handleApplyCalendarMax}
-                  className="px-2.5 py-1 bg-[#334155] hover:bg-[#475569] text-white text-[10px] font-mono uppercase tracking-wider rounded border border-[#475569]"
+                  className="px-2.5 py-1 bg-[#334155] hover:bg-[#475569] text-white text-[10px] font-mono uppercase tracking-wider rounded border border-[#475569] cursor-pointer"
                 >
                   Set
                 </button>

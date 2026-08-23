@@ -75,6 +75,22 @@ export function formatDuration(durationSec: number | undefined | null, mode: Tim
   return parts.join(' ');
 }
 
+export function utToYearDay(utSeconds: number | undefined | null, mode: TimeMode): { year: number; day: number } {
+  if (utSeconds === undefined || utSeconds === null || isNaN(utSeconds) || utSeconds < 0) {
+    return { year: 1, day: 1 };
+  }
+
+  const daySec = mode === 'ksp' ? KSP_DAY_SEC : EARTH_DAY_SEC;
+  const yearSec = mode === 'ksp' ? KSP_YEAR_SEC : EARTH_YEAR_SEC;
+
+  const totalSeconds = Math.max(0, utSeconds);
+  const year = Math.floor(totalSeconds / yearSec) + 1;
+  const remSecYear = totalSeconds % yearSec;
+  const day = Math.floor(remSecYear / daySec) + 1;
+
+  return { year, day };
+}
+
 export function parseKSPTimeToUT(year: number, day: number, hours: number, minutes: number, seconds: number, mode: TimeMode): number {
   const daySec = mode === 'ksp' ? KSP_DAY_SEC : EARTH_DAY_SEC;
   const yearSec = mode === 'ksp' ? KSP_YEAR_SEC : EARTH_YEAR_SEC;

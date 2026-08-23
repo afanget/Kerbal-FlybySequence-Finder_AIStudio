@@ -67,6 +67,9 @@ export function solveHyperbolicKeplerEquation(M: number, e: number): number {
  * Converts a CelestialBody definition into OrbitalElements
  */
 export function bodyToOrbitalElements(body: OrbitalBody): OrbitalElements {
+  if (!body) {
+    throw new Error('body is required and cannot be undefined in bodyToOrbitalElements');
+  }
   return {
     semiMajorAxis: body.semiMajorAxis,
     eccentricity: body.eccentricity,
@@ -185,6 +188,12 @@ export function getStateFromOrbitalElements(
  * Position is relative to parent central body in meters; velocity is in m/s.
  */
 export function getBodyStateAtUT(body: OrbitalBody, mainBody: CelestialBody, ut: number): StateVector {
+  if (!body) {
+    throw new Error('body is required and cannot be undefined in getBodyStateAtUT');
+  }
+  if (!mainBody) {
+    throw new Error('mainBody is required and cannot be undefined in getBodyStateAtUT');
+  }
   const elements = bodyToOrbitalElements(body);
   return getStateFromOrbitalElements(elements, mainBody.stdGravParam, ut);
 }
@@ -193,6 +202,12 @@ export function getBodyStateAtUT(body: OrbitalBody, mainBody: CelestialBody, ut:
  * Orbital period in seconds T = 2 * pi * sqrt(a^3 / mu)
  */
 export function getOrbitalPeriod(body: OrbitalBody, mainBody: CelestialBody): number {
+  if (!body) {
+    throw new Error('body is required and cannot be undefined in getOrbitalPeriod');
+  }
+  if (!mainBody) {
+    throw new Error('mainBody is required and cannot be undefined in getOrbitalPeriod');
+  }
   const a = body.semiMajorAxis;
   return 2 * Math.PI * Math.sqrt(Math.pow(a, 3) / mainBody.stdGravParam);
 }

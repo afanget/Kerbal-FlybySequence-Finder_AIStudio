@@ -916,7 +916,7 @@ export function optimizeAllFlybyDates(
 }
 
 /**
- * Estimates a reasonable step size for `<` and `>` date steppers at a flyby index.
+ * Estimates a reasonable step size for date steppers at a flyby index based on porkchop sampling intervals or instance date bounds.
  */
 export function getFlybyDateSampleStep(
   pathInsts: InstanceNode[],
@@ -926,18 +926,44 @@ export function getFlybyDateSampleStep(
 ): number {
   const prevInst = pathInsts[flybyIndex - 1];
   const currInst = pathInsts[flybyIndex];
-  if (!prevInst || !currInst) return 86400; // 1 day default
+  const nextInst = pathInsts[flybyIndex + 1];
+  if (!currInst) return 86400;
 
-  const link = links.find(l => l.sourceInstanceId === prevInst.id && l.targetInstanceId === currInst.id);
-  const pc = link ? porkchops[link.id] : Object.values(porkchops).find(p => p.sourceBody === prevInst.bodyName && p.targetBody === currInst.bodyName);
+  // 1. Check incoming link porkchop arrival dates (at the flyby body)
+  if (prevInst) {
+    const linkIn = links.find(l => l.sourceInstanceId === prevInst.id && l.targetInstanceId === currInst.id);
+    const pcIn = linkIn ? porkchops[linkIn.id] : Object.values(porkchops).find(p => p.sourceBody === prevInst.bodyName && p.targetBody === currInst.bodyName);
+    if (pcIn && pcIn.arrDates && pcIn.arrDates.length >= 2) {
+      const dt = Math.abs(pcIn.arrDates[pcIn.arrDates.length - 1] - pcIn.arrDates[0]) / Math.max(1, pcIn.arrDates.length - 1);
+      if (dt > 0 && Number.isFinite(dt)) {
+        return dt;
+      }
+    }
+  }
 
-  if (pc && pc.arrDates && pc.arrDates.length >= 2) {
-    const dt = Math.abs(pc.arrDates[pc.arrDates.length - 1] - pc.arrDates[0]) / pc.arrDates.length;
-    if (dt > 100 && dt < 86400 * 30) {
+  // 2. Check outgoing link porkchop departure dates (from the flyby body)
+  if (nextInst) {
+    const linkOut = links.find(l => l.sourceInstanceId === currInst.id && l.targetInstanceId === nextInst.id);
+    const pcOut = linkOut ? porkchops[linkOut.id] : Object.values(porkchops).find(p => p.sourceBody === currInst.bodyName && p.targetBody === nextInst.bodyName);
+    if (pcOut && pcOut.depDates && pcOut.depDates.length >= 2) {
+      const dt = Math.abs(pcOut.depDates[pcOut.depDates.length - 1] - pcOut.depDates[0]) / Math.max(1, pcOut.depDates.length - 1);
+      if (dt > 0 && Number.isFinite(dt)) {
+        return dt;
+      }
+    }
+  }
+
+  // 3. Check instance date range and sample count
+  const minD = currInst.minDate ?? currInst.computedMinDate;
+  const maxD = currInst.maxDate ?? currInst.computedMaxDate;
+  if (minD !== undefined && maxD !== undefined && maxD > minD) {
+    const samples = currInst.dateSampleCount && currInst.dateSampleCount > 1 ? currInst.dateSampleCount : 20;
+    const dt = (maxD - minD) / Math.max(1, samples - 1);
+    if (dt > 0 && Number.isFinite(dt)) {
       return dt;
     }
   }
 
-  return 86400; // 1 day
+  return 86400; // 1 day fallback
 }
 

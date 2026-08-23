@@ -31,6 +31,8 @@ import {
   Layers,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   ChevronDown,
   ChevronUp,
   Zap,
@@ -180,13 +182,13 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
   };
 
   // Step a single flyby date
-  const handleStepFlybyDate = (flybyIndex: number, direction: -1 | 1) => {
+  const handleStepFlybyDate = (flybyIndex: number, direction: -1 | 1, multiplier: number = 1) => {
     const step = getFlybyDateSampleStep(data.pathInsts, flybyIndex, porkchops, links);
     const newDates = [...customDates];
     const prevDate = newDates[flybyIndex - 1];
     const nextDate = newDates[flybyIndex + 1];
 
-    let candidateDate = newDates[flybyIndex] + direction * step;
+    let candidateDate = newDates[flybyIndex] + direction * multiplier * step;
     candidateDate = Math.max(prevDate + 3600, Math.min(nextDate - 3600, candidateDate));
 
     newDates[flybyIndex] = candidateDate;
@@ -330,10 +332,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
             </span>
             <div className="flex items-center bg-[#18181B] border border-[#27272A] rounded">
               <button
+                onClick={() => updateIndices(currentDepIndex - 10, currentArrIndex)}
+                disabled={currentDepIndex <= 0}
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Step departure date -10 samples (--)"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
                 onClick={() => updateIndices(currentDepIndex - 1, currentArrIndex)}
                 disabled={currentDepIndex <= 0}
-                className="p-1 hover:bg-[#27272A] disabled:opacity-40 text-slate-300 transition cursor-pointer"
-                title="Previous departure date"
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Previous departure date (-1 sample)"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
@@ -343,10 +353,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
               <button
                 onClick={() => updateIndices(currentDepIndex + 1, currentArrIndex)}
                 disabled={currentDepIndex >= data.maxDepIndex}
-                className="p-1 hover:bg-[#27272A] disabled:opacity-40 text-slate-300 transition cursor-pointer"
-                title="Next departure date"
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Next departure date (+1 sample)"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => updateIndices(currentDepIndex + 10, currentArrIndex)}
+                disabled={currentDepIndex >= data.maxDepIndex}
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Step departure date +10 samples (++)"
+              >
+                <ChevronsRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -359,10 +377,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
             </span>
             <div className="flex items-center bg-[#18181B] border border-[#27272A] rounded">
               <button
+                onClick={() => updateIndices(currentDepIndex, currentArrIndex - 10)}
+                disabled={currentArrIndex <= 0}
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Step arrival date -10 samples (--)"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
                 onClick={() => updateIndices(currentDepIndex, currentArrIndex - 1)}
                 disabled={currentArrIndex <= 0}
-                className="p-1 hover:bg-[#27272A] disabled:opacity-40 text-slate-300 transition cursor-pointer"
-                title="Previous arrival date"
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Previous arrival date (-1 sample)"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
@@ -372,10 +398,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
               <button
                 onClick={() => updateIndices(currentDepIndex, currentArrIndex + 1)}
                 disabled={currentArrIndex >= data.maxArrIndex}
-                className="p-1 hover:bg-[#27272A] disabled:opacity-40 text-slate-300 transition cursor-pointer"
-                title="Next arrival date"
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Next arrival date (+1 sample)"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => updateIndices(currentDepIndex, currentArrIndex + 10)}
+                disabled={currentArrIndex >= data.maxArrIndex}
+                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                title="Step arrival date +10 samples (++)"
+              >
+                <ChevronsRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -502,10 +536,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                           <div className="flex items-center gap-1.5">
                             <div className="flex items-center bg-[#18181B] border border-[#27272A] rounded">
                               <button
-                                onClick={() => handleStepFlybyDate(row.flybyIndex, -1)}
+                                onClick={() => handleStepFlybyDate(row.flybyIndex, -1, 10)}
                                 disabled={row.flybyDate <= (row.prevFlybyOrDepDate + 3600)}
                                 className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
-                                title={`Step ${row.bodyName} flyby date earlier`}
+                                title={`Step ${row.bodyName} flyby date -10 samples earlier (--)`}
+                              >
+                                <ChevronsLeft className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => handleStepFlybyDate(row.flybyIndex, -1, 1)}
+                                disabled={row.flybyDate <= (row.prevFlybyOrDepDate + 3600)}
+                                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                                title={`Step ${row.bodyName} flyby date -1 sample earlier (-)`}
                               >
                                 <ChevronLeft className="w-3 h-3" />
                               </button>
@@ -513,12 +555,20 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                                 {formatShortUT(row.flybyDate, timeFormatMode)}
                               </span>
                               <button
-                                onClick={() => handleStepFlybyDate(row.flybyIndex, 1)}
+                                onClick={() => handleStepFlybyDate(row.flybyIndex, 1, 1)}
                                 disabled={row.flybyDate >= (row.nextFlybyOrArrDate - 3600)}
                                 className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
-                                title={`Step ${row.bodyName} flyby date later`}
+                                title={`Step ${row.bodyName} flyby date +1 sample later (+)`}
                               >
                                 <ChevronRight className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => handleStepFlybyDate(row.flybyIndex, 1, 10)}
+                                disabled={row.flybyDate >= (row.nextFlybyOrArrDate - 3600)}
+                                className="p-1 hover:bg-[#27272A] disabled:opacity-30 text-slate-300 transition cursor-pointer"
+                                title={`Step ${row.bodyName} flyby date +10 samples later (++)`}
+                              >
+                                <ChevronsRight className="w-3 h-3" />
                               </button>
                             </div>
 

@@ -164,6 +164,12 @@ function getTisserandIntersectionTheta(
   vInfB: number,
   mu_main: number
 ): { thetaA: number; thetaB: number } | null {
+  if (!bodyA) {
+    throw new Error('bodyA is required and cannot be undefined in getTisserandIntersectionTheta');
+  }
+  if (!bodyB) {
+    throw new Error('bodyB is required and cannot be undefined in getTisserandIntersectionTheta');
+  }
   const aA = bodyA.semiMajorAxis;
   const aB = bodyB.semiMajorAxis;
 
@@ -616,11 +622,23 @@ export function generateLinkEndDates(
   bodies.forEach(b => bodyMap.set(b.name, b));
 
   return links.map(link => {
-    const src = instances.find(i => i.id === link.sourceInstanceId)!;
-    const tgt = instances.find(i => i.id === link.targetInstanceId)!;
+    const src = instances.find(i => i.id === link.sourceInstanceId);
+    if (!src) {
+      throw new Error(`Source instance "${link.sourceInstanceId}" not found for link "${link.id}"`);
+    }
+    const tgt = instances.find(i => i.id === link.targetInstanceId);
+    if (!tgt) {
+      throw new Error(`Target instance "${link.targetInstanceId}" not found for link "${link.id}"`);
+    }
 
-    const srcBody = bodyMap.get(src.bodyName)!;
-    const tgtBody = bodyMap.get(tgt.bodyName)!;
+    const srcBody = bodyMap.get(src.bodyName);
+    if (!srcBody) {
+      throw new Error(`Body "${src.bodyName}" not found in available bodies for instance "${src.id}"`);
+    }
+    const tgtBody = bodyMap.get(tgt.bodyName);
+    if (!tgtBody) {
+      throw new Error(`Body "${tgt.bodyName}" not found in available bodies for instance "${tgt.id}"`);
+    }
 
     let departureSampleCount: number;
     if (src?.dateSampleCount !== undefined) {
