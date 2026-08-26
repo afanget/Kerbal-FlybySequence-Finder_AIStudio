@@ -1947,11 +1947,37 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
     }
   };
 
+  // Seed with discrete valid samples first (evaluating flyby dv + prior cost)
+  for (const s of validSamples) {
+    if (!Number.isFinite(s.totalDv)) continue;
+    const cand: SequenceTransferResult = {
+      c3DepA: s.c3DepA,
+      c3ArrB: s.c3ArrB,
+      c3DepB: s.c3DepB,
+      c3ArrFinal: s.c3ArrFinal,
+      totalDv: s.totalDv,
+      flybyDvs: [...s.priorFlybyDvs, s.currentDv],
+      flybyDates: [...s.priorFlybyDates, s.tFlyby],
+      flybyC3Arrs: [...(s.priorFlybyC3Arrs || []), s.c3ArrB],
+      flybyC3Deps: [...(s.priorFlybyC3Deps || []), s.c3DepB],
+    };
+    considerCandidate(cand);
+  }
+
+  // If already zero-cost (0.0 m/s) and satisfies constraints, return immediately
+  if (bestConstraintDv <= 1e-6 && bestConstraintResult) {
+    if (profiler) {
+      profiler.continuousOptimizationMs += (performance.now() - t8);
+      profiler.totalMethodMs += (performance.now() - methodStart);
+    }
+    return finalizeResult(bestConstraintResult);
+  }
+
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
     considerCandidate(res);
-    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
+    if (res.totalDv <= 1e-6 && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -1985,12 +2011,6 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      // Stop early if unpowered free flyby found and satisfies constraints
-      if ((res1.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res1, FREE_FLYBY_MAX_DV_MPS)) ||
-          (res2.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res2, FREE_FLYBY_MAX_DV_MPS))) {
-        break;
-      }
-
       if (res1.totalDv < res2.totalDv) {
         b = m2;
       } else {
@@ -1998,12 +2018,8 @@ export function evaluateHigherOrderSequenceTransferAddLastLeg(
       }
     }
 
-    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, currentBest, FREE_FLYBY_MAX_DV_MPS)) {
-      if (profiler) {
-        profiler.continuousOptimizationMs += (performance.now() - t8);
-        profiler.totalMethodMs += (performance.now() - methodStart);
-      }
-      return finalizeResult(currentBest);
+    if (bestConstraintDv <= 1e-6 && bestConstraintResult) {
+      break;
     }
   }
 
@@ -2226,7 +2242,7 @@ export function generateHigherOrderAddFirstLegFlybySamples(
     const dvFinite = Number.isFinite(flybyEval.poweredDv);
     const totalDv = dvFinite && Number.isFinite(suffixCost) ? suffixCost + flybyEval.poweredDv : Infinity;
     const isPhysValid = isChronologicallyPossible && isPFirstPhys && isSuffixPhys && flybyEval.isValid;
-    const isConstraintValid = isPhysValid && isPFirstConstraint && isSuffixConstraint && dvFinite && flybyEval.poweredDv <= 1.0;
+    const isConstraintValid = isPhysValid && isPFirstConstraint && isSuffixConstraint && dvFinite && totalDv <= FREE_FLYBY_MAX_DV_MPS;
 
     samples.push({
       j_first: j0,
@@ -2474,11 +2490,37 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
     }
   };
 
+  // Seed with all physically valid discrete samples first (evaluating flyby dv + suffix cost)
+  for (const s of physicallyValidSamples) {
+    if (!Number.isFinite(s.totalDv)) continue;
+    const cand: SequenceTransferResult = {
+      c3DepA: s.c3DepA,
+      c3ArrB: s.c3ArrB,
+      c3DepB: s.c3DepB,
+      c3ArrFinal: s.c3ArrFinal,
+      totalDv: s.totalDv,
+      flybyDvs: [s.currentDv, ...s.suffixFlybyDvs],
+      flybyDates: [s.tFlyby, ...s.suffixFlybyDates],
+      flybyC3Arrs: [s.c3ArrB, ...(s.suffixFlybyC3Arrs || [])],
+      flybyC3Deps: [s.c3DepB, ...(s.suffixFlybyC3Deps || [])],
+    };
+    considerCandidate(cand);
+  }
+
+  // If already zero-cost (0.0 m/s) and satisfies constraints, return immediately
+  if (bestConstraintDv <= 1e-6 && bestConstraintResult) {
+    if (profiler) {
+      profiler.continuousOptimizationMs += (performance.now() - t8);
+      profiler.totalMethodMs += (performance.now() - methodStart);
+    }
+    return finalizeResult(bestConstraintResult);
+  }
+
   // First, test exact C3 zero-crossings
   for (const tRoot of rootDates) {
     const res = evalExtrapolatedAtDate(tRoot);
     considerCandidate(res);
-    if (res.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
+    if (res.totalDv <= 1e-6 && isSequenceConstraintValid(pathInsts, res, FREE_FLYBY_MAX_DV_MPS)) {
       if (profiler) {
         profiler.continuousOptimizationMs += (performance.now() - t8);
         profiler.totalMethodMs += (performance.now() - methodStart);
@@ -2512,12 +2554,6 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       if (res1.totalDv < currentBest.totalDv) currentBest = res1;
       if (res2.totalDv < currentBest.totalDv) currentBest = res2;
 
-      // Stop early if unpowered free flyby found and satisfies constraints
-      if ((res1.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res1, FREE_FLYBY_MAX_DV_MPS)) ||
-          (res2.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, res2, FREE_FLYBY_MAX_DV_MPS))) {
-        break;
-      }
-
       if (res1.totalDv < res2.totalDv) {
         b = m2;
       } else {
@@ -2525,12 +2561,8 @@ export function evaluateHigherOrderSequenceTransferAddFirstLeg(
       }
     }
 
-    if (currentBest.totalDv <= FREE_FLYBY_MAX_DV_MPS && isSequenceConstraintValid(pathInsts, currentBest, FREE_FLYBY_MAX_DV_MPS)) {
-      if (profiler) {
-        profiler.continuousOptimizationMs += (performance.now() - t8);
-        profiler.totalMethodMs += (performance.now() - methodStart);
-      }
-      return finalizeResult(currentBest);
+    if (bestConstraintDv <= 1e-6 && bestConstraintResult) {
+      break;
     }
   }
 

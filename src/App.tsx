@@ -177,12 +177,17 @@ export default function App() {
     workerRef.current?.setTaskPriority(linkTaskId, 100, true);
   };
 
-  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], _isFullPath: boolean) => {
+  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], _isFullPath: boolean, forceRecompute = false) => {
     if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 3) return;
     setSelectedSeqPorkchopId(seqId);
 
+    const seqTaskId = `task-seq-${seqId}`;
+    if (forceRecompute) {
+      workerRef.current?.resetTask(seqTaskId);
+    }
+
     // Initialize state immediately so the sequence porkchop modal window opens instantly
-    if (!sequencePorkchops[seqId]) {
+    if (!sequencePorkchops[seqId] || forceRecompute) {
       const seqLabel = pathInsts.map(inst => inst.bodyName).join(' ➔ ');
       const initialSeqData: SequencePorkchopData = {
         id: seqId,
@@ -209,7 +214,6 @@ export default function App() {
       }));
     }
 
-    const seqTaskId = `task-seq-${seqId}`;
     // Set priority to 100 and execute via sequential worker
     workerRef.current?.setTaskPriority(seqTaskId, 100, true);
   };
@@ -845,9 +849,9 @@ export default function App() {
             const candPaths = findAllSubPathsInGraph(links, instances);
             const cand = candPaths.find(c => c.id === selectedSeqPorkchopId);
             if (cand && cand.pathInsts && cand.pathInsts.length >= 3) {
-              handleComputeSingleSequencePorkchop(cand.id, cand.pathInsts, cand.isFullPath);
+              handleComputeSingleSequencePorkchop(cand.id, cand.pathInsts, cand.isFullPath, true);
             } else if (seqData.flybys && seqData.flybys.length >= 1) {
-              handleComputeSingleSequencePorkchop(seqData.id, [seqData.sourceBody, ...seqData.flybys.map(f => f.instance), seqData.targetBody], seqData.isFullPath);
+              handleComputeSingleSequencePorkchop(seqData.id, [seqData.sourceBody, ...seqData.flybys.map(f => f.instance), seqData.targetBody], seqData.isFullPath, true);
             }
           }}
         />

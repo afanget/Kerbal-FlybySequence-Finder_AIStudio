@@ -65,6 +65,9 @@ export interface ComputationTask {
     sampleArr?: number;
     sampleSecond?: number;
     samplePenultimate?: number;
+    targetDepDates?: number[];
+    targetArrDates?: number[];
+    isPartial?: boolean;
   };
 }
 
@@ -590,7 +593,7 @@ export class SequentialTaskWorker {
     await this.start();
   }
 
-  public resetTask(taskId: string) {
+  public resetTask(taskId: string, clearCache: boolean = true) {
     const task = this.tasks.get(taskId);
     if (!task) return;
 
@@ -598,6 +601,17 @@ export class SequentialTaskWorker {
     task.progress = 0;
     task.error = undefined;
     task.statusText = undefined;
+
+    if (clearCache) {
+      if (task.type === 'TWO_BODY_TRANSFER' && task.meta?.linkId) {
+        delete this.porkchops[task.meta.linkId];
+      } else if (task.type === 'SEQUENCE_PORKCHOP' && task.meta?.candId) {
+        delete this.sequencePorkchops[task.meta.candId];
+        delete this.sequencePorkchops[`seq-pc-${task.meta.candId}`];
+      } else if (task.type === 'COMPUTE_SEQUENCES_DEFAULT' || task.type === 'COMPUTE_SEQUENCES_FROM_PORKCHOP') {
+        this.results = [];
+      }
+    }
 
     // Reset dependent tasks recursively as well
     const visited = new Set<string>();
@@ -609,21 +623,54 @@ export class SequentialTaskWorker {
       t.progress = 0;
       t.error = undefined;
       t.statusText = undefined;
+
+      if (clearCache) {
+        if (t.type === 'TWO_BODY_TRANSFER' && t.meta?.linkId) {
+          delete this.porkchops[t.meta.linkId];
+        } else if (t.type === 'SEQUENCE_PORKCHOP' && t.meta?.candId) {
+          delete this.sequencePorkchops[t.meta.candId];
+          delete this.sequencePorkchops[`seq-pc-${t.meta.candId}`];
+        } else if (t.type === 'COMPUTE_SEQUENCES_DEFAULT' || t.type === 'COMPUTE_SEQUENCES_FROM_PORKCHOP') {
+          this.results = [];
+        }
+      }
+
       t.dependents.forEach(depId => resetDependents(depId));
     };
 
     task.dependents.forEach(depId => resetDependents(depId));
 
+    this.callbacks.onDataSync?.({
+      instances: this.instances,
+      links: this.links,
+      porkchops: this.porkchops,
+      sequencePorkchops: this.sequencePorkchops,
+      results: this.results,
+    });
     this.callbacks.onGraphUpdate?.(new Map(this.tasks));
   }
 
-  public resetAllTasks() {
+  public resetAllTasks(clearCache: boolean = true) {
     this.tasks.forEach(task => {
       task.status = 'pending';
       task.progress = 0;
       task.priority = 0;
       task.error = undefined;
       task.statusText = undefined;
+    });
+
+    if (clearCache) {
+      this.porkchops = {};
+      this.sequencePorkchops = {};
+      this.results = [];
+    }
+
+    this.callbacks.onDataSync?.({
+      instances: this.instances,
+      links: this.links,
+      porkchops: this.porkchops,
+      sequencePorkchops: this.sequencePorkchops,
+      results: this.results,
     });
     this.callbacks.onGraphUpdate?.(new Map(this.tasks));
   }
@@ -799,7 +846,10 @@ export class SequentialTaskWorker {
             const pct = currentTotal > 0 ? Math.round((currentComp / currentTotal) * 100) : 0;
             updateProgress(pct, `Evaluating direct transfer grid (${pct}%)...`);
           },
-          () => this.stopRequested
+          () => this.stopRequested,
+          task.meta?.targetDepDates,
+          task.meta?.targetArrDates,
+          this.porkchops[link.id]
         );
 
         this.porkchops[link.id] = pcData;
@@ -846,6 +896,9 @@ export class SequentialTaskWorker {
             this.sequencePorkchops[subSeqPc.id] = subSeqPc;
           },
           shouldStop: () => this.stopRequested,
+          targetDepDates: task.meta?.targetDepDates,
+          targetArrDates: task.meta?.targetArrDates,
+          existingSeqPorkchop: this.sequencePorkchops[candId] || this.sequencePorkchops[`seq-pc-${candId}`],
         });
 
         this.sequencePorkchops[candId] = seqPc;

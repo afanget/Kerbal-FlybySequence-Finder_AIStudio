@@ -113,6 +113,8 @@ export interface PorkchopPlotData {
   constraintValidMatrix?: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
   vTransDepMatrix?: Vector3D[][];
   vTransArrMatrix?: Vector3D[][];
+  evaluatedMatrix?: boolean[][];
+  isPartial?: boolean;
   computedSamples: number;
   totalSamples: number;
 }
@@ -141,6 +143,8 @@ export interface SequencePorkchopData {
   flightTimeMatrix: number[][];
   physicalValidMatrix: boolean[][]; // Strictly physically possible (dt >= 0, chronological, no collisions)
   constraintValidMatrix: boolean[][]; // Physically possible AND passes all soft mission/C3/duration constraints
+  evaluatedMatrix?: boolean[][];
+  isPartial?: boolean;
   computedSamples: number;
   totalSamples: number;
   activeSubtask?: SubtaskProgressInfo | null;
