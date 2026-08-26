@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   SolarSystem,
   CelestialBody,
@@ -25,12 +25,17 @@ import { PorkchopViewer } from './components/PorkchopViewer';
 import { SequencePorkchopViewer } from './components/SequencePorkchopViewer';
 import { ResultsTable } from './components/ResultsTable';
 import { TisserandPlot } from './components/TisserandPlot';
+import { TaskDependencyGraph } from './components/TaskDependencyGraph';
 import { AutotestModal } from './components/AutotestModal';
 import { C3DebugModal } from './components/C3DebugModal';
 import { CheckCircle2, RefreshCw, AlertCircle } from 'lucide-react';
 import {
+  ComputationTask,
+  findNextRunnableTask,
+  SequentialTaskWorker,
+} from './physics/taskManager';
+import {
   runSequenceSearch,
-  runSequenceSearchAlt,
   computePorkchopPlot,
   computeSequencePorkchopPlot,
   findAllSubPathsInGraph,
@@ -39,7 +44,8 @@ import {
   generateLinkEndDates,
   countPossibleTransfers,
   intersectInstanceDates,
-  extractSequencesFromSequencePorkchops
+  extractSequencesFromSequencePorkchops,
+  applyDateAndTisserandUpdates,
 } from './physics/solver';
 import { daysToSeconds, parseKSPTimeToUT } from './utils/timeFormat';
 
@@ -77,97 +83,112 @@ export default function App() {
   const [computingSeqId, setComputingSeqId] = useState<string | null>(null);
   const [computingLinkId, setComputingLinkId] = useState<string | null>(null);
 
+  // Single Sequential Worker States
+  const workerRef = useRef<SequentialTaskWorker | null>(null);
+  const [taskMap, setTaskMap] = useState<Map<string, ComputationTask>>(new Map());
+  const [workerRunning, setWorkerRunning] = useState<boolean>(false);
+  const [workerPaused, setWorkerPaused] = useState<boolean>(false);
+  const [currentWorkerTaskId, setCurrentWorkerTaskId] = useState<string | null>(null);
+
+  // Keep worker callbacks always updated
+  useEffect(() => {
+    if (!workerRef.current) {
+      workerRef.current = new SequentialTaskWorker();
+    }
+
+    workerRef.current.setCallbacks({
+      onGraphUpdate: (updatedTasks) => {
+        setTaskMap(new Map(updatedTasks));
+      },
+      onStatusChange: (running, paused, currTask) => {
+        setWorkerRunning(running);
+        setWorkerPaused(paused);
+        setCurrentWorkerTaskId(currTask ? currTask.id : null);
+        setIsSearching(running);
+        if (!running) {
+          setComputingLinkId(null);
+          setComputingSeqId(null);
+        }
+      },
+      onTaskStart: (task) => {
+        setSearchStatusText(`[Worker] Running: ${task.name}...`);
+        if (task.type === 'TWO_BODY_TRANSFER' && task.meta?.linkId) {
+          setComputingLinkId(task.meta.linkId);
+        } else if (task.type === 'SEQUENCE_PORKCHOP' && task.meta?.candId) {
+          setComputingSeqId(task.meta.candId);
+        }
+      },
+      onTaskProgress: (_task, _pct, statusText) => {
+        if (statusText) {
+          setSearchStatusText(statusText);
+        }
+      },
+      onTaskComplete: (task) => {
+        if (task.type === 'TWO_BODY_TRANSFER' && task.meta?.linkId) {
+          setComputingLinkId(null);
+        } else if (task.type === 'SEQUENCE_PORKCHOP' && task.meta?.candId) {
+          setComputingSeqId(null);
+        }
+      },
+      onDataSync: (data) => {
+        if (data.porkchops) setPorkchops(prev => ({ ...prev, ...data.porkchops }));
+        if (data.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...data.sequencePorkchops }));
+        if (data.results) setResults(data.results);
+      },
+    });
+  });
+
+  // Keep worker context updated with latest topology & calculation state
+  useEffect(() => {
+    if (!workerRef.current) return;
+
+    const activeInsts = confirmedInstances.length > 0 ? confirmedInstances : instances;
+    const activeLnks = confirmedLinks.length > 0 ? confirmedLinks : links;
+
+    workerRef.current.updateContext(
+      activeInsts,
+      activeLnks,
+      currentSystem,
+      mainBodyName,
+      porkchops,
+      sequencePorkchops,
+      results
+    );
+  }, [instances, links, confirmedInstances, confirmedLinks, currentSystem, mainBodyName, porkchops, sequencePorkchops, results]);
+
   const handleStopSearch = () => {
     stopSearchRef.current = true;
-    setSearchStatusText('Stopping search...');
+    workerRef.current?.stop();
+    setIsSearching(false);
+    setComputingLinkId(null);
+    setComputingSeqId(null);
+    setSearchStatusText('Calculations stopped.');
   };
 
   const handleComputeSingleLinkPorkchop = async (linkId: string, forceRecompute = false) => {
     setPorkchopModalLinkId(linkId);
 
-    if (!forceRecompute && porkchops[linkId] && porkchops[linkId].c3DepMatrix && porkchops[linkId].c3DepMatrix.length > 0) {
-      return;
+    const linkTaskId = `task-link-${linkId}`;
+    if (forceRecompute) {
+      workerRef.current?.resetTask(linkTaskId);
     }
 
-    const link = links.find(l => l.id === linkId);
-    if (!link) return;
-    const srcInstance = instances.find(i => i.id === link.sourceInstanceId);
-    const tgtInstance = instances.find(i => i.id === link.targetInstanceId);
-    if (!srcInstance || !tgtInstance) return;
-
-    const { srcDates, tgtDates } = countPossibleTransfers(link, srcInstance, tgtInstance);
-
-    // Initialize porkchop state immediately so modal opens on frame 1
-    if (!porkchops[linkId] || forceRecompute) {
-      const initialPcData: PorkchopPlotData = {
-        linkId,
-        sourceBody: srcInstance.bodyName,
-        targetBody: tgtInstance.bodyName,
-        depDates: srcDates,
-        arrDates: tgtDates,
-        c3DepMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: Infinity, y: Infinity, z: Infinity })),
-        c3ArrMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: Infinity, y: Infinity, z: Infinity })),
-        dvMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(Infinity)),
-        flightTimeMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(0)),
-        physicalValidMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(false)),
-        constraintValidMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill(false)),
-        vTransDepMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: 0, y: 0, z: 0 })),
-        vTransArrMatrix: Array.from({ length: srcDates.length }, () => Array(tgtDates.length).fill({ x: 0, y: 0, z: 0 })),
-        computedSamples: 0,
-        totalSamples: srcDates.length * tgtDates.length,
-      };
-      setPorkchops(prev => ({ ...prev, [linkId]: initialPcData }));
-    }
-
-    setComputingLinkId(linkId);
-
-    // Yield to the browser event loop so React flushes state and paints PorkchopViewer immediately
-    await new Promise(resolve => setTimeout(resolve, 0));
-
-    try {
-      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
-      const pcData = await computePorkchopPlot(
-        link,
-        srcInstance,
-        tgtInstance,
-        currentSystem.bodies,
-        mainBody,
-        (msg) => setSearchStatusText(msg),
-        (partialPcData) => {
-          setPorkchops(prev => ({
-            ...prev,
-            [linkId]: partialPcData
-          }));
-        },
-        () => stopSearchRef.current
-      );
-      setPorkchops(prev => ({
-        ...prev,
-        [linkId]: pcData
-      }));
-    } catch (err) {
-      console.error('Error computing single porkchop:', err);
-    } finally {
-      setComputingLinkId(null);
-    }
+    // Set priority to 100 and execute via sequential worker
+    workerRef.current?.setTaskPriority(linkTaskId, 100, true);
   };
 
-  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], isFullPath: boolean) => {
+  const handleComputeSingleSequencePorkchop = async (seqId: string, pathInsts: InstanceNode[], _isFullPath: boolean) => {
     if (!pathInsts || !Array.isArray(pathInsts) || pathInsts.length < 3) return;
-    setComputingSeqId(seqId);
     setSelectedSeqPorkchopId(seqId);
 
     // Initialize state immediately so the sequence porkchop modal window opens instantly
     if (!sequencePorkchops[seqId]) {
-      const srcBody = pathInsts[0]?.bodyName || 'Source';
-      const tgtBody = pathInsts[pathInsts.length - 1]?.bodyName || 'Target';
       const seqLabel = pathInsts.map(inst => inst.bodyName).join(' ➔ ');
-
       const initialSeqData: SequencePorkchopData = {
         id: seqId,
         sequenceLabel: seqLabel,
         instanceCount: pathInsts.length,
-        isFullPath: !!isFullPath,
+        isFullPath: !!_isFullPath,
         sourceBody: pathInsts[0],
         targetBody: pathInsts[pathInsts.length - 1],
         depDates: [],
@@ -188,93 +209,22 @@ export default function App() {
       }));
     }
 
-    try {
-      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
-      const seqPcData = await computeSequencePorkchopPlot({
-        pathInsts,
-        bodies: currentSystem.bodies,
-        mainBody,
-        links,
-        porkchops,
-        sequencePorkchops,
-        isFullPath,
-        onProgress: (msg) => setSearchStatusText(msg),
-        onPartialUpdate: (partialSeq) => {
-          setSequencePorkchops(prev => ({
-            ...prev,
-            [seqId]: partialSeq
-          }));
-        },
-        shouldStop: () => stopSearchRef.current,
-        onSubtaskProgress: (subtask) => {
-          setActiveSubtask(subtask);
-          setSequencePorkchops(prev => {
-            const current = prev[seqId];
-            if (!current) return prev;
-            return {
-              ...prev,
-              [seqId]: {
-                ...current,
-                activeSubtask: subtask
-              }
-            };
-          });
-        },
-        onDirectPorkchopUpdate: (newPcs) => {
-          setPorkchops(prev => ({ ...prev, ...newPcs }));
-        },
-        onSequencePorkchopUpdate: (subSeqPc) => {
-          setSequencePorkchops(prev => ({
-            ...prev,
-            [subSeqPc.id]: subSeqPc
-          }));
-        },
-      });
-      setSequencePorkchops(prev => ({
-        ...prev,
-        [seqId]: seqPcData
-      }));
-    } catch (err) {
-      console.error('Error computing sequence porkchop:', err);
-      alert('Error computing sequence porkchop: ' + err);
-    } finally {
-      setActiveSubtask(null);
-      setComputingSeqId(null);
-    }
+    const seqTaskId = `task-seq-${seqId}`;
+    // Set priority to 100 and execute via sequential worker
+    workerRef.current?.setTaskPriority(seqTaskId, 100, true);
   };
+
+  // Memoized main celestial body
+  const mainBodyObj = useMemo(() => {
+    return getCelestialBodyByName(currentSystem, mainBodyName);
+  }, [currentSystem, mainBodyName]);
 
   // Available bodies orbiting selected main body (filter out any body that is not a direct child of the primary central body)
-  const availableBodies = currentSystem.bodies.filter(
-    b => b.referenceBody && b.referenceBody.trim().toLowerCase() === mainBodyName.trim().toLowerCase()
-  );
-
-  // Helper to compute and propagate date bounds, link end dates, intersections & C3 bounds
-  const applyDateAndTisserandUpdates = (
-    currentInsts: InstanceNode[],
-    currentLnks: DirectionalLink[],
-    systemToUse: SolarSystem = currentSystem,
-    mainBodyNameToUse: string = mainBodyName
-  ): { updatedInsts: InstanceNode[]; updatedLnks: DirectionalLink[] } => {
-    if (currentInsts.length === 0 || currentLnks.length === 0) {
-      return { updatedInsts: currentInsts, updatedLnks: currentLnks };
-    }
-
-    const mainBody: CelestialBody = getCelestialBodyByName(systemToUse, mainBodyNameToUse);
-
-    let updatedInsts = propagateDateBounds(currentInsts, currentLnks);
-    let updatedLnks = generateLinkEndDates(updatedInsts, currentLnks, systemToUse.bodies, mainBody);
-    updatedLnks = updatedLnks.map(link => {
-      const src = updatedInsts.find(i => i.id === link.sourceInstanceId);
-      const tgt = updatedInsts.find(i => i.id === link.targetInstanceId);
-      if (!src || !tgt) return link;
-      const { totalPossible } = countPossibleTransfers(link, src, tgt);
-      return { ...link, possibleTransfersCount: link.possibleTransfersCount ?? totalPossible };
-    });
-    updatedInsts = intersectInstanceDates(updatedInsts, updatedLnks, systemToUse.bodies, mainBody);
-    updatedInsts = propagateC3Bounds(updatedInsts, updatedLnks, systemToUse.bodies, mainBody);
-
-    return { updatedInsts, updatedLnks };
-  };
+  const availableBodies = useMemo(() => {
+    return currentSystem.bodies.filter(
+      b => b.referenceBody && b.referenceBody.trim().toLowerCase() === mainBodyName.trim().toLowerCase()
+    );
+  }, [currentSystem.bodies, mainBodyName]);
 
   // Load initial preset mission on first mount (Kerbin -> Eve -> Kerbin -> Jool -> Grannus)
   useEffect(() => {
@@ -563,7 +513,7 @@ export default function App() {
     setSequencePorkchops({});
   };
 
-  // Execute Search Algorithm (Steps 1 through 8)
+  // Execute Search Algorithm (Steps 1 through 8 via Sequential Worker)
   const handleSearchSequences = async () => {
     if (instances.length === 0) {
       alert('Please add body instances to the canvas before searching.');
@@ -577,108 +527,11 @@ export default function App() {
 
     stopSearchRef.current = false;
     setIsSearching(true);
-    setSearchStatusText('Initializing trajectory search...');
-
-    try {
-      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
-      const activeInsts = confirmedInstances.length > 0 ? confirmedInstances : instances;
-      const activeLnks = confirmedLinks.length > 0 ? confirmedLinks : links;
-
-      const res = await runSequenceSearch(
-        activeInsts,
-        activeLnks,
-        currentSystem.bodies,
-        mainBody,
-        (msg) => setSearchStatusText(msg),
-        (partial) => {
-          if (partial.instances) {
-            setInstances(partial.instances);
-            setConfirmedInstances(partial.instances);
-          }
-          if (partial.links) {
-            setLinks(partial.links);
-            setConfirmedLinks(partial.links);
-          }
-          if (partial.porkchops) setPorkchops(prev => ({ ...prev, ...partial.porkchops }));
-          if (partial.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...partial.sequencePorkchops }));
-        },
-        () => stopSearchRef.current
-      );
-
-      setInstances(res.updatedInstances);
-      setLinks(res.updatedLinks);
-      setConfirmedInstances(res.updatedInstances);
-      setConfirmedLinks(res.updatedLinks);
-      setPorkchops(res.porkchops);
-      if (res.sequencePorkchops) setSequencePorkchops(res.sequencePorkchops);
-      setResults(res.sequences);
-    } catch (err) {
-      console.error('Search error:', err);
-      alert('Error computing flyby sequence: ' + err);
-    } finally {
-      setIsSearching(false);
-    }
+    setSearchStatusText('Queued default stepwise sequence search (Priority 100)...');
+    workerRef.current?.setTaskPriority('task-search-default', 100, true);
   };
 
-  // Execute Alternative Search Algorithm ("another way")
-  const handleSearchSequencesAlt = async () => {
-    if (instances.length === 0) {
-      alert('Please add body instances to the canvas before searching.');
-      return;
-    }
-
-    if (hasPendingChanges) {
-      alert('Please confirm your graph updates first using the "Confirm Updates & Calculate Tisserand" button below the node plot.');
-      return;
-    }
-
-    stopSearchRef.current = false;
-    setIsSearching(true);
-    setSearchStatusText('Initializing alternative trajectory search (direct optimizer)...');
-
-    try {
-      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
-      const activeInsts = confirmedInstances.length > 0 ? confirmedInstances : instances;
-      const activeLnks = confirmedLinks.length > 0 ? confirmedLinks : links;
-
-      const res = await runSequenceSearchAlt(
-        activeInsts,
-        activeLnks,
-        currentSystem.bodies,
-        mainBody,
-        (msg) => setSearchStatusText(msg),
-        (partial) => {
-          if (partial.instances) {
-            setInstances(partial.instances);
-            setConfirmedInstances(partial.instances);
-          }
-          if (partial.links) {
-            setLinks(partial.links);
-            setConfirmedLinks(partial.links);
-          }
-          if (partial.porkchops) setPorkchops(prev => ({ ...prev, ...partial.porkchops }));
-          if (partial.sequencePorkchops) setSequencePorkchops(prev => ({ ...prev, ...partial.sequencePorkchops }));
-        },
-        () => stopSearchRef.current
-      );
-
-      setInstances(res.updatedInstances);
-      setLinks(res.updatedLinks);
-      setConfirmedInstances(res.updatedInstances);
-      setConfirmedLinks(res.updatedLinks);
-      if (res.porkchops) setPorkchops(res.porkchops);
-      if (res.sequencePorkchops) setSequencePorkchops(res.sequencePorkchops);
-      setResults(res.sequences);
-    } catch (err) {
-      console.error('Alt search error:', err);
-      alert('Error computing flyby sequence: ' + err);
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  // Execute Search from Sequence Porkchops
-  // Computes all full-path sequence porkchops (if not done yet), then extracts all samples where each flyby delta-v <= 1 m/s
+  // Execute Search from Sequence Porkchops (via Sequential Worker)
   const handleSearchSequencesFromPorkchops = async () => {
     if (instances.length === 0 || links.length === 0) {
       alert('Please add body instances and directional links to the canvas before searching.');
@@ -703,96 +556,8 @@ export default function App() {
 
     stopSearchRef.current = false;
     setIsSearching(true);
-    setSearchStatusText('Preparing full-path sequence porkchops...');
-
-    try {
-      const mainBody : CelestialBody = getCelestialBodyByName(currentSystem, mainBodyName);
-      const activeSequencePorkchops: Record<string, SequencePorkchopData> = { ...sequencePorkchops };
-      const activePorkchops: Record<string, PorkchopPlotData> = { ...porkchops };
-
-      for (let idx = 0; idx < fullPathCands.length; idx++) {
-        if (stopSearchRef.current) break;
-        const cand = fullPathCands[idx];
-        const existing = activeSequencePorkchops[cand.id];
-
-        const isFullyComputed = existing && existing.depDates && existing.depDates.length > 0 &&
-          existing.arrDates && existing.arrDates.length > 0 &&
-          (existing.constraintValidMatrix || existing.physicalValidMatrix) &&
-          existing.computedSamples === existing.totalSamples;
-
-        if (!isFullyComputed) {
-          setSearchStatusText(`Computing sequence porkchop for full path ${idx + 1}/${fullPathCands.length}: ${cand.sequenceLabel}...`);
-          setComputingSeqId(cand.id);
-
-          const seqPc = await computeSequencePorkchopPlot({
-            pathInsts: cand.pathInsts,
-            bodies: currentSystem.bodies,
-            mainBody,
-            links: activeLnks,
-            porkchops: activePorkchops,
-            sequencePorkchops: activeSequencePorkchops,
-            onProgress: (msg) => setSearchStatusText(msg),
-            onPartialUpdate: (partialSeq) => {
-              activeSequencePorkchops[cand.id] = partialSeq;
-              setSequencePorkchops(prev => ({
-                ...prev,
-                [cand.id]: partialSeq
-              }));
-            },
-            onSubtaskProgress: (subtask) => {
-              setActiveSubtask(subtask);
-            },
-            onDirectPorkchopUpdate: (newPcs) => {
-              Object.assign(activePorkchops, newPcs);
-              setPorkchops(prev => ({ ...prev, ...newPcs }));
-            },
-            onSequencePorkchopUpdate: (subSeqPc) => {
-              activeSequencePorkchops[subSeqPc.id] = subSeqPc;
-              setSequencePorkchops(prev => ({
-                ...prev,
-                [subSeqPc.id]: subSeqPc
-              }));
-            },
-            shouldStop: () => stopSearchRef.current,
-            isFullPath: true,
-          });
-
-          activeSequencePorkchops[cand.id] = seqPc;
-          setSequencePorkchops(prev => ({
-            ...prev,
-            [cand.id]: seqPc
-          }));
-          setComputingSeqId(null);
-          setActiveSubtask(null);
-        }
-      }
-
-      if (stopSearchRef.current) {
-        setSearchStatusText('Search stopped by user.');
-        return;
-      }
-
-      // Extract all samples where each flyby delta-v is <= 1 m/s (no new Lambert compute needed)
-      setSearchStatusText('Extracting sequence results with flyby Δv ≤ 1 m/s from computed sequence porkchops...');
-      const extractedResults = extractSequencesFromSequencePorkchops(
-        activeSequencePorkchops,
-        fullPathCands,
-        activeInsts,
-        currentSystem.bodies,
-        mainBody,
-        1.0
-      );
-
-      setResults(extractedResults);
-      setSearchStatusText(`Extracted ${extractedResults.length} validated sequence solution(s) with each flyby Δv ≤ 1 m/s.`);
-    } catch (err) {
-      console.error('Sequence porkchops search error:', err);
-      alert('Error searching sequences from porkchops: ' + err);
-    } finally {
-      setIsSearching(false);
-      setComputingSeqId(null);
-      setActiveSubtask(null);
-    }
+    setSearchStatusText('Queued search from sequence porkchops (Priority 100)...');
+    workerRef.current?.setTaskPriority('task-search-from-porkchops', 100, true);
   };
 
   const handleRemoveResult = (seqId: string) => {
@@ -938,13 +703,57 @@ export default function App() {
           </div>
         </section>
 
+        {/* Foldable Task Dependency Graph Section (Sequential Task Worker Engine) */}
+        <section id="task-graph-section" className="w-full min-w-full">
+          <TaskDependencyGraph
+            tasks={taskMap}
+            isRunning={workerRunning}
+            isPaused={workerPaused}
+            currentTaskId={currentWorkerTaskId}
+            onSetTaskPriority={(taskId, priority, autoStart) => {
+              workerRef.current?.setTaskPriority(taskId, priority, autoStart);
+            }}
+            onResetTask={(taskId) => {
+              workerRef.current?.resetTask(taskId);
+              setTaskMap(workerRef.current?.getTasks() || new Map());
+            }}
+            onResetAllTasks={() => {
+              workerRef.current?.resetAllTasks();
+              setTaskMap(workerRef.current?.getTasks() || new Map());
+            }}
+            onStartWorker={() => {
+              const runnable = findNextRunnableTask(taskMap);
+              if (!runnable || runnable.effectivePriority <= 0) {
+                workerRef.current?.runAllPending();
+              } else {
+                workerRef.current?.start();
+              }
+            }}
+            onPauseWorker={() => {
+              workerRef.current?.pause();
+            }}
+            onResumeWorker={() => {
+              workerRef.current?.resume();
+            }}
+            onStopWorker={() => {
+              workerRef.current?.stop();
+            }}
+            onOpenPorkchop={(linkId) => {
+              setPorkchopModalLinkId(linkId);
+            }}
+            onOpenSequencePorkchop={(seqId) => {
+              setSelectedSeqPorkchopId(seqId);
+            }}
+          />
+        </section>
+
         {/* Foldable Tisserand Plot Section */}
         <section id="tisserand-section" className="w-full min-w-full">
           <TisserandPlot
             instances={confirmedInstances}
             links={confirmedLinks}
             bodies={currentSystem.bodies}
-            mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
+            mainBody={mainBodyObj}
             results={results}
           />
         </section>
@@ -955,7 +764,6 @@ export default function App() {
             results={results}
             timeFormatMode={timeFormatMode}
             onSearchSequences={handleSearchSequences}
-            onSearchSequencesAlt={handleSearchSequencesAlt}
             onSearchSequencesFromPorkchops={handleSearchSequencesFromPorkchops}
             onStopSearch={handleStopSearch}
             onRemoveResult={handleRemoveResult}
@@ -963,7 +771,7 @@ export default function App() {
             isSearching={isSearching}
             searchStatusText={searchStatusText}
             bodies={currentSystem.bodies}
-            mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
+            mainBody={mainBodyObj}
             porkchops={porkchops}
             onPorkchopUpdate={(newPorkchops) => setPorkchops(prev => ({ ...prev, ...newPorkchops }))}
             sequencePorkchops={sequencePorkchops}
@@ -1030,7 +838,7 @@ export default function App() {
           links={links}
           instances={instances}
           bodies={currentSystem.bodies}
-          mainBody={getCelestialBodyByName(currentSystem, mainBodyName)}
+          mainBody={mainBodyObj}
           onRecomputePorkchop={() => {
             const seqData = sequencePorkchops[selectedSeqPorkchopId];
             if (!seqData) return;

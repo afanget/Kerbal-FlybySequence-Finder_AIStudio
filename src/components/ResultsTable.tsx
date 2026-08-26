@@ -24,7 +24,6 @@ interface ResultsTableProps {
   results: FlyableSequenceResult[];
   timeFormatMode: 'ksp' | 'earth';
   onSearchSequences: () => void;
-  onSearchSequencesAlt?: () => void;
   onSearchSequencesFromPorkchops?: () => void;
   onStopSearch?: () => void;
   onRemoveResult?: (seqId: string) => void;
@@ -62,7 +61,6 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   results,
   timeFormatMode,
   onSearchSequences,
-  onSearchSequencesAlt,
   onSearchSequencesFromPorkchops,
   onStopSearch,
   onRemoveResult,
@@ -102,9 +100,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
   const [tisserandStatusText, setTisserandStatusText] = useState<string>('');
 
   const porkchopsRef = React.useRef(porkchops);
-  useEffect(() => {
-    porkchopsRef.current = porkchops;
-  }, [porkchops]);
+  porkchopsRef.current = porkchops;
 
   useEffect(() => {
     if (instances.length === 0 || links.length === 0) {
@@ -537,17 +533,6 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({
               >
                 <span>Search Possible Sequences</span>
               </button>
-              {onSearchSequencesAlt && (
-                <button
-                  id="btn-search-sequences-alt"
-                  onClick={onSearchSequencesAlt}
-                  className="search-btn-alt flex items-center gap-2 px-5 py-2.5 rounded font-serif text-xs uppercase tracking-widest text-white bg-sky-700 hover:bg-sky-600 border border-sky-500 shadow-lg transition active:scale-95 cursor-pointer font-semibold"
-                  title="Direct trajectory search & optimization without grid pruning. Sorted by sum(C3d, C3a, stocDv²)"
-                >
-                  <Compass className="w-4 h-4 text-sky-200" />
-                  <span>Search possible sequences (another way)</span>
-                </button>
-              )}
               {onSearchSequencesFromPorkchops && (
                 <button
                   id="btn-search-sequences-porkchops"
