@@ -557,6 +557,24 @@ export function extractMultiInstanceDebugData(
  * Re-evaluates all multi-instance flyby rows and transfer metrics for an arbitrary
  * array of custom dates: [tDep, tFlyby_1, ..., tFlyby_{N-2}, tArr] (length N).
  */
+function solveLambertSafe(
+  r1: Vector3D,
+  r2: Vector3D,
+  dt: number,
+  mu: number
+): { v1: Vector3D; v2: Vector3D } | null {
+  if (dt <= 0 || !r1 || !r2) return null;
+  const solPro = solveLambert(r1, r2, dt, mu, true);
+  if (solPro && solPro.isValid && solPro.v1 && solPro.v2 && vecMag(solPro.v1) > 1e-3) {
+    return { v1: solPro.v1, v2: solPro.v2 };
+  }
+  const solRetro = solveLambert(r1, r2, dt, mu, false);
+  if (solRetro && solRetro.isValid && solRetro.v1 && solRetro.v2 && vecMag(solRetro.v1) > 1e-3) {
+    return { v1: solRetro.v1, v2: solRetro.v2 };
+  }
+  return null;
+}
+
 export function evaluateMultiInstanceForDates(
   pathInsts: InstanceNode[],
   customDates: number[],
@@ -617,10 +635,10 @@ export function evaluateMultiInstanceForDates(
     }
     if (!vTransArr || vecMag(vTransArr) < 1e-3) {
       const dt1 = tCurr - tPrev;
-      if (dt1 > 0) {
+      if (dt1 > 0 && prevBody) {
         const stPrev = getBodyStateAtUT(prevBody, mainBody, tPrev);
-        const lamb1 = solveLambert(stPrev.pos, bodyState.pos, dt1, muCentral, true);
-        if (lamb1 && lamb1.isValid && lamb1.v2 && vecMag(lamb1.v2) > 1e-3) {
+        const lamb1 = solveLambertSafe(stPrev.pos, bodyState.pos, dt1, muCentral);
+        if (lamb1 && lamb1.v2 && vecMag(lamb1.v2) > 1e-3) {
           vTransArr = lamb1.v2;
         }
       }
@@ -638,10 +656,10 @@ export function evaluateMultiInstanceForDates(
     }
     if (!vTransDep || vecMag(vTransDep) < 1e-3) {
       const dt2 = tNext - tCurr;
-      if (dt2 > 0) {
+      if (dt2 > 0 && nextBody) {
         const stNext = getBodyStateAtUT(nextBody, mainBody, tNext);
-        const lamb2 = solveLambert(bodyState.pos, stNext.pos, dt2, muCentral, true);
-        if (lamb2 && lamb2.isValid && lamb2.v1 && vecMag(lamb2.v1) > 1e-3) {
+        const lamb2 = solveLambertSafe(bodyState.pos, stNext.pos, dt2, muCentral);
+        if (lamb2 && lamb2.v1 && vecMag(lamb2.v1) > 1e-3) {
           vTransDep = lamb2.v1;
         }
       }
@@ -725,14 +743,14 @@ export function evaluateMultiInstanceForDates(
 
   // Calculate departure C3 from source body
   let c3DepSource : Vector3D = { x: Infinity, y: Infinity, z: Infinity };
-  const srcBody = bodyMap.get(pathInsts[0].bodyName)!;
-  const fb1Body = bodyMap.get(pathInsts[1].bodyName)!;
+  const srcBody = bodyMap.get(pathInsts[0].bodyName);
+  const fb1Body = bodyMap.get(pathInsts[1].bodyName);
   const dt0 = customDates[1] - customDates[0];
-  if (dt0 > 0) {
+  if (dt0 > 0 && srcBody && fb1Body) {
     const st0 = getBodyStateAtUT(srcBody, mainBody, customDates[0]);
     const st1 = getBodyStateAtUT(fb1Body, mainBody, customDates[1]);
-    const lamb0 = solveLambert(st0.pos, st1.pos, dt0, muCentral, true);
-    if (lamb0 && lamb0.isValid && lamb0.v1) {
+    const lamb0 = solveLambertSafe(st0.pos, st1.pos, dt0, muCentral);
+    if (lamb0 && lamb0.v1) {
       const vInf0 = vecSub(lamb0.v1, st0.vel);
       c3DepSource = vecScale(vInf0, vecMag(vInf0) / 1e6);
     }
@@ -740,14 +758,14 @@ export function evaluateMultiInstanceForDates(
 
   // Calculate arrival C3 at target body
   let c3ArrTarget : Vector3D = { x: Infinity, y: Infinity, z: Infinity };
-  const fbN2Body = bodyMap.get(pathInsts[N - 2].bodyName)!;
-  const tgtBody = bodyMap.get(pathInsts[N - 1].bodyName)!;
+  const fbN2Body = bodyMap.get(pathInsts[N - 2].bodyName);
+  const tgtBody = bodyMap.get(pathInsts[N - 1].bodyName);
   const dtLast = customDates[N - 1] - customDates[N - 2];
-  if (dtLast > 0) {
+  if (dtLast > 0 && fbN2Body && tgtBody) {
     const stN2 = getBodyStateAtUT(fbN2Body, mainBody, customDates[N - 2]);
     const stN1 = getBodyStateAtUT(tgtBody, mainBody, customDates[N - 1]);
-    const lambLast = solveLambert(stN2.pos, stN1.pos, dtLast, muCentral, true);
-    if (lambLast && lambLast.isValid && lambLast.v2) {
+    const lambLast = solveLambertSafe(stN2.pos, stN1.pos, dtLast, muCentral);
+    if (lambLast && lambLast.v2) {
       const vInfTarget = vecSub(lambLast.v2, stN1.vel);
       c3ArrTarget = vecScale(vInfTarget, vecMag(vInfTarget) / 1e6);
     }

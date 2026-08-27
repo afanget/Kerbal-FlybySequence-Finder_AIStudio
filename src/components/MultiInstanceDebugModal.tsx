@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   MultiInstanceDebugData,
   MultiInstanceFlybyRow,
@@ -11,6 +11,7 @@ import {
   PivotCandidateSample,
   extractMultiInstanceDebugData,
   evaluateMultiInstanceForDates,
+  extractHigherOrderAlgorithmInfo,
   optimizeFlybyDateDichotomic,
   optimizeAllFlybyDates,
   getFlybyDateSampleStep,
@@ -23,8 +24,16 @@ import {
   DirectionalLink,
   CelestialBody,
   OrbitalBody,
+  InstanceNode,
 } from '../types';
-import { formatShortUT, formatDuration } from '../utils/timeFormat';
+import {
+  formatShortUT,
+  formatUT,
+  formatDuration,
+  utToYearDay,
+  parseKSPTimeToUT,
+  parseDateStringToUT,
+} from '../utils/timeFormat';
 import {
   X,
   Compass,
@@ -50,6 +59,9 @@ import {
   AlertCircle,
   Search,
   Check,
+  Edit3,
+  SlidersHorizontal,
+  Hash,
 } from 'lucide-react';
 import { vecMag } from '../physics/kepler';
 
@@ -65,6 +77,526 @@ interface MultiInstanceDebugModalProps {
   onClose: () => void;
   onRecomputePoint?: (depIndex: number, arrIndex: number) => void;
 }
+
+// ---------------------------------------------------------------------------
+// Single Date Edit Modal Component
+// ---------------------------------------------------------------------------
+interface SingleDateEditModalProps {
+  index: number;
+  bodyName: string;
+  role: 'departure' | 'flyby' | 'arrival';
+  currentDate: number;
+  minAllowedDate?: number;
+  maxAllowedDate?: number;
+  timeFormatMode: 'ksp' | 'earth';
+  onApply: (newDate: number) => void;
+  onClose: () => void;
+}
+
+const SingleDateEditModal: React.FC<SingleDateEditModalProps> = ({
+  index,
+  bodyName,
+  role,
+  currentDate,
+  minAllowedDate,
+  maxAllowedDate,
+  timeFormatMode,
+  onApply,
+  onClose,
+}) => {
+  const initialCal = utToYearDay(currentDate, timeFormatMode);
+  const [yearInput, setYearInput] = useState<number>(initialCal.year);
+  const [dayInput, setDayInput] = useState<number>(initialCal.day);
+  const [utInputStr, setUtInputStr] = useState<string>(Math.round(currentDate).toString());
+  const [textInputStr, setTextInputStr] = useState<string>(formatShortUT(currentDate, timeFormatMode));
+  const [inputMode, setInputMode] = useState<'calendar' | 'ut' | 'text'>('calendar');
+
+  const daySec = timeFormatMode === 'ksp' ? 21600 : 86400;
+
+  // Calculate the live preview date based on active input
+  const previewDate = useMemo(() => {
+    if (inputMode === 'calendar') {
+      return parseKSPTimeToUT(yearInput, dayInput, 0, 0, 0, timeFormatMode);
+    } else if (inputMode === 'ut') {
+      const parsed = parseFloat(utInputStr);
+      return !isNaN(parsed) ? parsed : currentDate;
+    } else {
+      const parsed = parseDateStringToUT(textInputStr, timeFormatMode);
+      return parsed !== null ? parsed : currentDate;
+    }
+  }, [inputMode, yearInput, dayInput, utInputStr, textInputStr, timeFormatMode, currentDate]);
+
+  const isValidRange = useMemo(() => {
+    if (minAllowedDate !== undefined && previewDate < minAllowedDate) return false;
+    if (maxAllowedDate !== undefined && previewDate > maxAllowedDate) return false;
+    return true;
+  }, [previewDate, minAllowedDate, maxAllowedDate]);
+
+  const handleStepDays = (deltaDays: number) => {
+    const newUT = Math.max(0, previewDate + deltaDays * daySec);
+    const newCal = utToYearDay(newUT, timeFormatMode);
+    setYearInput(newCal.year);
+    setDayInput(newCal.day);
+    setUtInputStr(Math.round(newUT).toString());
+    setTextInputStr(formatShortUT(newUT, timeFormatMode));
+  };
+
+  const handleApply = () => {
+    if (previewDate !== null && Number.isFinite(previewDate) && previewDate >= 0) {
+      onApply(previewDate);
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+      <div className="bg-[#18181B] border border-[#3F3F46] rounded-xl shadow-2xl max-w-md w-full p-5 flex flex-col gap-4 text-xs font-sans">
+        {/* Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-[#27272A]">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 rounded-lg bg-purple-500/20 text-purple-400 border border-purple-500/30">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-sm flex items-center gap-1.5">
+                <span>Set Date: {bodyName}</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 font-normal uppercase">
+                  {role}
+                </span>
+              </h3>
+              <p className="text-[11px] text-[#71717A]">Enter any date (including non-sampled values) to solve Lambert transfer</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 text-[#A1A1AA] hover:text-white hover:bg-[#27272A] rounded transition cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Current & Target Preview */}
+        <div className="bg-[#09090B] border border-[#27272A] rounded-lg p-3 flex flex-col gap-1 text-xs">
+          <div className="flex items-center justify-between text-[#A1A1AA]">
+            <span>Current Date:</span>
+            <span className="font-mono text-zinc-300 font-semibold">{formatUT(currentDate, timeFormatMode)}</span>
+          </div>
+          <div className="flex items-center justify-between text-purple-300 font-semibold">
+            <span>New Custom Date:</span>
+            <span className="font-mono text-white text-sm bg-purple-950/60 px-2 py-0.5 rounded border border-purple-500/40">
+              {formatUT(previewDate, timeFormatMode)}
+            </span>
+          </div>
+        </div>
+
+        {/* Mode Selector */}
+        <div className="flex items-center rounded bg-[#09090B] p-1 border border-[#27272A] gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              setInputMode('calendar');
+              const cal = utToYearDay(previewDate, timeFormatMode);
+              setYearInput(cal.year);
+              setDayInput(cal.day);
+            }}
+            className={`flex-1 py-1 text-center rounded text-[11px] font-medium transition cursor-pointer ${
+              inputMode === 'calendar' ? 'bg-purple-600 text-white font-semibold' : 'text-[#A1A1AA] hover:text-white'
+            }`}
+          >
+            Year & Day
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setInputMode('ut');
+              setUtInputStr(Math.round(previewDate).toString());
+            }}
+            className={`flex-1 py-1 text-center rounded text-[11px] font-medium transition cursor-pointer ${
+              inputMode === 'ut' ? 'bg-purple-600 text-white font-semibold' : 'text-[#A1A1AA] hover:text-white'
+            }`}
+          >
+            Exact UT (s)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setInputMode('text');
+              setTextInputStr(formatShortUT(previewDate, timeFormatMode));
+            }}
+            className={`flex-1 py-1 text-center rounded text-[11px] font-medium transition cursor-pointer ${
+              inputMode === 'text' ? 'bg-purple-600 text-white font-semibold' : 'text-[#A1A1AA] hover:text-white'
+            }`}
+          >
+            Date String
+          </button>
+        </div>
+
+        {/* Inputs */}
+        {inputMode === 'calendar' && (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold text-[#A1A1AA]">Year</label>
+              <input
+                type="number"
+                min="1"
+                value={yearInput}
+                onChange={e => setYearInput(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                className="bg-[#09090B] border border-[#3F3F46] focus:border-purple-500 rounded px-3 py-1.5 text-white font-mono text-sm outline-none"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold text-[#A1A1AA]">Day</label>
+              <input
+                type="number"
+                min="1"
+                step="0.1"
+                value={dayInput}
+                onChange={e => setDayInput(Math.max(1, parseFloat(e.target.value) || 1))}
+                className="bg-[#09090B] border border-[#3F3F46] focus:border-purple-500 rounded px-3 py-1.5 text-white font-mono text-sm outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {inputMode === 'ut' && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-[#A1A1AA]">Universal Time (Seconds)</label>
+            <input
+              type="text"
+              value={utInputStr}
+              onChange={e => setUtInputStr(e.target.value)}
+              placeholder="e.g. 2160000"
+              className="bg-[#09090B] border border-[#3F3F46] focus:border-purple-500 rounded px-3 py-1.5 text-white font-mono text-sm outline-none"
+            />
+          </div>
+        )}
+
+        {inputMode === 'text' && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-[#A1A1AA]">Date String (e.g. Y1 D205 or 150d)</label>
+            <input
+              type="text"
+              value={textInputStr}
+              onChange={e => setTextInputStr(e.target.value)}
+              placeholder="e.g. Y1 D205"
+              className="bg-[#09090B] border border-[#3F3F46] focus:border-purple-500 rounded px-3 py-1.5 text-white font-mono text-sm outline-none"
+            />
+          </div>
+        )}
+
+        {/* Quick Day Steppers */}
+        <div className="flex items-center justify-between gap-1.5">
+          <span className="text-[11px] text-[#71717A] font-semibold">Quick Step:</span>
+          <div className="flex items-center gap-1">
+            {[-100, -10, -1, 1, 10, 100].map(d => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => handleStepDays(d)}
+                className="px-1.5 py-0.5 rounded bg-[#27272A] hover:bg-purple-600/40 text-slate-300 hover:text-white font-mono text-[10px] transition cursor-pointer border border-[#3F3F46]"
+              >
+                {d > 0 ? `+${d}d` : `${d}d`}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Chronological Bounds Info */}
+        {(minAllowedDate !== undefined || maxAllowedDate !== undefined) && (
+          <div className="text-[10px] text-[#71717A] flex items-center justify-between">
+            <span>
+              {minAllowedDate !== undefined && `Min: ${formatShortUT(minAllowedDate, timeFormatMode)}`}
+            </span>
+            <span>
+              {maxAllowedDate !== undefined && `Max: ${formatShortUT(maxAllowedDate, timeFormatMode)}`}
+            </span>
+          </div>
+        )}
+
+        {!isValidRange && (
+          <div className="bg-amber-950/40 border border-amber-500/40 rounded p-2 text-amber-300 text-[11px] flex items-center gap-1.5">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+            <span>Warning: Date is outside the standard chronological window between neighbor bodies.</span>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#27272A]">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 rounded bg-[#27272A] hover:bg-[#3F3F46] text-slate-300 text-xs font-semibold transition cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            className="px-4 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-lg shadow-purple-900/30"
+          >
+            <Check className="w-3.5 h-3.5" />
+            <span>Apply & Recalculate</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Sequence Dates Manager Modal Component
+// ---------------------------------------------------------------------------
+interface SequenceDatesManagerModalProps {
+  pathInsts: InstanceNode[];
+  customDates: number[];
+  timeFormatMode: 'ksp' | 'earth';
+  onApplyAll: (newDates: number[]) => void;
+  onOptimizeAll: () => void;
+  onReset: () => void;
+  onClose: () => void;
+}
+
+const SequenceDatesManagerModal: React.FC<SequenceDatesManagerModalProps> = ({
+  pathInsts,
+  customDates,
+  timeFormatMode,
+  onApplyAll,
+  onOptimizeAll,
+  onReset,
+  onClose,
+}) => {
+  const [datesState, setDatesState] = useState<number[]>([...customDates]);
+  const daySec = timeFormatMode === 'ksp' ? 21600 : 86400;
+
+  const handleDateChange = (idx: number, newUT: number) => {
+    const updated = [...datesState];
+    updated[idx] = Math.max(0, newUT);
+    setDatesState(updated);
+  };
+
+  const handleYearDayChange = (idx: number, year: number, day: number) => {
+    const ut = parseKSPTimeToUT(year, day, 0, 0, 0, timeFormatMode);
+    handleDateChange(idx, ut);
+  };
+
+  const handleEvenlySpaceFlybys = () => {
+    const N = datesState.length;
+    if (N <= 2) return;
+    const tDep = datesState[0];
+    const tArr = datesState[N - 1];
+    if (tArr <= tDep) return;
+    const dtTotal = tArr - tDep;
+    const updated = [...datesState];
+    for (let k = 1; k < N - 1; k++) {
+      updated[k] = tDep + (k / (N - 1)) * dtTotal;
+    }
+    setDatesState(updated);
+  };
+
+  const totalMissionTime = datesState[datesState.length - 1] - datesState[0];
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-[#18181B] border border-[#3F3F46] rounded-xl shadow-2xl max-w-2xl w-full p-5 flex flex-col max-h-[90vh] overflow-hidden text-xs">
+        {/* Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-[#27272A]">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-purple-500/20 text-purple-400 border border-purple-500/30">
+              <SlidersHorizontal className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-base">Custom Trajectory Dates Manager</h3>
+              <p className="text-[#71717A] text-[11px]">
+                Directly configure dates for all bodies in the sequence. Any non-sampled date will solve Lambert transfers.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-[#A1A1AA] hover:text-white hover:bg-[#27272A] rounded-lg transition cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Quick Toolbar */}
+        <div className="py-2.5 flex items-center justify-between gap-2 flex-wrap border-b border-[#27272A]/60">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleEvenlySpaceFlybys}
+              className="px-2.5 py-1 rounded bg-[#27272A] hover:bg-[#3F3F46] text-slate-200 border border-[#3F3F46] text-[11px] font-semibold transition cursor-pointer"
+              title="Linearly interpolate intermediate flyby dates between departure and arrival"
+            >
+              Evenly Space Intermediate Flybys
+            </button>
+            <button
+              type="button"
+              onClick={onReset}
+              className="px-2.5 py-1 rounded bg-[#27272A] hover:bg-[#3F3F46] text-slate-300 border border-[#3F3F46] text-[11px] transition cursor-pointer flex items-center gap-1"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Reset to Grid</span>
+            </button>
+          </div>
+          <div className="text-[#A1A1AA] flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-amber-400" />
+            <span>Mission Flight Time:</span>
+            <strong className="font-mono text-white">{formatDuration(totalMissionTime, timeFormatMode)}</strong>
+          </div>
+        </div>
+
+        {/* Dates Table */}
+        <div className="flex-1 overflow-y-auto py-3 space-y-2">
+          {datesState.map((ut, idx) => {
+            const node = pathInsts[idx];
+            const role = idx === 0 ? 'Departure' : idx === datesState.length - 1 ? 'Arrival' : `Flyby ${idx}`;
+            const cal = utToYearDay(ut, timeFormatMode);
+            const dtFromPrev = idx > 0 ? ut - datesState[idx - 1] : 0;
+            const isChronological = idx === 0 || ut > datesState[idx - 1];
+
+            return (
+              <div
+                key={node?.id || idx}
+                className={`bg-[#09090B] border rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition ${
+                  isChronological ? 'border-[#27272A]' : 'border-rose-500/60 bg-rose-950/20'
+                }`}
+              >
+                {/* Node info */}
+                <div className="flex items-center gap-2.5 sm:w-48 shrink-0">
+                  <span className="w-6 h-6 rounded-full bg-purple-500/20 border border-purple-500/40 text-purple-300 font-bold font-mono text-[11px] flex items-center justify-center shrink-0">
+                    {idx === 0 ? 'D' : idx === datesState.length - 1 ? 'A' : idx}
+                  </span>
+                  <div>
+                    <div className="font-bold text-white text-sm flex items-center gap-1.5">
+                      <span>{node?.bodyName || `Stage ${idx}`}</span>
+                    </div>
+                    <div className="text-[10px] text-[#71717A] flex items-center gap-1">
+                      <span>{role}</span>
+                      {idx > 0 && (
+                        <>
+                          <span>•</span>
+                          <span className="text-amber-300/80 font-mono">
+                            +{formatDuration(dtFromPrev, timeFormatMode)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Date Controls */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Year Input */}
+                  <div className="flex items-center bg-[#18181B] border border-[#3F3F46] rounded px-2 py-1">
+                    <span className="text-[10px] text-[#71717A] font-bold mr-1">Y</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={cal.year}
+                      onChange={e => handleYearDayChange(idx, parseInt(e.target.value, 10) || 1, cal.day)}
+                      className="w-12 bg-transparent text-white font-mono text-xs outline-none text-right"
+                    />
+                  </div>
+
+                  {/* Day Input */}
+                  <div className="flex items-center bg-[#18181B] border border-[#3F3F46] rounded px-2 py-1">
+                    <span className="text-[10px] text-[#71717A] font-bold mr-1">D</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={cal.day}
+                      onChange={e => handleYearDayChange(idx, cal.year, parseFloat(e.target.value) || 1)}
+                      className="w-14 bg-transparent text-white font-mono text-xs outline-none text-right"
+                    />
+                  </div>
+
+                  {/* Quick Step Buttons */}
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => handleDateChange(idx, ut - 10 * daySec)}
+                      className="px-1.5 py-1 rounded bg-[#27272A] hover:bg-purple-600/40 text-slate-300 text-[10px] font-mono"
+                      title="-10 days"
+                    >
+                      -10d
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDateChange(idx, ut - 1 * daySec)}
+                      className="px-1.5 py-1 rounded bg-[#27272A] hover:bg-purple-600/40 text-slate-300 text-[10px] font-mono"
+                      title="-1 day"
+                    >
+                      -1d
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDateChange(idx, ut + 1 * daySec)}
+                      className="px-1.5 py-1 rounded bg-[#27272A] hover:bg-purple-600/40 text-slate-300 text-[10px] font-mono"
+                      title="+1 day"
+                    >
+                      +1d
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDateChange(idx, ut + 10 * daySec)}
+                      className="px-1.5 py-1 rounded bg-[#27272A] hover:bg-purple-600/40 text-slate-300 text-[10px] font-mono"
+                      title="+10 days"
+                    >
+                      +10d
+                    </button>
+                  </div>
+                </div>
+
+                {/* Formatted Display */}
+                <div className="text-right sm:w-28 shrink-0 font-mono text-[11px] text-purple-300 font-semibold">
+                  {formatShortUT(ut, timeFormatMode)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex items-center justify-between gap-3 pt-3 border-t border-[#27272A]">
+          <button
+            type="button"
+            onClick={() => {
+              onOptimizeAll();
+              onClose();
+            }}
+            className="px-3 py-1.5 rounded bg-purple-600/30 hover:bg-purple-600 text-purple-200 hover:text-white border border-purple-500/40 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-300" />
+            <span>Optimize All Flybys (Dichotomy)</span>
+          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 rounded bg-[#27272A] hover:bg-[#3F3F46] text-slate-300 text-xs font-semibold transition cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onApplyAll(datesState);
+                onClose();
+              }}
+              className="px-4 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-lg shadow-purple-900/30"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>Apply All Custom Dates</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = ({
   initialData,
@@ -88,6 +620,19 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
     ...initialData.rows.map(r => r.flybyDate),
     initialData.arrDate,
   ]);
+
+  // Modal states for manual date editing
+  const [editingDateInfo, setEditingDateInfo] = useState<{
+    index: number;
+    bodyName: string;
+    role: 'departure' | 'flyby' | 'arrival';
+    currentDate: number;
+    minAllowedDate?: number;
+    maxAllowedDate?: number;
+  } | null>(null);
+
+  const [isSequenceDatesModalOpen, setIsSequenceDatesModalOpen] = useState(false);
+  const [customPivotInput, setCustomPivotInput] = useState('');
 
   // Status message for feedback after dichotomic search
   const [optimizingIndex, setOptimizingIndex] = useState<number | null>(null);
@@ -133,6 +678,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
     setTimeout(() => setActionFeedback(null), 3000);
   };
 
+  const handleApplyCustomPivotDateText = () => {
+    if (!customPivotInput.trim()) return;
+    const parsedUT = parseDateStringToUT(customPivotInput, timeFormatMode);
+    if (parsedUT !== null && Number.isFinite(parsedUT)) {
+      handleApplyPivotSampleDate(parsedUT);
+      setCustomPivotInput('');
+    } else {
+      setActionFeedback('Could not parse date string');
+      setTimeout(() => setActionFeedback(null), 2500);
+    }
+  };
+
   const applyNewDates = (newDates: number[]) => {
     setCustomDates(newDates);
     const evaluated = evaluateMultiInstanceForDates(
@@ -153,6 +710,15 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
       c3ArrTarget: evaluated.c3ArrTarget,
       rows: evaluated.rows,
     }));
+  };
+
+  const handleSingleDateApplied = (index: number, newUT: number) => {
+    const newDates = [...customDates];
+    newDates[index] = newUT;
+    applyNewDates(newDates);
+    const nodeName = data.pathInsts[index]?.bodyName || `Stage ${index}`;
+    setActionFeedback(`Updated ${nodeName} date to ${formatShortUT(newUT, timeFormatMode)} (Lambert evaluated)`);
+    setTimeout(() => setActionFeedback(null), 3000);
   };
 
   const updateIndices = (newDepI: number, newArrI: number) => {
@@ -347,9 +913,27 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
-              <span className="font-mono px-2 text-white font-semibold text-[11px]">
-                {formatShortUT(data.depDate, timeFormatMode)}
-              </span>
+
+              {/* Clickable Date Display to open single date editor */}
+              <button
+                type="button"
+                onClick={() =>
+                  setEditingDateInfo({
+                    index: 0,
+                    bodyName: srcBody,
+                    role: 'departure',
+                    currentDate: data.depDate,
+                    minAllowedDate: 0,
+                    maxAllowedDate: customDates[1] ? customDates[1] - 3600 : undefined,
+                  })
+                }
+                className="flex items-center gap-1 px-2 py-0.5 hover:bg-purple-950/40 text-white hover:text-purple-300 font-mono font-semibold text-[11px] transition cursor-pointer"
+                title="Click to set any custom departure date (even non-sampled)"
+              >
+                <span>{formatShortUT(data.depDate, timeFormatMode)}</span>
+                <Edit3 className="w-2.5 h-2.5 text-purple-400/80" />
+              </button>
+
               <button
                 onClick={() => updateIndices(currentDepIndex + 1, currentArrIndex)}
                 disabled={currentDepIndex >= data.maxDepIndex}
@@ -392,9 +976,26 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
-              <span className="font-mono px-2 text-white font-semibold text-[11px]">
-                {formatShortUT(data.arrDate, timeFormatMode)}
-              </span>
+
+              {/* Clickable Date Display to open single date editor */}
+              <button
+                type="button"
+                onClick={() =>
+                  setEditingDateInfo({
+                    index: N - 1,
+                    bodyName: tgtBody,
+                    role: 'arrival',
+                    currentDate: data.arrDate,
+                    minAllowedDate: customDates[N - 2] ? customDates[N - 2] + 3600 : undefined,
+                  })
+                }
+                className="flex items-center gap-1 px-2 py-0.5 hover:bg-purple-950/40 text-white hover:text-purple-300 font-mono font-semibold text-[11px] transition cursor-pointer"
+                title="Click to set any custom arrival date (even non-sampled)"
+              >
+                <span>{formatShortUT(data.arrDate, timeFormatMode)}</span>
+                <Edit3 className="w-2.5 h-2.5 text-purple-400/80" />
+              </button>
+
               <button
                 onClick={() => updateIndices(currentDepIndex, currentArrIndex + 1)}
                 disabled={currentArrIndex >= data.maxArrIndex}
@@ -423,8 +1024,18 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
             </span>
           </div>
 
-          {/* Quick Global Actions: Optimize All & Reset */}
+          {/* Quick Global Actions: Manage All Dates, Optimize All & Reset */}
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsSequenceDatesModalOpen(true)}
+              className="px-2.5 py-1 rounded bg-[#27272A] hover:bg-[#3F3F46] border border-[#3F3F46] text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Open full sequence dates manager: edit any stage date and compute Lambert transfer"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-blue-400" />
+              <span>Edit All Dates</span>
+            </button>
+
             <button
               onClick={handleOptimizeAllFlybys}
               disabled={isOptimizingAll}
@@ -531,7 +1142,7 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                           </div>
                         </td>
 
-                        {/* Flyby Date (Configurable Stepper + Dichotomic Search) */}
+                        {/* Flyby Date (Configurable Stepper + Manual Date Editor + Dichotomic Search) */}
                         <td className="py-2 px-3" onClick={e => e.stopPropagation()}>
                           <div className="flex items-center gap-1.5">
                             <div className="flex items-center bg-[#18181B] border border-[#27272A] rounded">
@@ -551,9 +1162,27 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                               >
                                 <ChevronLeft className="w-3 h-3" />
                               </button>
-                              <span className="font-mono px-2 text-white font-semibold text-[11px] whitespace-nowrap">
-                                {formatShortUT(row.flybyDate, timeFormatMode)}
-                              </span>
+
+                              {/* Interactive Date badge that triggers manual single date editor */}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingDateInfo({
+                                    index: row.flybyIndex,
+                                    bodyName: row.bodyName,
+                                    role: 'flyby',
+                                    currentDate: row.flybyDate,
+                                    minAllowedDate: row.prevFlybyOrDepDate + 3600,
+                                    maxAllowedDate: row.nextFlybyOrArrDate - 3600,
+                                  })
+                                }
+                                className="flex items-center gap-1 px-1.5 py-0.5 hover:bg-purple-950/50 text-white hover:text-purple-300 transition font-mono font-semibold text-[11px] whitespace-nowrap cursor-pointer rounded"
+                                title="Click to manually enter any date (Lambert solver recalculates)"
+                              >
+                                <span>{formatShortUT(row.flybyDate, timeFormatMode)}</span>
+                                <Edit3 className="w-2.5 h-2.5 text-purple-400" />
+                              </button>
+
                               <button
                                 onClick={() => handleStepFlybyDate(row.flybyIndex, 1, 1)}
                                 disabled={row.flybyDate >= (row.nextFlybyOrArrDate - 3600)}
@@ -718,8 +1347,8 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                     </div>
                   </div>
 
-                  {/* Controls & Filter Bar */}
-                  <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                  {/* Controls, Filter Bar & Custom Pivot Tester */}
+                  <div className="flex items-center justify-between gap-3 flex-wrap text-xs bg-[#09090B] p-2.5 rounded-lg border border-[#27272A]">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[11px] text-[#A1A1AA] font-semibold flex items-center gap-1">
                         <Filter className="w-3 h-3" /> Filter:
@@ -759,16 +1388,41 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
                       </button>
                     </div>
 
-                    {/* Search Input */}
-                    <div className="relative">
-                      <Search className="w-3 h-3 text-[#71717A] absolute left-2.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        placeholder="Search date or sample #..."
-                        value={candidateSearchQuery}
-                        onChange={e => setCandidateSearchQuery(e.target.value)}
-                        className="bg-[#09090B] border border-[#27272A] focus:border-purple-500 rounded pl-7 pr-2.5 py-1 text-[11px] text-[#E4E4E7] placeholder-[#71717A] outline-none"
-                      />
+                    {/* Custom Pivot Date Test Input & Filter Search */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Test Custom Date for Pivot */}
+                      <div className="flex items-center gap-1 bg-[#18181B] border border-purple-500/40 rounded px-2 py-0.5">
+                        <span className="text-[10px] text-purple-300 font-semibold">Test Pivot Date:</span>
+                        <input
+                          type="text"
+                          placeholder="e.g. Y1 D205"
+                          value={customPivotInput}
+                          onChange={e => setCustomPivotInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') handleApplyCustomPivotDateText();
+                          }}
+                          className="bg-transparent w-24 text-white font-mono text-[11px] outline-none placeholder-[#71717A]"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleApplyCustomPivotDateText}
+                          className="px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white rounded text-[10px] font-bold transition cursor-pointer"
+                        >
+                          Apply
+                        </button>
+                      </div>
+
+                      {/* Search Input */}
+                      <div className="relative">
+                        <Search className="w-3 h-3 text-[#71717A] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Search sample..."
+                          value={candidateSearchQuery}
+                          onChange={e => setCandidateSearchQuery(e.target.value)}
+                          className="bg-[#18181B] border border-[#27272A] focus:border-purple-500 rounded pl-7 pr-2.5 py-1 text-[11px] text-[#E4E4E7] placeholder-[#71717A] outline-none"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -982,6 +1636,40 @@ export const MultiInstanceDebugModal: React.FC<MultiInstanceDebugModalProps> = (
         </div>
 
       </div>
+
+      {/* Single Date Edit Modal */}
+      {editingDateInfo && (
+        <SingleDateEditModal
+          index={editingDateInfo.index}
+          bodyName={editingDateInfo.bodyName}
+          role={editingDateInfo.role}
+          currentDate={editingDateInfo.currentDate}
+          minAllowedDate={editingDateInfo.minAllowedDate}
+          maxAllowedDate={editingDateInfo.maxAllowedDate}
+          timeFormatMode={timeFormatMode}
+          onApply={(newDate) => {
+            handleSingleDateApplied(editingDateInfo.index, newDate);
+          }}
+          onClose={() => setEditingDateInfo(null)}
+        />
+      )}
+
+      {/* Sequence Dates Manager Modal */}
+      {isSequenceDatesModalOpen && (
+        <SequenceDatesManagerModal
+          pathInsts={data.pathInsts}
+          customDates={customDates}
+          timeFormatMode={timeFormatMode}
+          onApplyAll={(newDates) => {
+            applyNewDates(newDates);
+            setActionFeedback('Custom sequence dates applied and evaluated');
+            setTimeout(() => setActionFeedback(null), 2500);
+          }}
+          onOptimizeAll={handleOptimizeAllFlybys}
+          onReset={handleResetFlybyDates}
+          onClose={() => setIsSequenceDatesModalOpen(false)}
+        />
+      )}
 
       {/* 3-Instance Debug Plot Modal opened on row click */}
       {selected3InstanceData && (
